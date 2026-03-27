@@ -5,6 +5,7 @@ add_executable(Sub0h264_Tests
     test_nal.cpp
     test_sps_pps.cpp
     test_slice.cpp
+    test_cavlc.cpp
 )
 
 target_link_libraries(Sub0h264_Tests PRIVATE Sub0h264::Sub0h264)
