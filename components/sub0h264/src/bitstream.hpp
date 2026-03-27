@@ -17,6 +17,9 @@
 
 namespace sub0h264 {
 
+/// Sentinel value returned by readUev() on overflow (>31 leading zeros).
+inline constexpr uint32_t cExpGolombOverflow = 0xFFFFFFFFU;
+
 /** Bit-level reader over a byte buffer.
  *
  *  Data is read MSB-first (network/big-endian bit order).
@@ -97,7 +100,7 @@ public:
         {
             ++leadingZeros;
             if (leadingZeros > 31U)
-                return 0xFFFFFFFFU; // error guard
+                return cExpGolombOverflow;
         }
         if (leadingZeros == 0U)
             return 0U;

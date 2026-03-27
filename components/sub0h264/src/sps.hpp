@@ -25,6 +25,9 @@ inline constexpr uint32_t cMaxRefFrames = 16U;
 inline constexpr uint32_t cMaxWidth  = 640U;
 inline constexpr uint32_t cMaxHeight = 480U;
 
+/// Default initial QP — ITU-T H.264 §7.4.2.2 (pic_init_qp = 26 + pic_init_qp_minus26).
+inline constexpr int32_t cDefaultPicInitQp = 26;
+
 /** H.264 profile IDCs. */
 inline constexpr uint8_t cProfileBaseline = 66U;
 inline constexpr uint8_t cProfileMain     = 77U;

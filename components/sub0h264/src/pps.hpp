@@ -44,8 +44,8 @@ struct Pps
     uint8_t weightedBipredIdc_ = 0U;   ///< 0=default, 1=explicit, 2=implicit
 
     // QP
-    int8_t picInitQp_ = 26;           ///< pic_init_qp_minus26 + 26
-    int8_t picInitQs_ = 26;
+    int8_t picInitQp_ = static_cast<int8_t>(cDefaultPicInitQp);  ///< pic_init_qp_minus26 + 26
+    int8_t picInitQs_ = static_cast<int8_t>(cDefaultPicInitQp);
     int8_t chromaQpIndexOffset_ = 0;
     int8_t secondChromaQpIndexOffset_ = 0;
 
@@ -119,12 +119,12 @@ inline Result parsePps(BitReader& br, const Sps* spsArray, Pps& pps) noexcept
         return Result::ErrorInvalidParam;
 
     // pic_init_qp_minus26
-    pps.picInitQp_ = static_cast<int8_t>(br.readSev() + 26);
+    pps.picInitQp_ = static_cast<int8_t>(br.readSev() + cDefaultPicInitQp);
     if (pps.picInitQp_ < 0 || pps.picInitQp_ > 51)
         return Result::ErrorInvalidParam;
 
     // pic_init_qs_minus26
-    pps.picInitQs_ = static_cast<int8_t>(br.readSev() + 26);
+    pps.picInitQs_ = static_cast<int8_t>(br.readSev() + cDefaultPicInitQp);
 
     // chroma_qp_index_offset
     pps.chromaQpIndexOffset_ = static_cast<int8_t>(br.readSev());

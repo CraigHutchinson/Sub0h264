@@ -16,6 +16,12 @@
 
 namespace sub0h264 {
 
+/// H.264 Annex-B start code byte — ITU-T H.264 §B.1.
+inline constexpr uint8_t cStartCodeByte = 0x01U;
+
+/// Emulation prevention byte — ITU-T H.264 §7.4.1.
+inline constexpr uint8_t cEmulationPreventionByte = 0x03U;
+
 /** Represents the raw boundaries of a NAL unit within an Annex-B stream. */
 struct NalBounds
 {
@@ -43,7 +49,7 @@ inline void findNalUnits(const uint8_t* data, uint32_t size,
     // Skip leading zeros
     while (i < size && data[i] == 0x00U)
         ++i;
-    if (i >= size || data[i] != 0x01U)
+    if (i >= size || data[i] != cStartCodeByte)
         return;
     ++i; // skip the 0x01
 
@@ -54,7 +60,7 @@ inline void findNalUnits(const uint8_t* data, uint32_t size,
         // Look for 00 00 01 or 00 00 00 01
         if (data[i] == 0x00U && data[i + 1U] == 0x00U)
         {
-            if (data[i + 2U] == 0x01U)
+            if (data[i + 2U] == cStartCodeByte)
             {
                 // Found 3-byte start code
                 uint32_t nalEnd = i;
@@ -65,7 +71,7 @@ inline void findNalUnits(const uint8_t* data, uint32_t size,
                 i = nalStart;
                 continue;
             }
-            else if (i + 3U < size && data[i + 2U] == 0x00U && data[i + 3U] == 0x01U)
+            else if (i + 3U < size && data[i + 2U] == 0x00U && data[i + 3U] == cStartCodeByte)
             {
                 // Found 4-byte start code
                 uint32_t nalEnd = i;
@@ -102,7 +108,7 @@ inline void removeEmulationPrevention(const uint8_t* ebsp, uint32_t size,
     uint32_t zeroCount = 0U;
     for (uint32_t i = 0U; i < size; ++i)
     {
-        if (zeroCount == 2U && ebsp[i] == 0x03U)
+        if (zeroCount == 2U && ebsp[i] == cEmulationPreventionByte)
         {
             // Skip emulation prevention byte
             // The next byte (if any) must be 00, 01, 02, or 03
