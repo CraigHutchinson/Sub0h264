@@ -151,7 +151,7 @@ inline Result parseScalingList(BitReader& br, int16_t* list, uint32_t size,
  */
 inline Result parseSps(BitReader& br, Sps& sps) noexcept
 {
-    std::memset(&sps, 0, sizeof(Sps));
+    sps = Sps{};
 
     // profile_idc (8 bits)
     sps.profileIdc_ = static_cast<uint8_t>(br.readBits(8U));

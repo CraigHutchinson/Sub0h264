@@ -71,7 +71,7 @@ struct Pps
  */
 inline Result parsePps(BitReader& br, const Sps* spsArray, Pps& pps) noexcept
 {
-    std::memset(&pps, 0, sizeof(Pps));
+    pps = Pps{};
 
     // pic_parameter_set_id
     pps.ppsId_ = static_cast<uint8_t>(br.readUev());

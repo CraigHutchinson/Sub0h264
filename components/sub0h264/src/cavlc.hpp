@@ -163,7 +163,7 @@ inline int32_t decodeLevel(BitReader& br, uint32_t& suffixLen) noexcept
     while (prefix < 32U && br.readBit() == 0U)
         ++prefix;
 
-    int32_t levelCode = static_cast<int32_t>(std::min(prefix, 15U));
+    int32_t levelCode = static_cast<int32_t>(prefix < 15U ? prefix : 15U);
 
     uint32_t suffixSize = suffixLen;
     if (prefix == 14U && suffixLen == 0U)
@@ -324,7 +324,7 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
                                       uint32_t maxCoeff, uint32_t startIdx,
                                       ResidualBlock4x4& block) noexcept
 {
-    std::memset(&block, 0, sizeof(block));
+    block = ResidualBlock4x4{};
 
     // 1. Decode coeff_token
     CoeffToken ct = decodeCoeffToken(br, nC);

@@ -258,17 +258,17 @@ inline void deblockMb(Frame& frame, uint32_t mbX, uint32_t mbY,
                        uint16_t widthInMbs, uint16_t heightInMbs) noexcept
 {
     uint32_t mbIdx = mbY * widthInMbs + mbX;
-    uint32_t yStride = frame.yStride();
-    uint32_t uvStride = frame.uvStride();
+    (void)mbIdx; // Used by BS computation
+    (void)heightInMbs;
 
     // Compute alpha/beta from QP
-    int32_t indexA = std::max(0, std::min(51, qp + alphaOffset));
-    int32_t indexB = std::max(0, std::min(51, qp + betaOffset));
+    int32_t indexA = clampQpIdx(qp + alphaOffset);
+    int32_t indexB = clampQpIdx(qp + betaOffset);
     int32_t alpha = cAlphaTable[indexA];
     int32_t beta = cBetaTable[indexB];
 
-    int32_t cIndexA = std::max(0, std::min(51, chromaQp + alphaOffset));
-    int32_t cIndexB = std::max(0, std::min(51, chromaQp + betaOffset));
+    int32_t cIndexA = clampQpIdx(chromaQp + alphaOffset);
+    int32_t cIndexB = clampQpIdx(chromaQp + betaOffset);
     int32_t cAlpha = cAlphaTable[cIndexA];
     int32_t cBeta = cBetaTable[cIndexB];
 

@@ -344,7 +344,7 @@ private:
         {
             int32_t alphaOff = sh.sliceAlphaC0Offset_;
             int32_t betaOff = sh.sliceBetaOffset_;
-            int32_t dbChromaQpIdx = std::max(0, std::min(51, sliceQp + pps->chromaQpIndexOffset_));
+            int32_t dbChromaQpIdx = clampQpIdx(sliceQp + pps->chromaQpIndexOffset_);
             int32_t dbChromaQp = cChromaQpTable[dbChromaQpIdx];
 
             Frame& dbFrame = (sh.sliceType_ == SliceType::I) ? currentFrame_ : *decodeTarget;
@@ -658,7 +658,7 @@ private:
 
         // Chroma QP
         int32_t chromaQpIdx = qp + pps.chromaQpIndexOffset_;
-        chromaQpIdx = std::max(0, std::min(51, chromaQpIdx));
+        chromaQpIdx = clampQpIdx(chromaQpIdx);
         int32_t chromaQp = cChromaQpTable[chromaQpIdx];
 
         // Decode chroma DC if cbpChroma >= 1
@@ -912,7 +912,7 @@ private:
         }
 
         // Decode chroma residual and reconstruct
-        int32_t chromaQpIdx = std::max(0, std::min(51, qp + pps.chromaQpIndexOffset_));
+        int32_t chromaQpIdx = clampQpIdx(qp + pps.chromaQpIndexOffset_);
         int32_t chromaQp = cChromaQpTable[chromaQpIdx];
 
         int16_t dcCb[4] = {}, dcCr[4] = {};

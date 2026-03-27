@@ -22,6 +22,12 @@ inline constexpr int32_t clipU8(int32_t val) noexcept
     return val < 0 ? 0 : (val > 255 ? 255 : val);
 }
 
+/// Clamp QP-derived index to [0, 51]. Avoids std::min/max type deduction issues.
+inline constexpr int32_t clampQpIdx(int32_t val) noexcept
+{
+    return val < 0 ? 0 : (val > 51 ? 51 : val);
+}
+
 // ── Default dequantization scaling — ITU-T H.264 §8.5.12.1 ─────────────
 
 /// Dequantization scale factors for 4x4 blocks, indexed by QP%6 and position.

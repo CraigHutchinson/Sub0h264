@@ -239,7 +239,6 @@ inline void intraPred16x16(Intra16x16Mode mode,
     case Intra16x16Mode::Plane:
         if (hasTop && hasLeft)
         {
-            uint8_t topLeft = frame.y(pixX - 1U, pixY - 1U);
             const uint8_t* topRow = frame.yRow(pixY - 1U) + pixX;
 
             int32_t h = 0, v = 0;

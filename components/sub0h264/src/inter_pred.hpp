@@ -65,8 +65,10 @@ inline void lumaMotionComp(const Frame& ref,
 {
     // Clamp reference position to frame bounds with margin for filter taps
     auto getSample = [&](int32_t x, int32_t y) -> uint8_t {
-        x = std::max(0, std::min(static_cast<int32_t>(ref.width()) - 1, x));
-        y = std::max(0, std::min(static_cast<int32_t>(ref.height()) - 1, y));
+        int32_t maxX = static_cast<int32_t>(ref.width()) - 1;
+        int32_t maxY = static_cast<int32_t>(ref.height()) - 1;
+        x = (x < 0) ? 0 : (x > maxX ? maxX : x);
+        y = (y < 0) ? 0 : (y > maxY ? maxY : y);
         return ref.y(static_cast<uint32_t>(x), static_cast<uint32_t>(y));
     };
 
@@ -190,8 +192,10 @@ inline void chromaMotionComp(const Frame& ref,
     uint32_t chromaH = ref.height() / 2U;
 
     auto getSample = [&](int32_t x, int32_t y) -> uint8_t {
-        x = std::max(0, std::min(static_cast<int32_t>(chromaW) - 1, x));
-        y = std::max(0, std::min(static_cast<int32_t>(chromaH) - 1, y));
+        int32_t maxCx = static_cast<int32_t>(chromaW) - 1;
+        int32_t maxCy = static_cast<int32_t>(chromaH) - 1;
+        x = (x < 0) ? 0 : (x > maxCx ? maxCx : x);
+        y = (y < 0) ? 0 : (y > maxCy ? maxCy : y);
         return isU ? ref.u(static_cast<uint32_t>(x), static_cast<uint32_t>(y))
                    : ref.v(static_cast<uint32_t>(x), static_cast<uint32_t>(y));
     };
