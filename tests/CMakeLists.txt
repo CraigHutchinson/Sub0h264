@@ -9,6 +9,7 @@ add_executable(Sub0h264_Tests
     test_iframe.cpp
     test_pframe.cpp
     test_deblock.cpp
+    test_cabac.cpp
     test_decode_pipeline.cpp
 )
 
