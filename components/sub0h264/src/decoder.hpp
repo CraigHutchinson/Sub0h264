@@ -261,9 +261,9 @@ private:
             decodeTarget = dpb_.getDecodeTarget();
         }
 
-        std::fill(nnzLuma_.begin(), nnzLuma_.end(), 0U);
-        std::fill(nnzCb_.begin(), nnzCb_.end(), 0U);
-        std::fill(nnzCr_.begin(), nnzCr_.end(), 0U);
+        std::fill(nnzLuma_.begin(), nnzLuma_.end(), static_cast<uint8_t>(0U));
+        std::fill(nnzCb_.begin(), nnzCb_.end(), static_cast<uint8_t>(0U));
+        std::fill(nnzCr_.begin(), nnzCr_.end(), static_cast<uint8_t>(0U));
         std::fill(mbMotion_.begin(), mbMotion_.end(), MbMotionInfo{});
 
         // Compute effective QP
