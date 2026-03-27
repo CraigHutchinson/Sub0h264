@@ -1,0 +1,455 @@
+/** Sub0h264 — H.264 in-loop deblocking filter
+ *
+ *  Implements the deblocking filter for removing blocking artifacts
+ *  at macroblock and 4x4 block boundaries. Both luma and chroma.
+ *
+ *  Reference: ITU-T H.264 §8.7
+ *
+ *  SPDX-License-Identifier: MIT
+ */
+#ifndef CROG_SUB0H264_DEBLOCK_HPP
+#define CROG_SUB0H264_DEBLOCK_HPP
+
+#include "frame.hpp"
+#include "motion.hpp"    // MbMotionInfo
+#include "transform.hpp" // clipU8
+
+#include <cstdint>
+#include <cstdlib> // abs
+#include <algorithm>
+
+namespace sub0h264 {
+
+// ── Deblocking tables — ITU-T H.264 Table 8-16, 8-17 ───────────────────
+
+/// Alpha threshold table indexed by indexA [0-51].
+inline constexpr uint8_t cAlphaTable[52] = {
+     0,   0,   0,   0,   0,   0,   0,   0,
+     0,   0,   0,   0,   0,   0,   0,   0,
+     4,   4,   5,   6,   7,   8,   9,  10,
+    12,  13,  15,  17,  20,  22,  25,  28,
+    32,  36,  40,  45,  50,  56,  63,  71,
+    80,  90, 101, 113, 127, 144, 162, 182,
+   203, 226, 255, 255,
+};
+
+/// Beta threshold table indexed by indexB [0-51].
+inline constexpr uint8_t cBetaTable[52] = {
+     0,   0,   0,   0,   0,   0,   0,   0,
+     0,   0,   0,   0,   0,   0,   0,   0,
+     2,   2,   2,   3,   3,   3,   3,   4,
+     4,   4,   6,   6,   7,   7,   8,   8,
+     9,   9,  10,  10,  11,  11,  12,  12,
+    13,  13,  14,  14,  15,  15,  16,  16,
+    17,  17,  18,  18,
+};
+
+/// tc0 clipping table indexed by [indexA][bS-1] (bS 1-3).
+/// Column 0 is unused (bS=0 means no filtering).
+inline constexpr uint8_t cTc0Table[52][4] = {
+    { 0, 0, 0, 0}, { 0, 0, 0, 0}, { 0, 0, 0, 0}, { 0, 0, 0, 0},
+    { 0, 0, 0, 0}, { 0, 0, 0, 0}, { 0, 0, 0, 0}, { 0, 0, 0, 0},
+    { 0, 0, 0, 0}, { 0, 0, 0, 0}, { 0, 0, 0, 0}, { 0, 0, 0, 0},
+    { 0, 0, 0, 0}, { 0, 0, 0, 0}, { 0, 0, 0, 0}, { 0, 0, 0, 0},
+    { 0, 0, 0, 0}, { 0, 0, 0, 1}, { 0, 0, 0, 1}, { 0, 0, 0, 1},
+    { 0, 0, 0, 1}, { 0, 0, 1, 1}, { 0, 0, 1, 1}, { 0, 1, 1, 1},
+    { 0, 1, 1, 1}, { 0, 1, 1, 1}, { 0, 1, 1, 1}, { 0, 1, 1, 2},
+    { 0, 1, 1, 2}, { 0, 1, 1, 2}, { 0, 1, 1, 2}, { 0, 1, 2, 3},
+    { 0, 1, 2, 3}, { 0, 2, 2, 3}, { 0, 2, 2, 4}, { 0, 2, 3, 4},
+    { 0, 2, 3, 4}, { 0, 3, 3, 5}, { 0, 3, 4, 6}, { 0, 3, 4, 6},
+    { 0, 4, 5, 7}, { 0, 4, 5, 8}, { 0, 4, 6, 9}, { 0, 5, 7,10},
+    { 0, 6, 8,11}, { 0, 6, 8,13}, { 0, 7,10,14}, { 0, 8,11,16},
+    { 0, 9,12,18}, { 0,10,13,20}, { 0,11,15,23}, { 0,13,17,25},
+};
+
+// ── Boundary strength ───────────────────────────────────────────────────
+
+/** Compute boundary strength for a vertical or horizontal edge.
+ *
+ *  @param isIntraP  True if the p-side MB is intra
+ *  @param isIntraQ  True if the q-side MB is intra
+ *  @param isMbEdge  True if this is a MB boundary (not internal 4x4 edge)
+ *  @param hasCoeffP True if p-side 4x4 block has non-zero coefficients
+ *  @param hasCoeffQ True if q-side 4x4 block has non-zero coefficients
+ *  @param mvPx,mvPy Motion vector of p-side (quarter-pel)
+ *  @param mvQx,mvQy Motion vector of q-side (quarter-pel)
+ *  @param refP,refQ Reference indices of p-side and q-side
+ *  @return Boundary strength [0-4]
+ */
+inline uint8_t computeBs(bool isIntraP, bool isIntraQ, bool isMbEdge,
+                          bool hasCoeffP, bool hasCoeffQ,
+                          int16_t mvPx, int16_t mvPy, int16_t mvQx, int16_t mvQy,
+                          int8_t refP, int8_t refQ) noexcept
+{
+    // BS=4 for intra edges at MB boundaries
+    if (isMbEdge && (isIntraP || isIntraQ))
+        return 4U;
+
+    // BS=3 for intra edges at internal boundaries
+    if (isIntraP || isIntraQ)
+        return 3U;
+
+    // BS=2 if either side has non-zero coefficients
+    if (hasCoeffP || hasCoeffQ)
+        return 2U;
+
+    // BS=1 if different reference or MV differs by >= 4 quarter-pel (1 full pel)
+    if (refP != refQ)
+        return 1U;
+    if (std::abs(mvPx - mvQx) >= 4 || std::abs(mvPy - mvQy) >= 4)
+        return 1U;
+
+    return 0U;
+}
+
+// ── Filter kernels ──────────────────────────────────────────────────────
+
+/** Apply weak luma filter (BS=1-3) to one pixel crossing.
+ *
+ *  Modifies p0, q0 (and optionally p1, q1 for luma).
+ *  Samples are passed by pointer for in-place update.
+ */
+inline void filterLumaWeak(uint8_t& p0, uint8_t& p1, const uint8_t& p2,
+                            uint8_t& q0, uint8_t& q1, const uint8_t& q2,
+                            int32_t alpha, int32_t beta, int32_t tc0) noexcept
+{
+    int32_t ip0 = p0, ip1 = p1, ip2 = p2;
+    int32_t iq0 = q0, iq1 = q1, iq2 = q2;
+
+    // Decision: filter?
+    if (std::abs(ip0 - iq0) >= alpha) return;
+    if (std::abs(iq1 - iq0) >= beta) return;
+    if (std::abs(ip1 - ip0) >= beta) return;
+
+    int32_t ap = std::abs(ip2 - ip0);
+    int32_t aq = std::abs(iq2 - iq0);
+
+    int32_t tc = tc0 + (ap < beta ? 1 : 0) + (aq < beta ? 1 : 0);
+
+    // Delta for p0/q0
+    int32_t delta = ((((iq0 - ip0) << 2) + (ip1 - iq1) + 4) >> 3);
+    delta = std::max(-tc, std::min(tc, delta));
+
+    p0 = static_cast<uint8_t>(clipU8(ip0 + delta));
+    q0 = static_cast<uint8_t>(clipU8(iq0 - delta));
+
+    // Optional p1/q1 filtering (luma only)
+    if (ap < beta)
+    {
+        int32_t dp1 = ((ip2 + ((ip0 + iq0 + 1) >> 1) - (ip1 << 1)) >> 1);
+        dp1 = std::max(-tc0, std::min(tc0, dp1));
+        p1 = static_cast<uint8_t>(clipU8(ip1 + dp1));
+    }
+    if (aq < beta)
+    {
+        int32_t dq1 = ((iq2 + ((ip0 + iq0 + 1) >> 1) - (iq1 << 1)) >> 1);
+        dq1 = std::max(-tc0, std::min(tc0, dq1));
+        q1 = static_cast<uint8_t>(clipU8(iq1 + dq1));
+    }
+}
+
+/** Apply strong luma filter (BS=4) to one pixel crossing. */
+inline void filterLumaStrong(uint8_t& p0, uint8_t& p1, uint8_t& p2,
+                              uint8_t& q0, uint8_t& q1, uint8_t& q2,
+                              const uint8_t& p3, const uint8_t& q3,
+                              int32_t alpha, int32_t beta) noexcept
+{
+    int32_t ip0 = p0, ip1 = p1, ip2 = p2, ip3 = p3;
+    int32_t iq0 = q0, iq1 = q1, iq2 = q2, iq3 = q3;
+
+    if (std::abs(ip0 - iq0) >= alpha) return;
+    if (std::abs(iq1 - iq0) >= beta) return;
+    if (std::abs(ip1 - ip0) >= beta) return;
+
+    bool strongThresh = (std::abs(ip0 - iq0) < ((alpha >> 2) + 2));
+    int32_t ap = std::abs(ip2 - ip0);
+    int32_t aq = std::abs(iq2 - iq0);
+
+    if (strongThresh)
+    {
+        // P-side
+        if (ap < beta)
+        {
+            p0 = static_cast<uint8_t>((ip2 + 2 * ip1 + 2 * ip0 + 2 * iq0 + iq1 + 4) >> 3);
+            p1 = static_cast<uint8_t>((ip2 + ip1 + ip0 + iq0 + 2) >> 2);
+            p2 = static_cast<uint8_t>((2 * ip3 + 3 * ip2 + ip1 + ip0 + iq0 + 4) >> 3);
+        }
+        else
+        {
+            p0 = static_cast<uint8_t>((2 * ip1 + ip0 + iq1 + 2) >> 2);
+        }
+
+        // Q-side
+        if (aq < beta)
+        {
+            q0 = static_cast<uint8_t>((ip1 + 2 * ip0 + 2 * iq0 + 2 * iq1 + iq2 + 4) >> 3);
+            q1 = static_cast<uint8_t>((ip0 + iq0 + iq1 + iq2 + 2) >> 2);
+            q2 = static_cast<uint8_t>((2 * iq3 + 3 * iq2 + iq1 + iq0 + ip0 + 4) >> 3);
+        }
+        else
+        {
+            q0 = static_cast<uint8_t>((2 * iq1 + iq0 + ip1 + 2) >> 2);
+        }
+    }
+    else
+    {
+        p0 = static_cast<uint8_t>((2 * ip1 + ip0 + iq1 + 2) >> 2);
+        q0 = static_cast<uint8_t>((2 * iq1 + iq0 + ip1 + 2) >> 2);
+    }
+}
+
+/** Apply chroma filter (BS=1-3, weak) to one pixel crossing. */
+inline void filterChromaWeak(uint8_t& p0, const uint8_t& p1,
+                              uint8_t& q0, const uint8_t& q1,
+                              int32_t alpha, int32_t beta, int32_t tc0) noexcept
+{
+    int32_t ip0 = p0, ip1 = p1, iq0 = q0, iq1 = q1;
+
+    if (std::abs(ip0 - iq0) >= alpha) return;
+    if (std::abs(iq1 - iq0) >= beta) return;
+    if (std::abs(ip1 - ip0) >= beta) return;
+
+    int32_t tc = tc0 + 1; // Chroma always +1
+
+    int32_t delta = ((((iq0 - ip0) << 2) + (ip1 - iq1) + 4) >> 3);
+    delta = std::max(-tc, std::min(tc, delta));
+
+    p0 = static_cast<uint8_t>(clipU8(ip0 + delta));
+    q0 = static_cast<uint8_t>(clipU8(iq0 - delta));
+}
+
+/** Apply chroma filter (BS=4, strong) to one pixel crossing. */
+inline void filterChromaStrong(uint8_t& p0, const uint8_t& p1,
+                                uint8_t& q0, const uint8_t& q1,
+                                int32_t alpha, int32_t beta) noexcept
+{
+    int32_t ip0 = p0, ip1 = p1, iq0 = q0, iq1 = q1;
+
+    if (std::abs(ip0 - iq0) >= alpha) return;
+    if (std::abs(iq1 - iq0) >= beta) return;
+    if (std::abs(ip1 - ip0) >= beta) return;
+
+    p0 = static_cast<uint8_t>((2 * ip1 + ip0 + iq1 + 2) >> 2);
+    q0 = static_cast<uint8_t>((2 * iq1 + iq0 + ip1 + 2) >> 2);
+}
+
+// ── MB-level deblocking ─────────────────────────────────────────────────
+
+/** Deblock one macroblock (luma + chroma).
+ *
+ *  Filters all 4 vertical and 4 horizontal edges.
+ *
+ *  @param frame     Frame to filter in-place
+ *  @param mbX,mbY   Macroblock position
+ *  @param qp        Luma QP for this MB
+ *  @param chromaQp  Chroma QP for this MB
+ *  @param isIntra   True if this MB is intra-coded
+ *  @param alphaOffset  Slice alpha_c0_offset_div2 * 2
+ *  @param betaOffset   Slice beta_offset_div2 * 2
+ *  @param nnzLuma   NNZ array for luma [totalMbs * 16]
+ *  @param mbMotion  MV info per MB
+ *  @param widthInMbs Width of frame in MBs
+ */
+inline void deblockMb(Frame& frame, uint32_t mbX, uint32_t mbY,
+                       int32_t qp, int32_t chromaQp,
+                       bool isIntra, int32_t alphaOffset, int32_t betaOffset,
+                       const uint8_t* nnzLuma,
+                       const MbMotionInfo* mbMotion,
+                       uint16_t widthInMbs, uint16_t heightInMbs) noexcept
+{
+    uint32_t mbIdx = mbY * widthInMbs + mbX;
+    uint32_t yStride = frame.yStride();
+    uint32_t uvStride = frame.uvStride();
+
+    // Compute alpha/beta from QP
+    int32_t indexA = std::max(0, std::min(51, qp + alphaOffset));
+    int32_t indexB = std::max(0, std::min(51, qp + betaOffset));
+    int32_t alpha = cAlphaTable[indexA];
+    int32_t beta = cBetaTable[indexB];
+
+    int32_t cIndexA = std::max(0, std::min(51, chromaQp + alphaOffset));
+    int32_t cIndexB = std::max(0, std::min(51, chromaQp + betaOffset));
+    int32_t cAlpha = cAlphaTable[cIndexA];
+    int32_t cBeta = cBetaTable[cIndexB];
+
+    if (alpha == 0 && cAlpha == 0)
+        return; // No filtering needed at this QP
+
+    uint32_t pixX = mbX * 16U;
+    uint32_t pixY = mbY * 16U;
+
+    // ── Vertical edges (left boundary + 3 internal) ─────────────────
+
+    for (uint32_t edge = 0U; edge < 4U; ++edge)
+    {
+        uint32_t edgeX = pixX + edge * 4U;
+        if (edge == 0U && mbX == 0U) continue; // No left neighbor
+
+        for (uint32_t row = 0U; row < 16U; ++row)
+        {
+            uint32_t blkQ = edge + (row / 4U) * 4U;
+            uint32_t blkP = (edge == 0U) ? 3U + (row / 4U) * 4U : blkQ - 1U;
+            uint32_t mbIdxP = (edge == 0U) ? (mbY * widthInMbs + mbX - 1U) : mbIdx;
+
+            bool isIntraP = (edge == 0U)
+                ? (mbMotion[mbIdxP].refIdx == -1)
+                : isIntra;
+            bool hasCoeffP = (nnzLuma[mbIdxP * 16U + blkP] > 0U);
+            bool hasCoeffQ = (nnzLuma[mbIdx * 16U + blkQ] > 0U);
+
+            int16_t mvPx = mbMotion[mbIdxP].mv.x;
+            int16_t mvPy = mbMotion[mbIdxP].mv.y;
+            int16_t mvQx = mbMotion[mbIdx].mv.x;
+            int16_t mvQy = mbMotion[mbIdx].mv.y;
+
+            uint8_t bs = computeBs(isIntraP, isIntra, edge == 0U,
+                                    hasCoeffP, hasCoeffQ,
+                                    mvPx, mvPy, mvQx, mvQy,
+                                    mbMotion[mbIdxP].refIdx,
+                                    mbMotion[mbIdx].refIdx);
+
+            if (bs == 0U) continue;
+
+            uint8_t* yPtr = frame.yRow(pixY + row) + edgeX;
+
+            if (bs == 4U)
+            {
+                filterLumaStrong(yPtr[-1], yPtr[-2], yPtr[-3],
+                                  yPtr[0], yPtr[1], yPtr[2],
+                                  edgeX >= 4U ? yPtr[-4] : yPtr[-1],
+                                  edgeX + 3U < frame.width() ? yPtr[3] : yPtr[0],
+                                  alpha, beta);
+            }
+            else
+            {
+                int32_t tc0 = cTc0Table[indexA][bs];
+                uint8_t p2 = (edgeX >= 3U) ? yPtr[-3] : yPtr[-1];
+                uint8_t q2 = (edgeX + 2U < frame.width()) ? yPtr[2] : yPtr[0];
+                filterLumaWeak(yPtr[-1], yPtr[-2], p2,
+                               yPtr[0], yPtr[1], q2,
+                               alpha, beta, tc0);
+            }
+        }
+
+        // Chroma vertical edges (only at MB boundary and 8-px internal)
+        if (edge == 0U || edge == 2U)
+        {
+            uint32_t cEdgeX = pixX / 2U + (edge / 2U) * 4U;
+            if (edge == 0U && mbX == 0U) continue;
+
+            for (uint32_t cRow = 0U; cRow < 8U; ++cRow)
+            {
+                uint32_t cY = pixY / 2U + cRow;
+                uint8_t bs = (edge == 0U && isIntra) ? 4U : (isIntra ? 3U : 1U);
+
+                for (int plane = 0; plane < 2; ++plane)
+                {
+                    uint8_t* ptr = (plane == 0)
+                        ? frame.uRow(cY) + cEdgeX
+                        : frame.vRow(cY) + cEdgeX;
+
+                    if (bs == 4U)
+                        filterChromaStrong(ptr[-1], (cEdgeX > 0U ? ptr[-2] : ptr[-1]),
+                                           ptr[0], ptr[1], cAlpha, cBeta);
+                    else if (bs > 0U)
+                        filterChromaWeak(ptr[-1], (cEdgeX > 0U ? ptr[-2] : ptr[-1]),
+                                         ptr[0], ptr[1], cAlpha, cBeta,
+                                         cTc0Table[cIndexA][bs]);
+                }
+            }
+        }
+    }
+
+    // ── Horizontal edges (top boundary + 3 internal) ────────────────
+
+    for (uint32_t edge = 0U; edge < 4U; ++edge)
+    {
+        uint32_t edgeY = pixY + edge * 4U;
+        if (edge == 0U && mbY == 0U) continue;
+
+        for (uint32_t col = 0U; col < 16U; ++col)
+        {
+            uint32_t blkQ = (col / 4U) + edge * 4U;
+            uint32_t blkP = (edge == 0U)
+                ? (col / 4U) + 12U
+                : blkQ - 4U;
+            uint32_t mbIdxP = (edge == 0U)
+                ? ((mbY - 1U) * widthInMbs + mbX)
+                : mbIdx;
+
+            bool isIntraP = (edge == 0U)
+                ? (mbMotion[mbIdxP].refIdx == -1)
+                : isIntra;
+            bool hasCoeffP = (nnzLuma[mbIdxP * 16U + blkP] > 0U);
+            bool hasCoeffQ = (nnzLuma[mbIdx * 16U + blkQ] > 0U);
+
+            uint8_t bs = computeBs(isIntraP, isIntra, edge == 0U,
+                                    hasCoeffP, hasCoeffQ,
+                                    mbMotion[mbIdxP].mv.x, mbMotion[mbIdxP].mv.y,
+                                    mbMotion[mbIdx].mv.x, mbMotion[mbIdx].mv.y,
+                                    mbMotion[mbIdxP].refIdx, mbMotion[mbIdx].refIdx);
+
+            if (bs == 0U) continue;
+
+            uint8_t* yQ = frame.yRow(edgeY) + pixX + col;
+            uint8_t* yP = frame.yRow(edgeY - 1U) + pixX + col;
+
+            if (bs == 4U)
+            {
+                uint8_t p3 = (edgeY >= 4U) ? *(frame.yRow(edgeY - 4U) + pixX + col) : *yP;
+                uint8_t q3 = (edgeY + 3U < frame.height()) ? *(frame.yRow(edgeY + 3U) + pixX + col) : *yQ;
+                uint8_t& p2 = *(frame.yRow(edgeY - 3U) + pixX + col);
+                uint8_t& p1 = *(frame.yRow(edgeY - 2U) + pixX + col);
+                uint8_t& q1 = *(frame.yRow(edgeY + 1U) + pixX + col);
+                uint8_t& q2 = *(frame.yRow(edgeY + 2U) + pixX + col);
+
+                filterLumaStrong(*yP, p1, p2, *yQ, q1, q2, p3, q3, alpha, beta);
+            }
+            else
+            {
+                int32_t tc0 = cTc0Table[indexA][bs];
+                uint8_t p2 = (edgeY >= 3U) ? *(frame.yRow(edgeY - 3U) + pixX + col) : *yP;
+                uint8_t q2 = (edgeY + 2U < frame.height()) ? *(frame.yRow(edgeY + 2U) + pixX + col) : *yQ;
+                uint8_t& p1 = *(frame.yRow(edgeY - 2U) + pixX + col);
+                uint8_t& q1 = *(frame.yRow(edgeY + 1U) + pixX + col);
+
+                filterLumaWeak(*yP, p1, p2, *yQ, q1, q2, alpha, beta, tc0);
+            }
+        }
+
+        // Chroma horizontal edges
+        if (edge == 0U || edge == 2U)
+        {
+            uint32_t cEdgeY = pixY / 2U + (edge / 2U) * 4U;
+            if (edge == 0U && mbY == 0U) continue;
+
+            for (uint32_t cCol = 0U; cCol < 8U; ++cCol)
+            {
+                uint32_t cX = pixX / 2U + cCol;
+                uint8_t bs = (edge == 0U && isIntra) ? 4U : (isIntra ? 3U : 1U);
+
+                for (int plane = 0; plane < 2; ++plane)
+                {
+                    auto getRow = [&](uint32_t r) -> uint8_t* {
+                        return plane == 0 ? frame.uRow(r) : frame.vRow(r);
+                    };
+
+                    uint8_t* qPtr = getRow(cEdgeY) + cX;
+                    uint8_t* pPtr = getRow(cEdgeY - 1U) + cX;
+                    uint8_t p1val = (cEdgeY >= 2U) ? *(getRow(cEdgeY - 2U) + cX) : *pPtr;
+                    uint8_t q1val = (cEdgeY + 1U < frame.height() / 2U) ? *(getRow(cEdgeY + 1U) + cX) : *qPtr;
+
+                    if (bs == 4U)
+                        filterChromaStrong(*pPtr, p1val, *qPtr, q1val, cAlpha, cBeta);
+                    else if (bs > 0U)
+                        filterChromaWeak(*pPtr, p1val, *qPtr, q1val,
+                                         cAlpha, cBeta, cTc0Table[cIndexA][bs]);
+                }
+            }
+        }
+    }
+}
+
+} // namespace sub0h264
+
+#endif // CROG_SUB0H264_DEBLOCK_HPP

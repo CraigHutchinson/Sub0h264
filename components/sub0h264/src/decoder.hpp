@@ -12,6 +12,7 @@
 #include "annexb.hpp"
 #include "bitstream.hpp"
 #include "cavlc.hpp"
+#include "deblock.hpp"
 #include "dpb.hpp"
 #include "frame.hpp"
 #include "inter_pred.hpp"
@@ -333,6 +334,30 @@ private:
                         decodePInterMb(br, *sps, *pps, sliceQp,
                                        mbTypeRaw, *decodeTarget, *refFrame, mbX, mbY);
                     }
+                }
+            }
+        }
+
+        // Deblocking filter pass (entire frame, after all MBs decoded)
+        if (pps->deblockingFilterControlPresent_ == 0U ||
+            sh.disableDeblockingFilter_ != 1U)
+        {
+            int32_t alphaOff = sh.sliceAlphaC0Offset_;
+            int32_t betaOff = sh.sliceBetaOffset_;
+            int32_t dbChromaQpIdx = std::max(0, std::min(51, sliceQp + pps->chromaQpIndexOffset_));
+            int32_t dbChromaQp = cChromaQpTable[dbChromaQpIdx];
+
+            Frame& dbFrame = (sh.sliceType_ == SliceType::I) ? currentFrame_ : *decodeTarget;
+
+            for (uint32_t my = 0U; my < heightInMbs_; ++my)
+            {
+                for (uint32_t mx = 0U; mx < widthInMbs_; ++mx)
+                {
+                    bool mbIsIntra = (mbMotion_[my * widthInMbs_ + mx].refIdx == -1);
+                    deblockMb(dbFrame, mx, my, sliceQp, dbChromaQp,
+                              mbIsIntra, alphaOff, betaOff,
+                              nnzLuma_.data(), mbMotion_.data(),
+                              widthInMbs_, heightInMbs_);
                 }
             }
         }
