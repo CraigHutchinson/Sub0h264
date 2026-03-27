@@ -23,34 +23,40 @@ static std::vector<uint8_t> loadFile(const char* path)
     return data;
 }
 
-TEST_CASE("CAVLC: coeff_token decode with nC=0")
+TEST_CASE("CAVLC: coeff_token decode with nC=0 TC=0 TO=0")
 {
-    // nC=0 (Table 9-5(a)): code '1' = totalCoeff=0, trailingOnes=0
-    const uint8_t data[] = { 0x80 }; // 1000 0000
+    // nC<2, TC=0, TO=0: code=5, size=6 → binary '000101'
+    // 000101_00 = 0x14
+    const uint8_t data[] = { 0x14 };
     BitReader br(data, 1U);
     CoeffToken ct = decodeCoeffToken(br, 0);
     CHECK(ct.totalCoeff == 0U);
     CHECK(ct.trailingOnes == 0U);
+    CHECK(br.bitOffset() == 6U);
 }
 
 TEST_CASE("CAVLC: coeff_token nC=0 totalCoeff=1 trailingOnes=1")
 {
-    // nC=0: code '01' = totalCoeff=1, trailingOnes=1
-    const uint8_t data[] = { 0x40 }; // 0100 0000
+    // nC<2, TC=1, TO=1: cCoeffTokenCode[0][1][1]=4, size=6 → binary '000100'
+    // 000100_00 = 0x10
+    const uint8_t data[] = { 0x10 };
     BitReader br(data, 1U);
     CoeffToken ct = decodeCoeffToken(br, 0);
     CHECK(ct.totalCoeff == 1U);
     CHECK(ct.trailingOnes == 1U);
+    CHECK(br.bitOffset() == 6U);
 }
 
-TEST_CASE("CAVLC: coeff_token with chroma DC (nC=-1)")
+TEST_CASE("CAVLC: coeff_token chroma DC TC=1 TO=1")
 {
-    // Chroma DC: '1' = totalCoeff=0, trailingOnes=0
-    const uint8_t data[] = { 0x80 }; // 1000 0000
+    // Chroma DC, TC=1, TO=1: cCoeffTokenCodeChroma[1][1]=6, size=6 → binary '000110'
+    // 000110_00 = 0x18
+    const uint8_t data[] = { 0x18 };
     BitReader br(data, 1U);
     CoeffToken ct = decodeCoeffToken(br, -1);
-    CHECK(ct.totalCoeff == 0U);
-    CHECK(ct.trailingOnes == 0U);
+    CHECK(ct.totalCoeff == 1U);
+    CHECK(ct.trailingOnes == 1U);
+    CHECK(br.bitOffset() == 6U);
 }
 
 TEST_CASE("CAVLC: coeff_token with high nC (>=8)")
@@ -119,12 +125,13 @@ TEST_CASE("CAVLC: decodeRunBefore zerosLeft=0")
 
 TEST_CASE("CAVLC: decodeRunBefore zerosLeft=1")
 {
-    // zerosLeft=1: read 1 bit. '0'→run=0, '1'→run=1
-    const uint8_t data0[] = { 0x00 }; // bit='0'
+    // zerosLeft=1, Table 9-10: run=0 code=1 size=1, run=1 code=0 size=1
+    // So bit '1' → run=0, bit '0' → run=1
+    const uint8_t data0[] = { 0x80 }; // bit='1' → run=0
     BitReader br0(data0, 1U);
     CHECK(decodeRunBefore(br0, 1U) == 0U);
 
-    const uint8_t data1[] = { 0x80 }; // bit='1'
+    const uint8_t data1[] = { 0x00 }; // bit='0' → run=1
     BitReader br1(data1, 1U);
     CHECK(decodeRunBefore(br1, 1U) == 1U);
 }
@@ -142,30 +149,20 @@ TEST_CASE("CAVLC: ResidualBlock4x4 with zero coefficients")
         CHECK(block.coeffs[i] == 0);
 }
 
-TEST_CASE("CAVLC: ResidualBlock4x4 with single trailing one")
+TEST_CASE("CAVLC: ResidualBlock4x4 with zero coefficients (proper VLC)")
 {
-    // nC=0: '01' = totalCoeff=1, trailingOnes=1
-    // Then: 1 sign bit (0=positive → +1)
-    // Then: totalZeros decode
-    // '01' '0' then totalZeros bits
-    const uint8_t data[] = { 0x40, 0x80 }; // 01 0 1... (sign=+, totalZeros prefix=0→0)
-    BitReader br(data, 2U);
+    // nC=0, TC=0, TO=0: code=5, size=6 → '000101'
+    // Then no more data needed (totalCoeff=0)
+    // 000101_00 = 0x14
+    const uint8_t data[] = { 0x14 };
+    BitReader br(data, 1U);
     ResidualBlock4x4 block;
     Result res = decodeResidualBlock4x4(br, 0, cMaxCoeff4x4, 0U, block);
     CHECK(res == Result::Ok);
-    CHECK(block.totalCoeff == 1U);
+    CHECK(block.totalCoeff == 0U);
 
-    // Should have exactly one +1 coefficient somewhere
-    int32_t sum = 0;
-    uint32_t nonZeroCount = 0U;
     for (uint32_t i = 0U; i < 16U; ++i)
-    {
-        sum += block.coeffs[i];
-        if (block.coeffs[i] != 0)
-            ++nonZeroCount;
-    }
-    CHECK(nonZeroCount == 1U);
-    CHECK(sum == 1);
+        CHECK(block.coeffs[i] == 0);
 }
 
 TEST_CASE("CAVLC: IMbType helpers")

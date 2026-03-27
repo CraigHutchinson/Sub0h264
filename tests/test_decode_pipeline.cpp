@@ -47,18 +47,16 @@ TEST_CASE("Pipeline: H264Decoder decodes flat_black IDR")
     CHECK(frame->width() == 640U);
     CHECK(frame->height() == 480U);
 
-    // Verify frame was produced with correct dimensions.
-    // Note: avg_Y is not yet bit-exact due to simplified CAVLC VLC tables
-    // (Phase 4 note). Full VLC tables needed for CRC-matching output.
+    // Flat black frame: Y should be near 0 (all-black content).
+    // BT.601 "legal black" is Y=16, but ffmpeg testsrc black is Y=0.
     uint64_t sum = yPlaneSum(*frame);
     double avgY = static_cast<double>(sum) / (640.0 * 480.0);
 
     MESSAGE("flat_black decoded: " << frame->width() << "x" << frame->height()
-            << " avg_Y=" << avgY << " (not yet bit-exact — simplified CAVLC)");
+            << " avg_Y=" << avgY);
 
-    // Pipeline produces output in valid pixel range
-    CHECK(avgY >= 0.0);
-    CHECK(avgY <= 255.0);
+    // Average Y should be very low for an all-black frame
+    CHECK(avgY < 5.0);
 }
 
 TEST_CASE("Pipeline: H264Decoder processes SPS/PPS from baseline stream")

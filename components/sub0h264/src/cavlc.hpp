@@ -12,6 +12,7 @@
 #define CROG_SUB0H264_CAVLC_HPP
 
 #include "bitstream.hpp"
+#include "cavlc_tables.hpp"
 #include "tables.hpp"
 #include "sub0h264/sub0h264_types.hpp"
 
@@ -40,116 +41,112 @@ struct CoeffToken
     uint8_t trailingOnes;  ///< Number of trailing ±1 coefficients [0-3]
 };
 
+/** Match a VLC code against the bitstream.
+ *  Tries all (trailingOnes, totalCoeff) combinations for a given nC range.
+ *  Returns the match with the shortest code that matches the peeked bits.
+ */
+inline CoeffToken matchCoeffTokenTable(BitReader& br, uint32_t tableIdx) noexcept
+{
+    // Peek enough bits for the longest possible code (16 bits)
+    uint32_t peekBuf = br.peekBits(16U);
+
+    // Search all (trailingOnes, totalCoeff) combinations, preferring shortest match
+    CoeffToken best = { 0U, 0U };
+    uint8_t bestSize = 255U;
+
+    for (uint32_t to = 0U; to < 4U; ++to)
+    {
+        for (uint32_t tc = 0U; tc < 16U; ++tc)
+        {
+            // Skip invalid combinations: trailing ones can't exceed total coefficients
+            if (to > tc)
+                continue;
+
+            uint8_t codeSize = cCoeffTokenSize[tableIdx][to][tc];
+            if (codeSize == 0U || codeSize > 16U)
+                continue;
+
+            uint8_t codeVal = cCoeffTokenCode[tableIdx][to][tc];
+
+            // Extract top codeSize bits from peek buffer and compare
+            uint32_t mask = (1U << codeSize) - 1U;
+            uint32_t peeked = (peekBuf >> (16U - codeSize)) & mask;
+
+            if (peeked == codeVal && codeSize < bestSize)
+            {
+                best.totalCoeff = static_cast<uint8_t>(tc);
+                best.trailingOnes = static_cast<uint8_t>(to);
+                bestSize = codeSize;
+            }
+        }
+    }
+
+    br.skipBits(bestSize);
+    return best;
+}
+
 /** Decode coeff_token from bitstream using context nC.
  *
- *  nC (number of coefficients context) is derived from neighboring blocks:
- *  nC = (leftNnz + topNnz + 1) >> 1
+ *  Uses full ITU-T H.264 Table 9-5 VLC lookup tables for spec-compliant decoding.
+ *  nC (number of coefficients context) is derived from neighboring blocks.
  *
  *  @param br   Bitstream reader
- *  @param nC   Context value [0-16, or -1 for chroma DC, -2 for luma DC of I16x16]
+ *  @param nC   Context value [0-16, or -1 for chroma DC]
  *  @return Decoded coeff_token
  *
- *  Reference: ITU-T H.264 §9.2.1, Tables 9-5(a-d)
+ *  Reference: ITU-T H.264 §9.2.1, Tables 9-5(a-e)
  */
 inline CoeffToken decodeCoeffToken(BitReader& br, int32_t nC) noexcept
 {
-    CoeffToken ct = { 0U, 0U };
-
     if (nC < 0)
     {
-        // Chroma DC or special case — use simplified table
-        // For chroma DC (nC == -1): Table 9-5(d)
-        uint32_t code = br.peekBits(8U);
-        if (code >= 128U)      { ct = {0U, 0U}; br.skipBits(1U); }
-        else if (code >= 64U)  { ct = {1U, 1U}; br.skipBits(2U); }
-        else if (code >= 32U)  { ct = {2U, 1U}; br.skipBits(3U); }
-        else if (code >= 24U)  { ct = {3U, 1U}; br.skipBits(4U); }
-        else if (code >= 20U)  { ct = {4U, 1U}; br.skipBits(5U); }
-        else if (code >= 16U)  { ct = {1U, 0U}; br.skipBits(5U); }
-        else if (code >= 12U)  { ct = {2U, 2U}; br.skipBits(4U); }
-        else if (code >= 10U)  { ct = {3U, 2U}; br.skipBits(5U); }
-        else if (code >= 8U)   { ct = {4U, 2U}; br.skipBits(5U); }
-        else if (code >= 7U)   { ct = {3U, 3U}; br.skipBits(6U); }
-        else if (code >= 6U)   { ct = {4U, 3U}; br.skipBits(6U); }
-        else if (code >= 4U)   { ct = {2U, 0U}; br.skipBits(7U); }
-        else if (code >= 2U)   { ct = {3U, 0U}; br.skipBits(8U); }
-        else                   { ct = {4U, 0U}; br.skipBits(8U); }
-        return ct;
-    }
+        // Chroma DC: Table 9-5(d) — max 4 coefficients
+        uint32_t peekBuf = br.peekBits(8U);
+        CoeffToken best = { 0U, 0U };
+        uint8_t bestSize = 255U;
 
-    if (nC < 2)
-    {
-        // Table 9-5(a): 0 <= nC < 2
-        uint32_t code = br.peekBits(16U);
-        if      (code >= 0x8000U) { ct = {0U, 0U}; br.skipBits(1U); }
-        else if (code >= 0x2000U) { ct = {1U, 1U}; br.skipBits(2U); }   // 01
-        else if (code >= 0x1000U) { ct = {2U, 2U}; br.skipBits(4U); }   // 0001xx → need more detail
-        else
+        for (uint32_t to = 0U; to < 4U; ++to)
         {
-            // Fall through to bit-by-bit decode for longer codes
-            // Count leading zeros for prefix
-            uint32_t lz = 0U;
-            while (lz < 16U && br.peekBits(1U) == 0U)
+            for (uint32_t tc = 0U; tc < 4U; ++tc)
             {
-                br.skipBits(1U);
-                ++lz;
+                if (to > tc)
+                    continue;
+                uint8_t codeSize = cCoeffTokenSizeChroma[to][tc];
+                if (codeSize == 0U)
+                    continue;
+                uint8_t codeVal = cCoeffTokenCodeChroma[to][tc];
+                uint32_t peeked = (peekBuf >> (8U - codeSize)) & ((1U << codeSize) - 1U);
+                if (peeked == codeVal && codeSize < bestSize)
+                {
+                    best.totalCoeff = static_cast<uint8_t>(tc);
+                    best.trailingOnes = static_cast<uint8_t>(to);
+                    bestSize = codeSize;
+                }
             }
-            br.skipBits(1U); // skip the '1' bit
-
-            // For nC<2, total_coeff and trailing_ones are encoded with varying-length codes
-            // This is a simplified decoder — for production, a full table would be used
-            uint32_t suffix = (lz > 0U) ? br.readBits(lz) : 0U;
-            uint32_t value = (1U << lz) - 1U + suffix;
-
-            // Map to total_coeff, trailing_ones (simplified — covers common cases)
-            if (value == 0U)      ct = {1U, 1U};
-            else if (value <= 2U) { ct.totalCoeff = static_cast<uint8_t>(value); ct.trailingOnes = static_cast<uint8_t>(std::min(value, 3U)); }
-            else                  { ct.totalCoeff = static_cast<uint8_t>(std::min(value, 16U)); ct.trailingOnes = static_cast<uint8_t>(std::min(value & 3U, 3U)); }
         }
-        return ct;
+        br.skipBits(bestSize);
+        return best;
     }
 
-    if (nC < 4)
+    if (nC >= 8)
     {
-        // Table 9-5(b): 2 <= nC < 4
-        uint32_t code = br.peekBits(14U);
-        if      (code >= 0x2000U) { ct = {0U, 0U}; br.skipBits(2U); }   // 11
-        else if (code >= 0x1800U) { ct = {1U, 1U}; br.skipBits(2U); }   // 10
-        else
-        {
-            // Longer codes — simplified
-            uint32_t lz = 0U;
-            while (lz < 14U && br.peekBits(1U) == 0U)
-            {
-                br.skipBits(1U);
-                ++lz;
-            }
-            br.skipBits(1U);
-            uint32_t suffix = (lz > 0U) ? br.readBits(std::min(lz, 4U)) : 0U;
-            uint32_t value = (1U << lz) - 1U + suffix;
-            ct.totalCoeff = static_cast<uint8_t>(std::min(value + 1U, 16U));
-            ct.trailingOnes = static_cast<uint8_t>(std::min(value & 3U, 3U));
-        }
-        return ct;
-    }
-
-    if (nC < 8)
-    {
-        // Table 9-5(c): 4 <= nC < 8
-        // Uses 6-bit fixed-length codes
+        // Table 9-5(e): fixed 6-bit code for nC >= 8
         uint32_t code = br.readBits(6U);
+        CoeffToken ct;
         ct.trailingOnes = static_cast<uint8_t>(code & 3U);
-        ct.totalCoeff = static_cast<uint8_t>((code >> 2U) + ct.trailingOnes);
-        if (ct.totalCoeff > 16U) ct.totalCoeff = 16U;
+        ct.totalCoeff = static_cast<uint8_t>((code >> 2U));
+        if (ct.trailingOnes > ct.totalCoeff)
+            ct.trailingOnes = ct.totalCoeff;
         return ct;
     }
 
-    // nC >= 8: fixed-length 6-bit code — Table 9-5(e)
-    uint32_t code = br.readBits(6U);
-    ct.trailingOnes = static_cast<uint8_t>(code & 3U);
-    ct.totalCoeff = static_cast<uint8_t>((code >> 2U) + ct.trailingOnes);
-    if (ct.totalCoeff > 16U) ct.totalCoeff = 16U;
-    return ct;
+    // Tables 9-5(a), (b), (c): select table by nC range
+    uint32_t tableIdx;
+    if (nC < 2)       tableIdx = 0U;
+    else if (nC < 4)  tableIdx = 1U;
+    else              tableIdx = 2U;  // 4 <= nC < 8
+
+    return matchCoeffTokenTable(br, tableIdx);
 }
 
 // ── Level decoding — ITU-T H.264 §9.2.2 ────────────────────────────────
@@ -197,76 +194,112 @@ inline int32_t decodeLevel(BitReader& br, uint32_t& suffixLen) noexcept
 
 // ── Total zeros decoding — ITU-T H.264 §9.2.3 ──────────────────────────
 
-/** Decode total_zeros for 4x4 block.
+/** Decode total_zeros for 4x4 block using spec VLC tables.
  *  @param br          Bitstream reader
  *  @param totalCoeff  Number of non-zero coefficients [1-15]
  *  @return Total number of zero coefficients before the last non-zero
+ *
+ *  Reference: ITU-T H.264 §9.2.3, Tables 9-7/9-8
  */
 inline uint32_t decodeTotalZeros(BitReader& br, uint32_t totalCoeff) noexcept
 {
-    // ITU-T H.264 Table 9-7: VLC for total_zeros
-    // Decode using bit-by-bit leading-zero prefix approach
-    if (totalCoeff >= 16U)
+    if (totalCoeff == 0U || totalCoeff >= 16U)
         return 0U;
 
     uint32_t maxZeros = 16U - totalCoeff;
+    uint32_t tableOffset = cTotalZerosIndex[totalCoeff - 1U];
+    uint32_t tableLen = (totalCoeff < 15U)
+        ? (cTotalZerosIndex[totalCoeff] - tableOffset)
+        : (135U - tableOffset);
 
-    // Simplified: use prefix + suffix decoding
-    uint32_t prefix = 0U;
-    while (prefix < 9U && br.readBit() == 0U)
-        ++prefix;
+    uint32_t peekBuf = br.peekBits(9U); // Max total_zeros VLC is 9 bits
 
-    // The mapping from (totalCoeff, prefix) to total_zeros varies per table
-    // For correctness, this would need full VLC tables. Simplified here
-    // to use the prefix as a reasonable approximation for initial testing.
-    uint32_t totalZeros = std::min(prefix, maxZeros);
-    return totalZeros;
+    // Search for matching VLC code
+    for (uint32_t tzVal = 0U; tzVal < tableLen; ++tzVal)
+    {
+        uint8_t codeSize = cTotalZerosSize[tableOffset + tzVal];
+        uint8_t codeVal  = cTotalZerosCode[tableOffset + tzVal];
+
+        if (codeSize == 0U || codeSize > 9U)
+            continue;
+
+        uint32_t peeked = (peekBuf >> (9U - codeSize)) & ((1U << codeSize) - 1U);
+        if (peeked == codeVal)
+        {
+            br.skipBits(codeSize);
+            return std::min(tzVal, maxZeros);
+        }
+    }
+
+    // Fallback: consume 1 bit, return 0
+    br.skipBits(1U);
+    return 0U;
 }
 
 // ── Run before decoding — ITU-T H.264 §9.2.3 ───────────────────────────
 
-/** Decode run_before (zeros before a coefficient).
+/** Decode run_before (zeros before a coefficient) using spec VLC tables.
  *  @param br         Bitstream reader
  *  @param zerosLeft  Remaining zeros to distribute
  *  @return Run length before this coefficient
+ *
+ *  Reference: ITU-T H.264 §9.2.3, Table 9-10
  */
 inline uint32_t decodeRunBefore(BitReader& br, uint32_t zerosLeft) noexcept
 {
     if (zerosLeft == 0U)
         return 0U;
 
-    // ITU-T H.264 Table 9-10
-    if (zerosLeft == 1U)
-        return br.readBit(); // 0→0, 1→1
-
-    if (zerosLeft == 2U)
-    {
-        uint32_t code = br.peekBits(2U);
-        if (code >= 2U) { br.skipBits(1U); return 0U; }
-        if (code == 1U) { br.skipBits(2U); return 1U; }
-        br.skipBits(2U); return 2U;
-    }
-
     if (zerosLeft <= 6U)
     {
-        uint32_t code = br.peekBits(3U);
-        if (code >= 4U) { br.skipBits(2U); return static_cast<uint32_t>(code >= 6U ? 0U : 1U); }
-        if (code == 3U) { br.skipBits(2U); return 2U; }
-        if (code == 2U) { br.skipBits(3U); return 3U; }
-        if (code == 1U) { br.skipBits(3U); return std::min(zerosLeft - 1U, 4U); }
-        // code == 0
-        br.skipBits(3U);
-        return std::min(zerosLeft, 5U);
+        uint32_t tableOffset = cRunBeforeIndex[zerosLeft - 1U];
+        uint32_t tableLen = (zerosLeft < 6U)
+            ? (cRunBeforeIndex[zerosLeft] - tableOffset)
+            : (27U - tableOffset);
+
+        uint32_t peekBuf = br.peekBits(3U);
+
+        for (uint32_t runVal = 0U; runVal < tableLen; ++runVal)
+        {
+            uint8_t codeSize = cRunBeforeSize[tableOffset + runVal];
+            uint8_t codeVal  = cRunBeforeCode[tableOffset + runVal];
+
+            uint32_t peeked = (peekBuf >> (3U - codeSize)) & ((1U << codeSize) - 1U);
+            if (peeked == codeVal)
+            {
+                br.skipBits(codeSize);
+                return runVal;
+            }
+        }
+        br.skipBits(1U);
+        return 0U;
     }
 
-    // zerosLeft > 6: prefix coding
-    uint32_t prefix = 0U;
-    while (prefix < 11U && br.readBit() == 0U)
-        ++prefix;
+    // zerosLeft > 6: Table 9-10 row 7+ uses prefix coding
+    // VLC: 0..6 have 3-bit codes, 7+ use leading-zeros prefix
+    uint32_t tableOffset = cRunBeforeIndex[6U]; // zerosLeft=7 table
+    uint32_t peekBuf = br.peekBits(11U);
 
-    if (prefix <= 6U)
-        return prefix;
-    return std::min(prefix, zerosLeft);
+    for (uint32_t runVal = 0U; runVal < 15U && runVal <= zerosLeft; ++runVal)
+    {
+        uint32_t idx = tableOffset + runVal;
+        if (idx >= 42U) break;
+
+        uint8_t codeSize = cRunBeforeSize[idx];
+        uint8_t codeVal  = cRunBeforeCode[idx];
+
+        if (codeSize > 11U) break;
+
+        uint32_t peeked = (peekBuf >> (11U - codeSize)) & ((1U << codeSize) - 1U);
+        if (peeked == codeVal)
+        {
+            br.skipBits(codeSize);
+            return runVal;
+        }
+    }
+
+    br.skipBits(1U);
+    return 0U;
 }
 
 // ── 4x4 residual block decoder — ITU-T H.264 §9.2 ─────────────────────
