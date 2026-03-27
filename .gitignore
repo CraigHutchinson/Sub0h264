@@ -56,3 +56,6 @@ dependencies.lock
 
 # IDE
 CMakeUserPresets.json
+
+# Reference code (cloned for study, not part of project)
+docs/reference/
