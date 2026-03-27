@@ -7,6 +7,7 @@ add_executable(Sub0h264_Tests
     test_slice.cpp
     test_cavlc.cpp
     test_iframe.cpp
+    test_decode_pipeline.cpp
 )
 
 target_link_libraries(Sub0h264_Tests PRIVATE Sub0h264::Sub0h264)

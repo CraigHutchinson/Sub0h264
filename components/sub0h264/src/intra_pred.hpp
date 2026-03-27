@@ -11,6 +11,7 @@
 #define CROG_SUB0H264_INTRA_PRED_HPP
 
 #include "frame.hpp"
+#include "transform.hpp"  // clipU8
 
 #include <cstdint>
 #include <cstring>
