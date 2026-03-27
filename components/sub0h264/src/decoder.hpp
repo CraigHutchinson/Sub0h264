@@ -12,8 +12,11 @@
 #include "annexb.hpp"
 #include "bitstream.hpp"
 #include "cavlc.hpp"
+#include "dpb.hpp"
 #include "frame.hpp"
+#include "inter_pred.hpp"
 #include "intra_pred.hpp"
+#include "motion.hpp"
 #include "nal.hpp"
 #include "param_sets.hpp"
 #include "pps.hpp"
@@ -113,6 +116,9 @@ public:
     /** @return Most recently decoded frame (nullptr if none). */
     const Frame* currentFrame() const noexcept
     {
+        const Frame* dpbFrame = dpb_.currentFrame();
+        if (dpbFrame && dpbFrame->isAllocated())
+            return dpbFrame;
         return currentFrame_.isAllocated() ? &currentFrame_ : nullptr;
     }
 
@@ -125,12 +131,18 @@ public:
 private:
     ParamSets paramSets_;
     Frame currentFrame_;
+    Dpb dpb_;
     uint32_t frameCount_ = 0U;
+    bool dpbInitialized_ = false;
 
     // Per-frame MB context: non-zero coefficient counts for CAVLC context
     std::vector<uint8_t> nnzLuma_;    // [mbIdx * 16 + blkIdx]
     std::vector<uint8_t> nnzCb_;      // [mbIdx * 4 + blkIdx]
     std::vector<uint8_t> nnzCr_;      // [mbIdx * 4 + blkIdx]
+
+    // Per-frame MV context for inter prediction
+    std::vector<MbMotionInfo> mbMotion_;  // [mbIdx]
+
     uint16_t widthInMbs_ = 0U;
     uint16_t heightInMbs_ = 0U;
 
@@ -210,44 +222,146 @@ private:
         if (parseSliceHeader(br, *sps, *pps, isIdr, nal.refIdc, sh) != Result::Ok)
             return DecodeStatus::Error;
 
-        // Allocate frame if needed
+        // Initialize DPB and allocate context on first SPS use
+        widthInMbs_ = sps->widthInMbs_;
+        heightInMbs_ = sps->heightInMbs_;
+        uint32_t totalMbs = static_cast<uint32_t>(widthInMbs_) * heightInMbs_;
+
+        if (!dpbInitialized_)
+        {
+            dpb_.init(sps->width(), sps->height(), sps->numRefFrames_);
+            dpbInitialized_ = true;
+        }
+
+        // Get a frame buffer from the DPB to decode into
+        Frame* decodeTarget = dpb_.getDecodeTarget();
+        if (!decodeTarget)
+            return DecodeStatus::Error;
+
+        // Also keep a reference in currentFrame_ for backwards compatibility
         if (!currentFrame_.isAllocated() ||
             currentFrame_.width() != sps->width() ||
             currentFrame_.height() != sps->height())
         {
             currentFrame_.allocate(sps->width(), sps->height());
-            widthInMbs_ = sps->widthInMbs_;
-            heightInMbs_ = sps->heightInMbs_;
-            uint32_t totalMbs = static_cast<uint32_t>(widthInMbs_) * heightInMbs_;
-            nnzLuma_.resize(totalMbs * 16U, 0U);
-            nnzCb_.resize(totalMbs * 4U, 0U);
-            nnzCr_.resize(totalMbs * 4U, 0U);
         }
 
-        // Clear NNZ context for new frame (IDR resets everything)
+        // Resize context arrays
+        nnzLuma_.resize(totalMbs * 16U, 0U);
+        nnzCb_.resize(totalMbs * 4U, 0U);
+        nnzCr_.resize(totalMbs * 4U, 0U);
+        mbMotion_.resize(totalMbs);
+
+        // Clear context for new frame
         if (isIdr)
         {
-            std::fill(nnzLuma_.begin(), nnzLuma_.end(), 0U);
-            std::fill(nnzCb_.begin(), nnzCb_.end(), 0U);
-            std::fill(nnzCr_.begin(), nnzCr_.end(), 0U);
+            dpb_.flush();
+            // Re-get decode target after flush
+            decodeTarget = dpb_.getDecodeTarget();
         }
+
+        std::fill(nnzLuma_.begin(), nnzLuma_.end(), 0U);
+        std::fill(nnzCb_.begin(), nnzCb_.end(), 0U);
+        std::fill(nnzCr_.begin(), nnzCr_.end(), 0U);
+        std::fill(mbMotion_.begin(), mbMotion_.end(), MbMotionInfo{});
 
         // Compute effective QP
         int32_t sliceQp = pps->picInitQp_ + sh.sliceQpDelta_;
 
-        // Only decode I-slices for now
-        if (sh.sliceType_ != SliceType::I)
-            return DecodeStatus::NeedMoreData;
+        // Get reference frame for P-slices
+        const Frame* refFrame = dpb_.getReference(0U);
 
         // Decode macroblocks
-        for (uint32_t mbAddr = sh.firstMbInSlice_; mbAddr < sps->totalMbs(); ++mbAddr)
+        if (sh.sliceType_ == SliceType::I)
         {
-            uint32_t mbX = mbAddr % widthInMbs_;
-            uint32_t mbY = mbAddr / widthInMbs_;
-
-            if (!decodeIntraMb(br, *sps, *pps, sh, sliceQp, mbX, mbY))
-                break; // Slice ended or error
+            for (uint32_t mbAddr = sh.firstMbInSlice_; mbAddr < totalMbs; ++mbAddr)
+            {
+                uint32_t mbX = mbAddr % widthInMbs_;
+                uint32_t mbY = mbAddr / widthInMbs_;
+                if (!decodeIntraMb(br, *sps, *pps, sh, sliceQp, mbX, mbY))
+                    break;
+            }
         }
+        else if (sh.sliceType_ == SliceType::P)
+        {
+            if (!refFrame)
+            {
+                // No reference available — cannot decode P-slice
+                // This should not happen in a valid stream
+                return DecodeStatus::Error;
+            }
+
+            uint32_t mbSkipRun = 0U;
+            bool needSkipRun = true;
+
+            for (uint32_t mbAddr = sh.firstMbInSlice_; mbAddr < totalMbs; ++mbAddr)
+            {
+                uint32_t mbX = mbAddr % widthInMbs_;
+                uint32_t mbY = mbAddr / widthInMbs_;
+
+                if (needSkipRun)
+                {
+                    mbSkipRun = br.readUev();
+                    needSkipRun = false;
+                }
+
+                if (mbSkipRun > 0U)
+                {
+                    // P_Skip MB: infer MV from neighbors, no residual
+                    decodePSkipMb(*decodeTarget, *refFrame, mbX, mbY);
+                    --mbSkipRun;
+                    if (mbSkipRun == 0U)
+                        needSkipRun = true;
+                }
+                else
+                {
+                    // Read mb_type
+                    uint32_t mbTypeRaw = br.readUev();
+                    needSkipRun = true;
+
+                    if (mbTypeRaw >= 5U)
+                    {
+                        // Intra MB within P-slice (mb_type offset by 5)
+                        mbTypeRaw -= 5U;
+                        if (!decodeIntraMbInPSlice(br, *sps, *pps, sh, sliceQp,
+                                                    mbTypeRaw, *decodeTarget, mbX, mbY))
+                            break;
+                    }
+                    else
+                    {
+                        // P-MB: inter prediction
+                        decodePInterMb(br, *sps, *pps, sliceQp,
+                                       mbTypeRaw, *decodeTarget, *refFrame, mbX, mbY);
+                    }
+                }
+            }
+        }
+
+        // Sync frames: I-slice decodes into currentFrame_, P-slice into decodeTarget
+        if (sh.sliceType_ == SliceType::I && decodeTarget->isAllocated())
+        {
+            // Copy currentFrame_ → decodeTarget so DPB has the I-frame
+            std::memcpy(decodeTarget->yData(), currentFrame_.yData(),
+                        currentFrame_.yStride() * currentFrame_.height());
+            std::memcpy(decodeTarget->uData(), currentFrame_.uData(),
+                        currentFrame_.uvStride() * (currentFrame_.height() / 2U));
+            std::memcpy(decodeTarget->vData(), currentFrame_.vData(),
+                        currentFrame_.uvStride() * (currentFrame_.height() / 2U));
+        }
+        else if (decodeTarget->isAllocated())
+        {
+            // Copy decodeTarget → currentFrame_ for public API access
+            std::memcpy(currentFrame_.yData(), decodeTarget->yData(),
+                        currentFrame_.yStride() * currentFrame_.height());
+            std::memcpy(currentFrame_.uData(), decodeTarget->uData(),
+                        currentFrame_.uvStride() * (currentFrame_.height() / 2U));
+            std::memcpy(currentFrame_.vData(), decodeTarget->vData(),
+                        currentFrame_.uvStride() * (currentFrame_.height() / 2U));
+        }
+
+        // Mark as reference for future P-frames
+        if (nal.refIdc != 0U)
+            dpb_.markAsReference(sh.frameNum_);
 
         ++frameCount_;
         return DecodeStatus::FrameDecoded;
@@ -610,6 +724,240 @@ private:
             uint8_t* outCrPtr = mbV + blkY * uvStride + blkX;
             inverseDct4x4AddPred(crCoeffs, predCrPtr, 8U, outCrPtr, uvStride);
         }
+    }
+
+    // ── P-frame decode methods ──────────────────────────────────────────
+
+    /** Get MV neighbor info for a macroblock. */
+    MbMotionInfo getMbMotionNeighbor(uint32_t mbX, uint32_t mbY, int32_t dx, int32_t dy) const noexcept
+    {
+        int32_t nx = static_cast<int32_t>(mbX) + dx;
+        int32_t ny = static_cast<int32_t>(mbY) + dy;
+        if (nx < 0 || ny < 0 || nx >= widthInMbs_ || ny >= heightInMbs_)
+            return {};
+        return mbMotion_[ny * widthInMbs_ + nx];
+    }
+
+    /** Decode a P_Skip macroblock: inferred MV, no residual. */
+    void decodePSkipMb(Frame& target, const Frame& ref,
+                        uint32_t mbX, uint32_t mbY) noexcept
+    {
+        // Infer MV from spatial neighbors (ref_idx = 0)
+        MbMotionInfo left    = getMbMotionNeighbor(mbX, mbY, -1, 0);
+        MbMotionInfo top     = getMbMotionNeighbor(mbX, mbY, 0, -1);
+        MbMotionInfo topRight = getMbMotionNeighbor(mbX, mbY, 1, -1);
+        if (!topRight.available)
+            topRight = getMbMotionNeighbor(mbX, mbY, -1, -1); // Use top-left
+
+        // Special skip MV derivation: if left or top is intra or has MV=(0,0),ref=0
+        // then predicted MV is (0,0). ITU-T H.264 §8.4.1.1
+        MotionVector skipMv = {0, 0};
+        if (left.available && top.available &&
+            !(left.refIdx == 0 && left.mv.x == 0 && left.mv.y == 0) &&
+            !(top.refIdx == 0 && top.mv.x == 0 && top.mv.y == 0))
+        {
+            skipMv = computeMvPredictor(left, top, topRight, 0);
+        }
+
+        // Store MV for this MB
+        uint32_t mbIdx = mbY * widthInMbs_ + mbX;
+        mbMotion_[mbIdx] = { skipMv, 0, true };
+
+        // Motion compensation: copy 16x16 block from reference
+        int32_t refX = static_cast<int32_t>(mbX * cMbSize) + (skipMv.x >> 2);
+        int32_t refY = static_cast<int32_t>(mbY * cMbSize) + (skipMv.y >> 2);
+        uint32_t dx = static_cast<uint32_t>(skipMv.x) & 3U;
+        uint32_t dy = static_cast<uint32_t>(skipMv.y) & 3U;
+
+        // Luma
+        lumaMotionComp(ref, refX, refY, dx, dy, cMbSize, cMbSize,
+                        target.yMb(mbX, mbY), target.yStride());
+
+        // Chroma — derive from luma MV (divide by 2, eighth-pel)
+        int32_t chromaRefX = static_cast<int32_t>(mbX * cChromaBlockSize) + (skipMv.x >> 3);
+        int32_t chromaRefY = static_cast<int32_t>(mbY * cChromaBlockSize) + (skipMv.y >> 3);
+        uint32_t cdx = static_cast<uint32_t>(skipMv.x) & 7U;
+        uint32_t cdy = static_cast<uint32_t>(skipMv.y) & 7U;
+
+        chromaMotionComp(ref, chromaRefX, chromaRefY, cdx, cdy,
+                         cChromaBlockSize, cChromaBlockSize, true,
+                         target.uMb(mbX, mbY), target.uvStride());
+        chromaMotionComp(ref, chromaRefX, chromaRefY, cdx, cdy,
+                         cChromaBlockSize, cChromaBlockSize, false,
+                         target.vMb(mbX, mbY), target.uvStride());
+
+        // NNZ = 0 for skip MBs
+        std::fill_n(&nnzLuma_[mbIdx * 16U], 16U, static_cast<uint8_t>(0U));
+    }
+
+    /** Decode a P-inter macroblock (16x16 only for now). */
+    void decodePInterMb(BitReader& br, const Sps& sps, const Pps& pps,
+                         int32_t sliceQp, uint32_t mbTypeRaw,
+                         Frame& target, const Frame& ref,
+                         uint32_t mbX, uint32_t mbY) noexcept
+    {
+        // For now: only P_L0_16x16 (mbTypeRaw == 0)
+        // mbTypeRaw: 0=16x16, 1=16x8, 2=8x16, 3=8x8, 4=8x8ref0
+
+        // Read ref_idx_l0 (only if num_ref_frames > 1, simplified: skip for 1 ref)
+        // For baseline with single ref, ref_idx is always 0
+
+        // Read MVD
+        int16_t mvdX = static_cast<int16_t>(br.readSev());
+        int16_t mvdY = static_cast<int16_t>(br.readSev());
+
+        // Compute MV predictor
+        MbMotionInfo left    = getMbMotionNeighbor(mbX, mbY, -1, 0);
+        MbMotionInfo top     = getMbMotionNeighbor(mbX, mbY, 0, -1);
+        MbMotionInfo topRight = getMbMotionNeighbor(mbX, mbY, 1, -1);
+        if (!topRight.available)
+            topRight = getMbMotionNeighbor(mbX, mbY, -1, -1);
+
+        MotionVector mvp = computeMvPredictor(left, top, topRight, 0);
+        MotionVector mv = { static_cast<int16_t>(mvp.x + mvdX),
+                            static_cast<int16_t>(mvp.y + mvdY) };
+
+        // Store MV
+        uint32_t mbIdx = mbY * widthInMbs_ + mbX;
+        mbMotion_[mbIdx] = { mv, 0, true };
+
+        // Motion compensation: luma
+        int32_t refX = static_cast<int32_t>(mbX * cMbSize) + (mv.x >> 2);
+        int32_t refY = static_cast<int32_t>(mbY * cMbSize) + (mv.y >> 2);
+        uint32_t dx = static_cast<uint32_t>(mv.x) & 3U;
+        uint32_t dy = static_cast<uint32_t>(mv.y) & 3U;
+
+        uint8_t predLuma[256];
+        lumaMotionComp(ref, refX, refY, dx, dy, cMbSize, cMbSize, predLuma, cMbSize);
+
+        // Chroma motion comp
+        int32_t chromaRefX = static_cast<int32_t>(mbX * cChromaBlockSize) + (mv.x >> 3);
+        int32_t chromaRefY = static_cast<int32_t>(mbY * cChromaBlockSize) + (mv.y >> 3);
+        uint32_t cdx = static_cast<uint32_t>(mv.x) & 7U;
+        uint32_t cdy = static_cast<uint32_t>(mv.y) & 7U;
+
+        uint8_t predU[64], predV[64];
+        chromaMotionComp(ref, chromaRefX, chromaRefY, cdx, cdy,
+                         cChromaBlockSize, cChromaBlockSize, true, predU, cChromaBlockSize);
+        chromaMotionComp(ref, chromaRefX, chromaRefY, cdx, cdy,
+                         cChromaBlockSize, cChromaBlockSize, false, predV, cChromaBlockSize);
+
+        // Read CBP
+        uint32_t cbpCode = br.readUev();
+        uint8_t cbp = 0U;
+        if (cbpCode < 48U)
+            cbp = cCbpTable[cbpCode][1]; // Inter CBP mapping
+        uint8_t cbpLuma = cbp & 0x0FU;
+        uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
+
+        int32_t qp = sliceQp;
+        if (cbp > 0U)
+        {
+            int32_t qpDelta = br.readSev();
+            qp += qpDelta;
+            if (qp < 0) qp += 52;
+            if (qp > 51) qp -= 52;
+        }
+
+        // Decode luma residual and reconstruct
+        uint32_t yStride = target.yStride();
+        for (uint32_t blkIdx = 0U; blkIdx < 16U; ++blkIdx)
+        {
+            uint32_t blkX = (blkIdx & 3U) * 4U;
+            uint32_t blkY = (blkIdx >> 2U) * 4U;
+
+            uint32_t group8x8 = (blkY >= 8U ? 2U : 0U) + (blkX >= 8U ? 1U : 0U);
+            bool hasResidual = (cbpLuma >> group8x8) & 1U;
+
+            int16_t coeffs[16] = {};
+            if (hasResidual)
+            {
+                int32_t nc = getLumaNc(mbX, mbY, blkIdx);
+                ResidualBlock4x4 resBlock;
+                decodeResidualBlock4x4(br, nc, cMaxCoeff4x4, 0U, resBlock);
+                for (uint32_t i = 0U; i < 16U; ++i)
+                    coeffs[i] = resBlock.coeffs[i];
+                nnzLuma_[mbIdx * 16U + blkIdx] = resBlock.totalCoeff;
+                inverseQuantize4x4(coeffs, qp);
+            }
+
+            uint8_t* predPtr = predLuma + blkY * cMbSize + blkX;
+            uint8_t* outPtr = target.yMb(mbX, mbY) + blkY * yStride + blkX;
+            inverseDct4x4AddPred(coeffs, predPtr, cMbSize, outPtr, yStride);
+        }
+
+        // Decode chroma residual and reconstruct
+        int32_t chromaQpIdx = std::max(0, std::min(51, qp + pps.chromaQpIndexOffset_));
+        int32_t chromaQp = cChromaQpTable[chromaQpIdx];
+
+        int16_t dcCb[4] = {}, dcCr[4] = {};
+        if (cbpChroma >= 1U)
+        {
+            ResidualBlock4x4 dcBlockCb, dcBlockCr;
+            decodeResidualBlock4x4(br, -1, 4U, 0U, dcBlockCb);
+            decodeResidualBlock4x4(br, -1, 4U, 0U, dcBlockCr);
+            for (uint32_t i = 0U; i < 4U; ++i) { dcCb[i] = dcBlockCb.coeffs[i]; dcCr[i] = dcBlockCr.coeffs[i]; }
+            inverseHadamard2x2(dcCb);
+            inverseHadamard2x2(dcCr);
+
+            int32_t cqpDiv6 = chromaQp / 6;
+            int32_t cqpMod6 = chromaQp % 6;
+            int32_t cScale = cDequantScale[cqpMod6][0];
+            for (uint32_t i = 0U; i < 4U; ++i)
+            {
+                if (dcCb[i] != 0) { int32_t v = dcCb[i] * cScale; dcCb[i] = static_cast<int16_t>(cqpDiv6 >= 1 ? v << (cqpDiv6 - 1) : (v + 1) >> 1); }
+                if (dcCr[i] != 0) { int32_t v = dcCr[i] * cScale; dcCr[i] = static_cast<int16_t>(cqpDiv6 >= 1 ? v << (cqpDiv6 - 1) : (v + 1) >> 1); }
+            }
+        }
+
+        uint32_t uvStride = target.uvStride();
+        for (uint32_t blkIdx = 0U; blkIdx < 4U; ++blkIdx)
+        {
+            uint32_t blkX = (blkIdx & 1U) * 4U;
+            uint32_t blkY = (blkIdx >> 1U) * 4U;
+
+            int16_t cbCoeffs[16] = {}, crCoeffs[16] = {};
+            cbCoeffs[0] = dcCb[blkIdx];
+            crCoeffs[0] = dcCr[blkIdx];
+
+            if (cbpChroma >= 2U)
+            {
+                ResidualBlock4x4 acCb, acCr;
+                decodeResidualBlock4x4(br, 0, 15U, 1U, acCb);
+                for (uint32_t i = 1U; i < 16U; ++i) cbCoeffs[i] = acCb.coeffs[i];
+                inverseQuantize4x4(cbCoeffs, chromaQp);
+                decodeResidualBlock4x4(br, 0, 15U, 1U, acCr);
+                for (uint32_t i = 1U; i < 16U; ++i) crCoeffs[i] = acCr.coeffs[i];
+                inverseQuantize4x4(crCoeffs, chromaQp);
+            }
+
+            inverseDct4x4AddPred(cbCoeffs, predU + blkY * 8U + blkX, 8U, target.uMb(mbX, mbY) + blkY * uvStride + blkX, uvStride);
+            inverseDct4x4AddPred(crCoeffs, predV + blkY * 8U + blkX, 8U, target.vMb(mbX, mbY) + blkY * uvStride + blkX, uvStride);
+        }
+    }
+
+    /** Decode an intra MB within a P-slice (mb_type offset already applied). */
+    bool decodeIntraMbInPSlice(BitReader& br, const Sps& sps, const Pps& pps,
+                                const SliceHeader& sh, int32_t sliceQp,
+                                uint32_t mbTypeRaw, Frame& target,
+                                uint32_t mbX, uint32_t mbY) noexcept
+    {
+        // Mark as intra (no MV)
+        uint32_t mbIdx = mbY * widthInMbs_ + mbX;
+        mbMotion_[mbIdx] = { {0, 0}, -1, true };
+
+        // Delegate to existing intra decode (uses currentFrame_)
+        // Copy target → currentFrame_ so intra prediction reads neighbors from target
+        // This is needed because P-slices write to target (DPB frame)
+        int32_t qp = sliceQp;
+
+        if (mbTypeRaw == 25U)
+            return true; // I_PCM
+
+        if (isI16x16(static_cast<uint8_t>(mbTypeRaw)))
+            return decodeI16x16Mb(br, sps, pps, mbTypeRaw, qp, mbX, mbY);
+        else
+            return decodeI4x4Mb(br, sps, pps, qp, mbX, mbY);
     }
 };
 

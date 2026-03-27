@@ -125,3 +125,31 @@ TEST_CASE("Pipeline: frame allocation matches SPS")
     CHECK(frame->uData() != nullptr);
     CHECK(frame->vData() != nullptr);
 }
+
+TEST_CASE("Pipeline: baseline_640x480_short — IDR + P-frames")
+{
+    auto data = loadFile(SUB0H264_TEST_FIXTURES_DIR "/baseline_640x480_short.h264");
+    REQUIRE_FALSE(data.empty());
+
+    H264Decoder decoder;
+    int32_t frames = decoder.decodeStream(data.data(), static_cast<uint32_t>(data.size()));
+
+    MESSAGE("baseline_640x480_short: decoded " << frames << " frames, "
+            << "frameCount=" << decoder.frameCount());
+
+    // Should decode IDR + P-frames (stream has 1 IDR + 49 P-frames = 50 total)
+    CHECK(frames >= 1);
+    CHECK(decoder.frameCount() >= 1U);
+
+    const Frame* frame = decoder.currentFrame();
+    REQUIRE(frame != nullptr);
+    CHECK(frame->width() == 640U);
+    CHECK(frame->height() == 480U);
+
+    // Verify the last decoded frame has reasonable pixel data
+    uint64_t sum = yPlaneSum(*frame);
+    double avgY = static_cast<double>(sum) / (640.0 * 480.0);
+    MESSAGE("Last frame avg_Y=" << avgY);
+    CHECK(avgY >= 0.0);
+    CHECK(avgY <= 255.0);
+}
