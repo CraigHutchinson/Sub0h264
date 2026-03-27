@@ -1,0 +1,39 @@
+# test_apps/hello_h264/sdkconfig.defaults
+# Minimal ESP32-P4 config for Sub0h264 hello-world.
+
+# -- Chip / flash -------------------------------------------------------------
+CONFIG_IDF_TARGET="esp32p4"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# -- Chip revision — device is v1.3 (rev <3.0) --------------------------------
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# -- PSRAM (OPI, 200 MHz) -----------------------------------------------------
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_SPEED_200M=y
+
+# -- C++ standard — IDF master defaults to C++23 (gnu++23) ---------------------
+
+# -- C++ exceptions ------------------------------------------------------------
+CONFIG_COMPILER_CXX_EXCEPTIONS=y
+CONFIG_COMPILER_CXX_EXCEPTIONS_EMG_POOL_SIZE=1024
+
+# -- RTTI disabled -------------------------------------------------------------
+CONFIG_COMPILER_CXX_RTTI=n
+
+# -- CPU frequency — 360 MHz (ESP32-P4 rev v1.3 maximum) ----------------------
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
+
+# -- Compiler optimisation -----------------------------------------------------
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# -- Log level -----------------------------------------------------------------
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# -- Disable Bluetooth ---------------------------------------------------------
+CONFIG_BT_ENABLED=n
