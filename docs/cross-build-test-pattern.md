@@ -160,7 +160,60 @@ set_tests_properties(esp32p4_unit_tests PROPERTIES
 
 Cross-process safety is handled by the OS — opening an in-use COM port fails immediately with a clear error.
 
-## 7. ESP32-P4 Specific Gotchas
+## 7. Shared Test Sources (Desktop + ESP32)
+
+The ESP32 test runner `#include`s all desktop test `.cpp` files into a single translation unit. This ensures both platforms run the **exact same tests** — no separate test sets to maintain.
+
+### Architecture
+
+```
+tests/
+├── test_main.cpp              # Desktop doctest entry (DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN)
+├── test_fixtures.hpp          # Cross-platform fixture provider
+├── test_bitstream.cpp         # ─┐
+├── test_nal.cpp               #  │
+├── test_sps_pps.cpp           #  ├─ Shared test files (included by both platforms)
+├── test_decode_pipeline.cpp   #  │
+└── ...                        # ─┘
+
+test_apps/unit_tests/main/
+└── test_runner.cpp            # ESP32 entry: #include "../../../tests/test_*.cpp"
+```
+
+### Making desktop tests target-ready
+
+These rules prevent desktop tests from breaking on ESP32:
+
+1. **Heap-allocate objects > 1KB.** The ESP32 main task stack is 64KB. Use `std::make_unique<T>()` for `H264Decoder` (~45KB from `ParamSets`), `ParsedStream`, or any struct containing large arrays.
+
+2. **Use `getFixture("name.h264")` not `loadFile()`.** The `test_fixtures.hpp` header abstracts filesystem I/O (desktop) vs embedded binary data (ESP32). All test files must use this — never `std::ifstream` directly.
+
+3. **Static functions are safe.** When desktop `.cpp` files are `#include`d into a single ESP32 TU, `static` helpers get internal linkage within that TU. No ODR violations. But non-static free functions with the same name across files will collide — avoid this.
+
+4. **No `<iostream>`.** Adds ~200KB on ESP32. Use `printf` or `ESP_LOGx`.
+
+5. **Guard ESP32-specific tests with `#ifdef ESP_PLATFORM`.**
+
+### Fixture system
+
+`test_fixtures.hpp` dispatches by platform:
+
+```cpp
+#ifdef ESP_PLATFORM
+// Returns span of embedded flash data via asm("_binary_...") symbols
+inline std::vector<uint8_t> getFixture(const char* name) { ... }
+#else
+// Reads from filesystem at SUB0H264_TEST_FIXTURES_DIR
+inline std::vector<uint8_t> getFixture(const char* name) { ... }
+#endif
+```
+
+Adding a new fixture requires updates in three places:
+1. `tests/fixtures/` — the file
+2. `tests/test_fixtures.hpp` — ESP32 `extern` symbols + name dispatch
+3. `test_apps/unit_tests/main/CMakeLists.txt` — `target_add_binary_data()`
+
+## 8. ESP32-P4 Specific Gotchas
 
 ### PSRAM verification
 
@@ -169,32 +222,63 @@ PSRAM initialization can silently fail. Add an explicit test:
 ```cpp
 TEST_CASE("PSRAM available and sufficient") {
     size_t psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    CHECK(psram >= (2U * 1024U * 1024U));  // 2MB minimum for decode buffers
+    static constexpr size_t cMinPsramBytes = 2U * 1024U * 1024U;
+    CHECK(psram >= cMinPsramBytes);
 }
 ```
 
-### Watchdog (WDT)
+### Watchdog (WDT) — configure correctly, don't yield
 
-Set `CONFIG_ESP_TASK_WDT_PANIC=n` in `sdkconfig.defaults` for testing. This makes WDT timeouts log a warning instead of rebooting, allowing the serial capture to detect and report the timeout gracefully.
+The ESP32-P4 has three independent WDTs. The one that fires during long-running tests is the **MWDT (HP_SYS_HP_WDT)**, triggered when the idle task is starved.
+
+**Root cause:** Decode tests monopolize the CPU for 30+ seconds. The idle task never runs. The Task WDT monitors the idle task by default and fires `HP_SYS_HP_WDT_RESET`.
+
+**Correct fix — configure sdkconfig:**
+
+```
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=120          # 120s accommodates longest test
+CONFIG_ESP_TASK_WDT_PANIC=n                # Log warning, don't reboot
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n # Don't monitor idle — decode starves it
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+```
+
+**Wrong approach — don't use `vTaskDelay` yields:**
+
+```cpp
+// DON'T DO THIS — distorts timing measurements
+if (frameCount % 10U == 0U)
+    vTaskDelay(pdMS_TO_TICKS(1));  // Context switch = thousands of cycles
+```
+
+If you must feed the WDT programmatically (e.g., in production code where disabling idle monitoring is unacceptable), use the direct API:
+
+```cpp
+#include "esp_task_wdt.h"
+esp_task_wdt_reset();  // ~100 CPU cycles, no context switch
+```
+
+**Cost comparison:**
+
+| Approach | Cost | Timing impact |
+|----------|------|--------------|
+| Configure WDT correctly | 0 cycles | None |
+| `esp_task_wdt_reset()` | ~100 cycles | Negligible |
+| `vTaskDelay(1)` | ~50,000+ cycles + context switch | **Distorts benchmarks** |
 
 ### Stack sizing
 
 - Main task stack: 64KB (`CONFIG_ESP_MAIN_TASK_STACK_SIZE=65536`)
-- **Never allocate > 1KB on the stack.** Use `std::make_unique` for large objects (e.g., decoder instances with parameter set arrays)
-- Assert stack high-water mark after heavy operations:
+- **Never allocate > 1KB on the stack.** Use `std::make_unique` for large objects
+- Specific offenders found during integration:
+  - `ParamSets` (~45KB: 32 SPS * ~1.4KB each) — always heap-allocate
+  - `H264Decoder` (contains `ParamSets`) — always heap-allocate
+  - `ParsedStream` (contains `ParamSets`) — always heap-allocate
+  - `Sps::offsetForRefFrame_[255]` was 1020 bytes — capped to `[16]`
+- Assert stack high-water mark at end of test run:
 
 ```cpp
 UBaseType_t hwm = uxTaskGetStackHighWaterMark(nullptr);
 ESP_LOGI(TAG, "Stack HWM: %u bytes remaining", (unsigned)(hwm * sizeof(StackType_t)));
-```
-
-### FreeRTOS yield
-
-Long decode loops must yield periodically to prevent task starvation:
-
-```cpp
-if (frameCount % 10U == 0U)
-    vTaskDelay(pdMS_TO_TICKS(1));  // Yield to system tasks
 ```
 
 ### Stale sdkconfig
@@ -206,6 +290,30 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig")
     file(REMOVE "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig")
 endif()
 ```
+
+## 9. Debugging Target Test Failures
+
+### Running specific tests in isolation
+
+Doctest supports test-case filtering. To run only matching tests on ESP32, modify `test_runner.cpp`:
+
+```cpp
+ctx.setOption("test-case", "*flat_black*");  // Only matching tests run
+```
+
+Or add a Kconfig option for runtime filtering without rebuilding.
+
+### Issues encountered during integration and how they were diagnosed
+
+| Issue | Symptom | Diagnosis | Root cause | Fix |
+|-------|---------|-----------|------------|-----|
+| Stack overflow | `HP_SYS_HP_WDT_RESET` reboot loop | Log showed tests passing up to DPB, then reset | `ParamSets` (~45KB) on 64KB stack | `std::make_unique` |
+| Idle task starvation | `HP_SYS_HP_WDT_RESET` after all stack fixes | Reset happened between test cases, not during | Idle task WDT monitoring + CPU monopoly | `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n` |
+| `Sps` too large | Stack overflow even with small tests | `sizeof(Sps)` ~1.4KB due to `offsetForRefFrame_[255]` | Spec-literal array size | Cap at `[16]` with named constant |
+| ANSI regex crash | CMake `string(REGEX)` FATAL_ERROR | CMake doesn't support `\x` escapes | ANSI stripping in wrong layer | Move to Python script |
+| IDF Python not found | `No module named esptool` | System Python used instead of IDF venv | `find_program` found wrong Python | Explicit IDF venv path resolution |
+| sdkconfig stale | Config changes ignored | `sdkconfig` overrides `sdkconfig.defaults` | IDF caches generated sdkconfig | Auto-remove on configure |
+| `-D` after `-P` | Variables undefined in CMake script | CTest showed "BUILD_DIR not set" | CMake quirk: `-D` must precede `-P` | Reorder in `add_test()` |
 
 ## 8. MSYS Environment on Windows
 
