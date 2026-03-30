@@ -273,6 +273,12 @@ private:
         std::fill(nnzCr_.begin(), nnzCr_.end(), static_cast<uint8_t>(0U));
         std::fill(mbMotion_.begin(), mbMotion_.end(), MbMotionInfo{});
 
+#ifndef SUB0H264_NO_DEBUG_TRACE
+        std::printf("[DBG] Slice header parsed: type=%u firstMb=%lu frameNum=%u qpDelta=%d bitOffset=%lu\n",
+            static_cast<unsigned>(sh.sliceType_), (unsigned long)sh.firstMbInSlice_,
+            sh.frameNum_, sh.sliceQpDelta_, (unsigned long)br.bitOffset());
+#endif
+
         // Compute effective QP
         int32_t sliceQp = pps->picInitQp_ + sh.sliceQpDelta_;
 
@@ -510,10 +516,24 @@ private:
         uint8_t cbpChroma = i16x16CbpChroma(static_cast<uint8_t>(mbTypeRaw));
 
         // Intra chroma prediction mode
+#ifndef SUB0H264_NO_DEBUG_TRACE
+        if (mbX == 0U && mbY == 0U)
+            std::printf("[DBG]   Before chroma_pred: bitOff=%lu\n", (unsigned long)br.bitOffset());
+#endif
         uint32_t chromaPredMode = br.readUev();
+
+#ifndef SUB0H264_NO_DEBUG_TRACE
+        if (mbX == 0U && mbY == 0U)
+            std::printf("[DBG]   After chroma_pred=%lu: bitOff=%lu\n",
+                (unsigned long)chromaPredMode, (unsigned long)br.bitOffset());
+#endif
 
         // QP delta
         int32_t qpDelta = br.readSev();
+#ifndef SUB0H264_NO_DEBUG_TRACE
+        if (mbX == 0U && mbY == 0U)
+            std::printf("[DBG]   After qpDelta=%d: bitOff=%lu\n", qpDelta, (unsigned long)br.bitOffset());
+#endif
         qp += qpDelta;
         if (qp < 0) qp += 52;
         if (qp > 51) qp -= 52;
@@ -531,6 +551,23 @@ private:
         int16_t dcCoeffs[16];
         for (uint32_t i = 0U; i < 16U; ++i)
             dcCoeffs[i] = dcBlock.coeffs[i];
+
+#ifndef SUB0H264_NO_DEBUG_TRACE
+        // Temporary debug: trace DC decode for first MB
+        if (mbX == 0U && mbY == 0U)
+        {
+            std::printf("[DBG] MB(0,0) I16x16: mbType=%lu pred=%u cbpL=%u cbpC=%u qp=%d bitOff=%lu\n",
+                (unsigned long)mbTypeRaw, predMode, cbpLuma, cbpChroma, qp,
+                (unsigned long)br.bitOffset());
+            std::printf("[DBG]   DC block totalCoeff=%u nC=%d: ", dcBlock.totalCoeff, dcNc);
+            for (uint32_t k = 0U; k < 16U; ++k) std::printf("%d ", dcBlock.coeffs[k]);
+            std::printf("\n[DBG]   pred[0]=%u bitOff_after_dc=%lu\n", lumaPred[0],
+                (unsigned long)br.bitOffset());
+            // Peek at next few bits
+            uint32_t peek = br.peekBits(16U);
+            std::printf("[DBG]   next 16 bits: 0x%04x\n", peek);
+        }
+#endif
 
         // Inverse Hadamard
         inverseHadamard4x4(dcCoeffs);
@@ -551,6 +588,15 @@ private:
                 dcCoeffs[i] = static_cast<int16_t>(val);
             }
         }
+
+#ifndef SUB0H264_NO_DEBUG_TRACE
+        if (mbX == 0U && mbY == 0U)
+        {
+            std::printf("[DBG]   After Hadamard+dequant DC: ");
+            for (uint32_t k = 0U; k < 16U; ++k) std::printf("%d ", dcCoeffs[k]);
+            std::printf("\n");
+        }
+#endif
 
         // 3. Decode and reconstruct each 4x4 luma sub-block
         uint8_t* mbLuma = currentFrame_.yMb(mbX, mbY);
