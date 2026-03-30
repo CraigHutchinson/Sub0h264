@@ -899,6 +899,11 @@ private:
                         uint32_t chromaPredMode, uint8_t cbpChroma,
                         int32_t qp, uint32_t mbX, uint32_t mbY) noexcept
     {
+#ifndef SUB0H264_NO_DEBUG_TRACE
+        if (mbY == 0U && mbX < 2U)
+            std::printf("[DBG] MB(%lu,0) chromaMb START bitOff=%lu cbpC=%u\n",
+                (unsigned long)mbX, (unsigned long)br.bitOffset(), cbpChroma);
+#endif
         auto chromaMode = static_cast<IntraChromaMode>(chromaPredMode);
 
         // Generate chroma predictions (8x8 for each plane)
