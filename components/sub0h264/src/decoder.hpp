@@ -626,8 +626,16 @@ private:
                 nnzLuma_[mbIdx * 16U + blkIdx] = acBlock.totalCoeff;
             }
 
-            // Inverse quantize AC coefficients
-            inverseQuantize4x4(coeffs, qp);
+            // Inverse quantize AC coefficients only — DC was already dequantized
+            // in the Hadamard path above. Dequanting position 0 again would
+            // double-scale the DC coefficient (ITU-T H.264 §8.5.12.1).
+            if (cbpLuma)
+            {
+                // Save DC, dequant all, restore DC (avoids conditional per-coeff)
+                int16_t savedDc = coeffs[0];
+                inverseQuantize4x4(coeffs, qp);
+                coeffs[0] = savedDc;
+            }
 
             // Inverse DCT + add prediction + clip
             uint8_t* predPtr = lumaPred + blkY * 16U + blkX;

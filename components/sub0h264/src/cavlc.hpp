@@ -56,7 +56,7 @@ inline CoeffToken matchCoeffTokenTable(BitReader& br, uint32_t tableIdx) noexcep
 
     for (uint32_t to = 0U; to < 4U; ++to)
     {
-        for (uint32_t tc = 0U; tc < 16U; ++tc)
+        for (uint32_t tc = 0U; tc <= 16U; ++tc)
         {
             // Skip invalid combinations: trailing ones can't exceed total coefficients
             if (to > tc)
@@ -66,7 +66,7 @@ inline CoeffToken matchCoeffTokenTable(BitReader& br, uint32_t tableIdx) noexcep
             if (codeSize == 0U || codeSize > 16U)
                 continue;
 
-            uint8_t codeVal = cCoeffTokenCode[tableIdx][to][tc];
+            uint16_t codeVal = cCoeffTokenCode[tableIdx][to][tc];
 
             // Extract top codeSize bits from peek buffer and compare
             uint32_t mask = (1U << codeSize) - 1U;
@@ -107,7 +107,7 @@ inline CoeffToken decodeCoeffToken(BitReader& br, int32_t nC) noexcept
 
         for (uint32_t to = 0U; to < 4U; ++to)
         {
-            for (uint32_t tc = 0U; tc < 4U; ++tc)
+            for (uint32_t tc = 0U; tc <= 4U; ++tc)
             {
                 if (to > tc)
                     continue;
