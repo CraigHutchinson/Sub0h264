@@ -14,9 +14,12 @@
 #define CROG_SUB0H264_FRAME_VERIFY_HPP
 
 #include "frame.hpp"
+#include "transform.hpp" // clipU8
 
-#include <cstdint>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 
 namespace sub0h264 {
 
@@ -110,6 +113,175 @@ inline double framePsnr(const Frame& a, const Frame& b) noexcept
     static constexpr double cPeakValue = 255.0;
     return 10.0 * std::log10((cPeakValue * cPeakValue) / mse);
 }
+
+// ── Failure report — PPM image output ───────────────────────────────────
+
+/// PSNR threshold above which CRC mismatch is treated as warning (not failure).
+/// 40 dB ~ imperceptible difference. ITU-R BT.500 "excellent quality".
+inline constexpr double cPsnrFuzzyPassThreshold = 40.0;
+
+/// PSNR below which the decode is clearly wrong.
+inline constexpr double cPsnrClearFailThreshold = 20.0;
+
+/** Per-frame verification report. */
+struct FrameVerifyReport
+{
+    uint32_t frameIdx = 0U;
+    uint32_t crcActual = 0U;
+    uint32_t crcExpected = 0U;
+    bool crcMatch = false;
+    double psnrDb = 0.0;
+    uint32_t diffCount = 0U;      ///< Number of differing Y pixels
+    uint32_t maxAbsDiff = 0U;     ///< Maximum |actual - expected| across Y plane
+    double diffPercent = 0.0;     ///< Percentage of Y pixels that differ
+};
+
+/** Compute detailed frame comparison statistics (Y plane). */
+inline FrameVerifyReport compareFrames(const Frame& actual, const Frame& expected,
+                                        uint32_t frameIdx, uint32_t expectedCrc) noexcept
+{
+    FrameVerifyReport r;
+    r.frameIdx = frameIdx;
+    r.crcActual = frameCrc32(actual);
+    r.crcExpected = expectedCrc;
+    r.crcMatch = (r.crcActual == r.crcExpected);
+    r.psnrDb = framePsnr(actual, expected);
+
+    uint32_t totalPixels = actual.width() * actual.height();
+    for (uint32_t row = 0U; row < actual.height(); ++row)
+    {
+        const uint8_t* ra = actual.yRow(row);
+        const uint8_t* re = expected.yRow(row);
+        for (uint32_t col = 0U; col < actual.width(); ++col)
+        {
+            uint32_t d = static_cast<uint32_t>(
+                std::abs(static_cast<int32_t>(ra[col]) - static_cast<int32_t>(re[col])));
+            if (d > 0U) ++r.diffCount;
+            if (d > r.maxAbsDiff) r.maxAbsDiff = d;
+        }
+    }
+    r.diffPercent = (totalPixels > 0U) ? (100.0 * r.diffCount / totalPixels) : 0.0;
+    return r;
+}
+
+#ifndef ESP_PLATFORM
+
+/** Write a frame's Y plane as grayscale PPM (P5 — portable graymap).
+ *  Viewable in GIMP, IrfanView, macOS Preview, most image tools.
+ */
+inline bool writeFrameGrayPpm(const Frame& frame, const char* path) noexcept
+{
+    FILE* f = std::fopen(path, "wb");
+    if (!f) return false;
+    std::fprintf(f, "P5\n%u %u\n255\n", frame.width(), frame.height());
+    for (uint32_t row = 0U; row < frame.height(); ++row)
+        std::fwrite(frame.yRow(row), 1U, frame.width(), f);
+    std::fclose(f);
+    return true;
+}
+
+/** Write a frame as full-color PPM (P6) with YUV→RGB BT.601 conversion. */
+inline bool writeFrameRgbPpm(const Frame& frame, const char* path) noexcept
+{
+    FILE* f = std::fopen(path, "wb");
+    if (!f) return false;
+    std::fprintf(f, "P6\n%u %u\n255\n", frame.width(), frame.height());
+    for (uint32_t row = 0U; row < frame.height(); ++row)
+    {
+        for (uint32_t col = 0U; col < frame.width(); ++col)
+        {
+            int32_t y = frame.y(col, row);
+            int32_t u = frame.u(col / 2U, row / 2U) - 128;
+            int32_t v = frame.v(col / 2U, row / 2U) - 128;
+            /// BT.601 YUV→RGB conversion — ITU-R BT.601-7.
+            uint8_t rgb[3] = {
+                static_cast<uint8_t>(clipU8(y + ((359 * v + 128) >> 8))),
+                static_cast<uint8_t>(clipU8(y - ((88 * u + 183 * v + 128) >> 8))),
+                static_cast<uint8_t>(clipU8(y + ((454 * u + 128) >> 8))),
+            };
+            std::fwrite(rgb, 1U, 3U, f);
+        }
+    }
+    std::fclose(f);
+    return true;
+}
+
+/** Write absolute difference image as grayscale PPM.
+ *
+ *  Two visualization modes:
+ *  - Linear: |actual - expected| (direct, 0=match, 255=max diff)
+ *  - Log scale: 255 * log2(1 + |diff|) / log2(256) — reveals small diffs
+ *
+ *  @param actual    Decoded frame
+ *  @param expected  Reference frame
+ *  @param path      Output PPM file path
+ *  @param logScale  True for log-scale visualization
+ */
+inline bool writeFrameDiffPpm(const Frame& actual, const Frame& expected,
+                               const char* path, bool logScale = false) noexcept
+{
+    if (actual.width() != expected.width() || actual.height() != expected.height())
+        return false;
+
+    FILE* f = std::fopen(path, "wb");
+    if (!f) return false;
+    std::fprintf(f, "P5\n%u %u\n255\n", actual.width(), actual.height());
+
+    for (uint32_t row = 0U; row < actual.height(); ++row)
+    {
+        const uint8_t* ra = actual.yRow(row);
+        const uint8_t* re = expected.yRow(row);
+        for (uint32_t col = 0U; col < actual.width(); ++col)
+        {
+            uint32_t absDiff = static_cast<uint32_t>(
+                std::abs(static_cast<int32_t>(ra[col]) - static_cast<int32_t>(re[col])));
+            uint8_t pixel;
+            if (logScale)
+            {
+                /// Log-scale mapping: 255 * log2(1 + |diff|) / 8.
+                /// Maps diff=0→0, diff=1→32, diff=3→64, diff=15→128, diff=255→255.
+                pixel = (absDiff == 0U) ? 0U
+                    : static_cast<uint8_t>(255.0 * std::log2(1.0 + absDiff) / 8.0);
+            }
+            else
+            {
+                pixel = static_cast<uint8_t>(absDiff > 255U ? 255U : absDiff);
+            }
+            std::fwrite(&pixel, 1U, 1U, f);
+        }
+    }
+    std::fclose(f);
+    return true;
+}
+
+/** Write a text report summarizing frame verification results. */
+inline bool writeVerifyReport(const FrameVerifyReport& r, const char* path) noexcept
+{
+    FILE* f = std::fopen(path, "w");
+    if (!f) return false;
+    std::fprintf(f, "Frame Verification Report\n");
+    std::fprintf(f, "========================\n");
+    std::fprintf(f, "Frame index:    %u\n", r.frameIdx);
+    std::fprintf(f, "CRC actual:     0x%08x\n", r.crcActual);
+    std::fprintf(f, "CRC expected:   0x%08x\n", r.crcExpected);
+    std::fprintf(f, "CRC match:      %s\n", r.crcMatch ? "YES" : "NO");
+    std::fprintf(f, "PSNR (Y):       %.2f dB\n", r.psnrDb);
+    std::fprintf(f, "Diff pixels:    %u (%.1f%%)\n", r.diffCount, r.diffPercent);
+    std::fprintf(f, "Max |diff|:     %u\n", r.maxAbsDiff);
+    std::fprintf(f, "\nVerdict:        ");
+    if (r.crcMatch)
+        std::fprintf(f, "PASS (exact CRC match)\n");
+    else if (r.psnrDb >= cPsnrFuzzyPassThreshold)
+        std::fprintf(f, "WARN (CRC mismatch but PSNR %.1f dB — visually identical)\n", r.psnrDb);
+    else if (r.psnrDb >= cPsnrClearFailThreshold)
+        std::fprintf(f, "FAIL (PSNR %.1f dB — minor differences)\n", r.psnrDb);
+    else
+        std::fprintf(f, "FAIL (PSNR %.1f dB — significant errors)\n", r.psnrDb);
+    std::fclose(f);
+    return true;
+}
+
+#endif // !ESP_PLATFORM
 
 // ── Reference CRC values ────────────────────────────────────────────────
 // Generated by scripts/gen_reference_crcs.py using ffmpeg decode.
