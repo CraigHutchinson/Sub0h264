@@ -497,9 +497,15 @@ private:
 
 #ifndef SUB0H264_NO_DEBUG_TRACE
         if (mbY == 0U && mbX < 12U)
-            std::printf("[DBG] MB(%lu,0) mbType=%lu bitOff=%lu\n",
+            std::printf("[DBG] MB(%lu,0) mbType=%lu bitOff=%lu (start=%lu)\n",
                 (unsigned long)mbX, (unsigned long)mbTypeRaw,
-                (unsigned long)br.bitOffset());
+                (unsigned long)br.bitOffset(),
+                (unsigned long)(br.bitOffset() - (mbTypeRaw < 4U ? 5U : 1U)));
+        if (mbY == 0U && (mbX == 7U || mbX == 8U))
+        {
+            std::printf("[DBG]   MB(%lu,0) DETAIL: after mbType bitOff=%lu\n",
+                (unsigned long)mbX, (unsigned long)br.bitOffset());
+        }
 #endif
 
         if (mbTypeRaw == 25U)
@@ -531,22 +537,24 @@ private:
 
         // Intra chroma prediction mode
 #ifndef SUB0H264_NO_DEBUG_TRACE
-        if (mbX == 0U && mbY == 0U)
-            std::printf("[DBG]   Before chroma_pred: bitOff=%lu\n", (unsigned long)br.bitOffset());
+        if (mbY == 0U && (mbX == 0U || mbX == 7U || mbX == 8U))
+            std::printf("[DBG]   MB(%lu) Before chroma_pred: bitOff=%lu\n",
+                (unsigned long)mbX, (unsigned long)br.bitOffset());
 #endif
         uint32_t chromaPredMode = br.readUev();
 
 #ifndef SUB0H264_NO_DEBUG_TRACE
-        if (mbX == 0U && mbY == 0U)
-            std::printf("[DBG]   After chroma_pred=%lu: bitOff=%lu\n",
-                (unsigned long)chromaPredMode, (unsigned long)br.bitOffset());
+        if (mbY == 0U && (mbX == 0U || mbX == 7U || mbX == 8U))
+            std::printf("[DBG]   MB(%lu) After chroma_pred=%lu: bitOff=%lu\n",
+                (unsigned long)mbX, (unsigned long)chromaPredMode, (unsigned long)br.bitOffset());
 #endif
 
         // QP delta
         int32_t qpDelta = br.readSev();
 #ifndef SUB0H264_NO_DEBUG_TRACE
-        if (mbX == 0U && mbY == 0U)
-            std::printf("[DBG]   After qpDelta=%d: bitOff=%lu\n", qpDelta, (unsigned long)br.bitOffset());
+        if (mbY == 0U && (mbX == 0U || mbX == 7U || mbX == 8U))
+            std::printf("[DBG]   MB(%lu) After qpDelta=%d: bitOff=%lu\n",
+                (unsigned long)mbX, qpDelta, (unsigned long)br.bitOffset());
 #endif
         qp += qpDelta;
         if (qp < 0) qp += 52;
@@ -556,6 +564,17 @@ private:
         uint8_t lumaPred[256];
         intraPred16x16(static_cast<Intra16x16Mode>(predMode),
                        currentFrame_, mbX, mbY, lumaPred);
+
+#ifndef SUB0H264_NO_DEBUG_TRACE
+        if (mbY == 0U && (mbX == 7U || mbX == 8U))
+        {
+            int32_t preNc = getLumaNc(mbX, mbY, 0U);
+            uint32_t peek1 = br.peekBits(1U);
+            uint32_t peek8 = br.peekBits(8U);
+            std::printf("[DBG]   MB(%lu) DC block: bitOff=%lu nC=%d peek1=%u peek8=0x%02x\n",
+                (unsigned long)mbX, (unsigned long)br.bitOffset(), preNc, peek1, peek8);
+        }
+#endif
 
         // 2. Decode luma DC block (4x4 Hadamard)
         int32_t dcNc = getLumaNc(mbX, mbY, 0U);
