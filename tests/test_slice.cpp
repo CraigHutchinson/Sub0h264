@@ -7,6 +7,7 @@
 
 #include "test_fixtures.hpp"
 
+#include <memory>
 #include <vector>
 
 using namespace sub0h264;
@@ -79,12 +80,12 @@ struct ParsedStream
 
 TEST_CASE("Slice: flat_black_640x480 — single IDR I-slice")
 {
-    ParsedStream stream;
-    REQUIRE(stream.parse("flat_black_640x480.h264"));
+    auto stream = std::make_unique<ParsedStream>();
+    REQUIRE(stream->parse("flat_black_640x480.h264"));
 
-    REQUIRE(stream.slices.size() >= 1U);
+    REQUIRE(stream->slices.size() >= 1U);
 
-    const auto& sh = stream.slices[0];
+    const auto& sh = stream->slices[0];
     CHECK(sh.isIdr_);
     CHECK(sh.sliceType_ == SliceType::I);
     CHECK(sh.firstMbInSlice_ == 0U);
@@ -96,19 +97,19 @@ TEST_CASE("Slice: flat_black_640x480 — single IDR I-slice")
 
 TEST_CASE("Slice: baseline_640x480_short — IDR + P-frames")
 {
-    ParsedStream stream;
-    REQUIRE(stream.parse("baseline_640x480_short.h264"));
+    auto stream = std::make_unique<ParsedStream>();
+    REQUIRE(stream->parse("baseline_640x480_short.h264"));
 
-    REQUIRE(stream.slices.size() >= 3U);
+    REQUIRE(stream->slices.size() >= 3U);
 
     // First slice should be IDR
-    CHECK(stream.slices[0].isIdr_);
-    CHECK(stream.slices[0].sliceType_ == SliceType::I);
-    CHECK(stream.slices[0].firstMbInSlice_ == 0U);
+    CHECK(stream->slices[0].isIdr_);
+    CHECK(stream->slices[0].sliceType_ == SliceType::I);
+    CHECK(stream->slices[0].firstMbInSlice_ == 0U);
 
     // Subsequent slices should be P-frames
     uint32_t iCount = 0U, pCount = 0U;
-    for (const auto& sh : stream.slices)
+    for (const auto& sh : stream->slices)
     {
         if (sh.sliceType_ == SliceType::I)
             ++iCount;
@@ -122,35 +123,35 @@ TEST_CASE("Slice: baseline_640x480_short — IDR + P-frames")
     CHECK(iCount >= 1U);
     CHECK(pCount >= 2U);
 
-    MESSAGE("Slices parsed: " << stream.slices.size()
+    MESSAGE("Slices parsed: " << stream->slices.size()
             << " (I=" << iCount << " P=" << pCount << ")");
 }
 
 TEST_CASE("Slice: frame numbers start at 0 for IDR")
 {
-    ParsedStream stream;
-    REQUIRE(stream.parse("baseline_640x480_short.h264"));
-    REQUIRE(stream.slices.size() >= 3U);
+    auto stream = std::make_unique<ParsedStream>();
+    REQUIRE(stream->parse("baseline_640x480_short.h264"));
+    REQUIRE(stream->slices.size() >= 3U);
 
     // IDR resets frame_num to 0
-    CHECK(stream.slices[0].frameNum_ == 0U);
+    CHECK(stream->slices[0].frameNum_ == 0U);
 
     // Frame numbers increment modulo maxFrameNum (may wrap back to 0)
     // Just verify they are within valid range
-    const Sps* sps = stream.paramSets.getSps(0);
+    const Sps* sps = stream->paramSets.getSps(0);
     REQUIRE(sps != nullptr);
     uint16_t maxFrameNum = static_cast<uint16_t>(sps->maxFrameNum());
 
-    for (const auto& sh : stream.slices)
+    for (const auto& sh : stream->slices)
         CHECK(sh.frameNum_ < maxFrameNum);
 }
 
 TEST_CASE("Slice: QP delta is within valid range")
 {
-    ParsedStream stream;
-    REQUIRE(stream.parse("baseline_640x480_short.h264"));
+    auto stream = std::make_unique<ParsedStream>();
+    REQUIRE(stream->parse("baseline_640x480_short.h264"));
 
-    for (const auto& sh : stream.slices)
+    for (const auto& sh : stream->slices)
     {
         // slice_qp_delta should result in a valid QP (0-51)
         // QP = picInitQp + sliceQpDelta, picInitQp is typically 26

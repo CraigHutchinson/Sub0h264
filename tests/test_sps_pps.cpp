@@ -6,6 +6,7 @@
 
 #include "test_fixtures.hpp"
 
+#include <memory>
 #include <vector>
 
 using namespace sub0h264;
@@ -102,11 +103,11 @@ TEST_CASE("SPS: baseline_640x480_short — Baseline profile")
 
 TEST_CASE("PPS: flat_black_640x480 — parse PPS after SPS")
 {
-    ParamSets ps;
-    REQUIRE(parseParamSets("flat_black_640x480.h264", ps));
+    auto ps = std::make_unique<ParamSets>();
+    REQUIRE(parseParamSets("flat_black_640x480.h264", *ps));
 
     // Should have at least one SPS and one PPS
-    const Sps* sps = ps.getSps(0);
+    const Sps* sps = ps->getSps(0);
     REQUIRE(sps != nullptr);
     CHECK(sps->valid_);
 
@@ -114,7 +115,7 @@ TEST_CASE("PPS: flat_black_640x480 — parse PPS after SPS")
     const Pps* pps = nullptr;
     for (uint8_t i = 0U; i < 255U; ++i)
     {
-        pps = ps.getPps(i);
+        pps = ps->getPps(i);
         if (pps)
             break;
     }
@@ -134,13 +135,13 @@ TEST_CASE("PPS: flat_black_640x480 — parse PPS after SPS")
 
 TEST_CASE("PPS: baseline_640x480_short — CAVLC entropy")
 {
-    ParamSets ps;
-    REQUIRE(parseParamSets("baseline_640x480_short.h264", ps));
+    auto ps = std::make_unique<ParamSets>();
+    REQUIRE(parseParamSets("baseline_640x480_short.h264", *ps));
 
     const Pps* pps = nullptr;
     for (uint8_t i = 0U; i < 255U; ++i)
     {
-        pps = ps.getPps(i);
+        pps = ps->getPps(i);
         if (pps) break;
     }
     REQUIRE(pps != nullptr);
@@ -153,8 +154,8 @@ TEST_CASE("ParamSets: invalid SPS ID rejected")
     sps.spsId_ = 32U; // Out of range
     sps.valid_ = true;
 
-    ParamSets ps;
-    CHECK(ps.storeSps(sps) == Result::ErrorInvalidParam);
+    auto ps = std::make_unique<ParamSets>();
+    CHECK(ps->storeSps(sps) == Result::ErrorInvalidParam);
 }
 
 TEST_CASE("ParamSets: PPS with missing SPS rejected")
@@ -164,7 +165,7 @@ TEST_CASE("ParamSets: PPS with missing SPS rejected")
     const uint8_t rbsp[] = { 0b10011000, 0x00 }; // ue(0) + ue(5) + ...
 
     BitReader br(rbsp, sizeof(rbsp));
-    ParamSets ps; // No SPS stored
+    auto ps = std::make_unique<ParamSets>(); // No SPS stored
     Pps pps;
-    CHECK(parsePps(br, ps.spsArray(), pps) == Result::ErrorInvalidParam);
+    CHECK(parsePps(br, ps->spsArray(), pps) == Result::ErrorInvalidParam);
 }

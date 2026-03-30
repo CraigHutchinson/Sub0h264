@@ -6,6 +6,12 @@
  *
  *  Platform-specific tests (PSRAM, stack HWM) are guarded by ESP_PLATFORM.
  *
+ *  WDT strategy: idle task monitoring is disabled in sdkconfig.defaults
+ *  (CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n) so the decode tests can
+ *  monopolize the CPU without triggering HP_SYS_HP_WDT_RESET. The task
+ *  WDT timeout is 120s which exceeds our longest test (~39s worst case).
+ *  No vTaskDelay yields are needed — this preserves accurate timing.
+ *
  *  SPDX-License-Identifier: MIT
  */
 #include "esp_log.h"
@@ -23,11 +29,7 @@
 // ── Include ALL desktop test files (shared test source) ─────────────────
 // These files use getFixture() from test_fixtures.hpp which resolves to
 // embedded binary data on ESP_PLATFORM and file I/O on desktop.
-//
-// Note: test files that use std::make_unique need <memory> — already
-// included transitively via decoder.hpp.
 
-// Core unit tests
 #include "../../../tests/test_version.cpp"
 #include "../../../tests/test_bitstream.cpp"
 #include "../../../tests/test_nal.cpp"
@@ -40,7 +42,7 @@
 #include "../../../tests/test_cabac.cpp"
 #include "../../../tests/test_decode_pipeline.cpp"
 
-// ── ESP32-P4 specific tests (guarded by ESP_PLATFORM) ───────────────────
+// ── ESP32-P4 specific tests ─────────────────────────────────────────────
 
 static const char* TAG = "sub0h264_test";
 
@@ -59,31 +61,6 @@ TEST_CASE("ESP32: PSRAM available and sufficient")
 
 // ── ESP-IDF entry point ─────────────────────────────────────────────────
 
-/// Doctest reporter that yields to FreeRTOS between test cases,
-/// preventing the hardware watchdog from firing during long test runs.
-struct FreeRtosReporter : public doctest::IReporter
-{
-    FreeRtosReporter(const doctest::ContextOptions&) {}
-    void report_query(const doctest::QueryData&) override {}
-    void test_run_start() override {}
-    void test_run_end(const doctest::TestRunStats&) override {}
-    void test_case_start(const doctest::TestCaseData&) override {}
-    void test_case_reenter(const doctest::TestCaseData&) override {}
-    void test_case_end(const doctest::CurrentTestCaseStats&) override
-    {
-        // Yield to FreeRTOS idle task between test cases.
-        // This feeds the hardware watchdog and prevents HP_SYS_HP_WDT_RESET.
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-    void test_case_exception(const doctest::TestCaseException&) override {}
-    void subcase_start(const doctest::SubcaseSignature&) override {}
-    void subcase_end() override {}
-    void log_assert(const doctest::AssertData&) override {}
-    void log_message(const doctest::MessageData&) override {}
-    void test_case_skipped(const doctest::TestCaseData&) override {}
-};
-REGISTER_REPORTER("freertos", 0, FreeRtosReporter);
-
 extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "Sub0h264 unit tests starting...");
@@ -93,7 +70,6 @@ extern "C" void app_main(void)
     doctest::Context ctx;
     ctx.setOption("no-breaks", true);
     ctx.setOption("duration", true);
-    ctx.setOption("reporters", "freertos");
     int result = ctx.run();
 
     ESP_LOGI(TAG, "Tests %s (%d failures)",

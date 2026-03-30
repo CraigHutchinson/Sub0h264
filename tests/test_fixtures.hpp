@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 #include <vector>
 
 #ifdef ESP_PLATFORM
@@ -35,11 +36,11 @@ inline std::vector<uint8_t> getFixture(const char* name)
     for (const char* p = name; *p; ++p)
         if (*p == '/' || *p == '\\') n = p + 1;
 
-    if (__builtin_strcmp(n, "flat_black_640x480.h264") == 0)
+    if (std::strcmp(n, "flat_black_640x480.h264") == 0)
         return {flat_black_640x480_h264_start, flat_black_640x480_h264_end};
-    if (__builtin_strcmp(n, "baseline_640x480_short.h264") == 0)
+    if (std::strcmp(n, "baseline_640x480_short.h264") == 0)
         return {baseline_640x480_short_h264_start, baseline_640x480_short_h264_end};
-    if (__builtin_strcmp(n, "high_640x480.h264") == 0)
+    if (std::strcmp(n, "high_640x480.h264") == 0)
         return {high_640x480_h264_start, high_640x480_h264_end};
 
     return {}; // Unknown fixture

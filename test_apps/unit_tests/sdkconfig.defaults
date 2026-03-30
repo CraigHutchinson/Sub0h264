@@ -29,9 +29,16 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 
 # ── Watchdog: generous timeout for decode tests ────────────────────────────────
+# Task WDT timeout: 120s accommodates longest decode test (high_640x480:
+# 195 frames at ~5fps worst-case = ~39s, with 3x safety margin).
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=120
-# Disable panic on WDT: log warning instead of reboot during testing
+# Do NOT panic on WDT: log warning instead of reboot for diagnostics.
 CONFIG_ESP_TASK_WDT_PANIC=n
+# Do NOT monitor idle tasks: decode tests monopolize CPU for up to 30s
+# per test case. Monitoring idle tasks causes HP_SYS_HP_WDT_RESET because
+# the idle task never runs while the main task is decoding.
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
 
 # ── Stack: larger main task stack for doctest + decoder ────────────────────────
 # 64KB stack — sufficient with heap-allocated decoders (see coding-style.md)
