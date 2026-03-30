@@ -618,8 +618,7 @@ private:
                 (unsigned long)mbX, qpDelta, (unsigned long)br.bitOffset());
 #endif
         qp += qpDelta;
-        if (qp < 0) qp += 52;
-        if (qp > 51) qp -= 52;
+        qp = ((qp % 52) + 52) % 52; // Proper modular wrapping for any delta
 
         // 1. Generate 16x16 luma prediction
         uint8_t lumaPred[256];
@@ -1461,8 +1460,7 @@ private:
         // QP delta
         int32_t qpDelta = cabacDecodeMbQpDelta(cabacEngine_, cabacCtx_.data(), false);
         qp += qpDelta;
-        if (qp < 0) qp += 52;
-        if (qp > 51) qp -= 52;
+        qp = ((qp % 52) + 52) % 52; // Proper modular wrapping for any delta
 
         // Generate 16x16 prediction
         uint8_t lumaPred[256];
