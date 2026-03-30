@@ -21,6 +21,15 @@
             }
         },
         {
+            "name": "debug-trace",
+            "displayName": "Debug + Decode Trace",
+            "inherits": "debug",
+            "binaryDir": "${sourceDir}/build-debug-trace",
+            "cacheVariables": {
+                "CMAKE_CXX_FLAGS_INIT": "-DSUB0H264_TRACE=1"
+            }
+        },
+        {
             "name": "ci-msvc",
             "displayName": "CI - MSVC",
             "binaryDir": "${sourceDir}/build-ci",
@@ -73,6 +82,11 @@
         {
             "name": "debug",
             "configurePreset": "debug",
+            "configuration": "Debug"
+        },
+        {
+            "name": "debug-trace",
+            "configurePreset": "debug-trace",
             "configuration": "Debug"
         },
         {

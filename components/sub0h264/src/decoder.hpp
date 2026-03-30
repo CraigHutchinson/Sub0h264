@@ -15,6 +15,7 @@
 #include "cabac_parse.hpp"
 #include "cavlc.hpp"
 #include "deblock.hpp"
+#include "decode_trace.hpp"
 #include "dpb.hpp"
 #include "frame.hpp"
 #include "inter_pred.hpp"
@@ -131,7 +132,11 @@ public:
     /** @return Number of frames decoded so far. */
     uint32_t frameCount() const noexcept { return frameCount_; }
 
+    /** Set trace filter for debugging. Only effective with SUB0H264_TRACE=1 build. */
+    void setTrace(const DecodeTrace& t) noexcept { trace_ = t; }
+
 private:
+    DecodeTrace trace_;
     ParamSets paramSets_;
     Frame currentFrame_;
     Dpb dpb_;
@@ -336,7 +341,7 @@ private:
         std::fill(mbMotion_.begin(), mbMotion_.end(), MbMotionInfo{});
         std::fill(mbIntra4x4Modes_.begin(), mbIntra4x4Modes_.end(), static_cast<uint8_t>(2U));
 
-#ifndef SUB0H264_NO_DEBUG_TRACE
+#if SUB0H264_TRACE
         std::printf("[DBG] Slice header parsed: type=%u firstMb=%lu frameNum=%u qpDelta=%d bitOffset=%lu\n",
             static_cast<unsigned>(sh.sliceType_), (unsigned long)sh.firstMbInSlice_,
             sh.frameNum_, sh.sliceQpDelta_, (unsigned long)br.bitOffset());
@@ -551,7 +556,7 @@ private:
 
         int32_t currentQp = sliceQp;
 
-#ifndef SUB0H264_NO_DEBUG_TRACE
+#if SUB0H264_TRACE
         if (mbY == 0U && mbX < 12U)
             std::printf("[DBG] MB(%lu,0) mbType=%lu bitOff=%lu (start=%lu)\n",
                 (unsigned long)mbX, (unsigned long)mbTypeRaw,
@@ -592,14 +597,14 @@ private:
         uint8_t cbpChroma = i16x16CbpChroma(static_cast<uint8_t>(mbTypeRaw));
 
         // Intra chroma prediction mode
-#ifndef SUB0H264_NO_DEBUG_TRACE
+#if SUB0H264_TRACE
         if (mbY == 0U && (mbX == 0U || mbX == 7U || mbX == 8U))
             std::printf("[DBG]   MB(%lu) Before chroma_pred: bitOff=%lu\n",
                 (unsigned long)mbX, (unsigned long)br.bitOffset());
 #endif
         uint32_t chromaPredMode = br.readUev();
 
-#ifndef SUB0H264_NO_DEBUG_TRACE
+#if SUB0H264_TRACE
         if (mbY == 0U && (mbX == 0U || mbX == 7U || mbX == 8U))
             std::printf("[DBG]   MB(%lu) After chroma_pred=%lu: bitOff=%lu\n",
                 (unsigned long)mbX, (unsigned long)chromaPredMode, (unsigned long)br.bitOffset());
@@ -607,7 +612,7 @@ private:
 
         // QP delta
         int32_t qpDelta = br.readSev();
-#ifndef SUB0H264_NO_DEBUG_TRACE
+#if SUB0H264_TRACE
         if (mbY == 0U && (mbX == 0U || mbX == 7U || mbX == 8U))
             std::printf("[DBG]   MB(%lu) After qpDelta=%d: bitOff=%lu\n",
                 (unsigned long)mbX, qpDelta, (unsigned long)br.bitOffset());
@@ -621,7 +626,7 @@ private:
         intraPred16x16(static_cast<Intra16x16Mode>(predMode),
                        currentFrame_, mbX, mbY, lumaPred);
 
-#ifndef SUB0H264_NO_DEBUG_TRACE
+#if SUB0H264_TRACE
         if (mbY == 0U && (mbX == 7U || mbX == 8U))
         {
             int32_t preNc = getLumaNc(mbX, mbY, 0U);
@@ -641,7 +646,7 @@ private:
         for (uint32_t i = 0U; i < 16U; ++i)
             dcCoeffs[i] = dcBlock.coeffs[i];
 
-#ifndef SUB0H264_NO_DEBUG_TRACE
+#if SUB0H264_TRACE
         // Temporary debug: trace DC decode for first MB
         if (mbX == 0U && mbY == 0U)
         {
@@ -678,7 +683,7 @@ private:
             }
         }
 
-#ifndef SUB0H264_NO_DEBUG_TRACE
+#if SUB0H264_TRACE
         if (mbX == 0U && mbY == 0U)
         {
             std::printf("[DBG]   After Hadamard+dequant DC: ");
@@ -796,7 +801,7 @@ private:
         //   If rem < MPM: mode = rem. Else: mode = rem + 1.
         uint8_t predModes[16] = {};
 
-#ifndef SUB0H264_NO_DEBUG_TRACE
+#if SUB0H264_TRACE
         uint32_t predModeStartBit = 0U;
         if (mbX == 10U && mbY == 0U)
         {
@@ -823,7 +828,7 @@ private:
                 predModes[i] = (rem < mpm) ? rem : static_cast<uint8_t>(rem + 1U);
             }
 
-#ifndef SUB0H264_NO_DEBUG_TRACE
+#if SUB0H264_TRACE
             if (mbX == 10U && mbY == 0U && i < 4U)
                 std::printf("[DBG]   blk%lu: prevFlag=%lu mpm=%u mode=%u\n",
                     (unsigned long)i, (unsigned long)prevFlag,
@@ -842,7 +847,7 @@ private:
         uint8_t cbpLuma = cbp & 0x0FU;
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
 
-#ifndef SUB0H264_NO_DEBUG_TRACE
+#if SUB0H264_TRACE
         if (mbY == 0U && (mbX == 9U || mbX == 10U))
             std::printf("[DBG] MB(%lu,0) cbpCode=%lu → cbp=0x%02x cbpL=%u cbpC=%u bitOff=%lu\n",
                 (unsigned long)mbX, (unsigned long)cbpCode, cbp, cbpLuma, cbpChroma,
@@ -858,7 +863,7 @@ private:
             if (qp > 51) qp -= 52;
         }
 
-#ifndef SUB0H264_NO_DEBUG_TRACE
+#if SUB0H264_TRACE
         if (mbX == 10U && mbY == 0U)
         {
             std::printf("[DBG] MB(10,0) I4x4: modes=[");
@@ -926,13 +931,13 @@ private:
             if (hasResidual)
             {
                 int32_t nc = getLumaNc(mbX, mbY, blkIdx);
-#ifndef SUB0H264_NO_DEBUG_TRACE
+#if SUB0H264_TRACE
                 uint32_t blkBitBefore = br.bitOffset();
 #endif
                 ResidualBlock4x4 resBlock;
                 decodeResidualBlock4x4(br, nc, cMaxCoeff4x4, 0U, resBlock);
 
-#ifndef SUB0H264_NO_DEBUG_TRACE
+#if SUB0H264_TRACE
                 if (mbX == 9U && mbY == 0U)
                     std::printf("[DBG]   MB9 luma blk%lu: nC=%d tc=%u bits=%lu\n",
                         (unsigned long)blkIdx, nc, resBlock.totalCoeff,
@@ -948,7 +953,7 @@ private:
                 inverseQuantize4x4(coeffs, qp);
             }
 
-#ifndef SUB0H264_NO_DEBUG_TRACE
+#if SUB0H264_TRACE
             if (mbX == 10U && mbY == 0U && blkIdx == 0U)
             {
                 std::printf("[DBG]   blk0: mode=%u pred=[%u %u %u %u] hasRes=%d\n",
@@ -985,7 +990,7 @@ private:
                         uint32_t chromaPredMode, uint8_t cbpChroma,
                         int32_t qp, uint32_t mbX, uint32_t mbY) noexcept
     {
-#ifndef SUB0H264_NO_DEBUG_TRACE
+#if SUB0H264_TRACE
         if (mbY == 0U && (mbX < 2U || mbX == 9U))
             std::printf("[DBG] MB(%lu,0) chromaMb START bitOff=%lu cbpC=%u\n",
                 (unsigned long)mbX, (unsigned long)br.bitOffset(), cbpChroma);
