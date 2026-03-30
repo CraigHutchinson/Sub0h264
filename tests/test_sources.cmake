@@ -29,5 +29,6 @@ set(SUB0H264_TEST_SOURCES
     test_deblock.cpp
     test_cabac.cpp
     test_decode_pipeline.cpp
+    test_frame_verify.cpp
     test_bench.cpp
 )

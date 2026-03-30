@@ -368,8 +368,8 @@ private:
  *  Returns packed mpsState: (pStateIdx & 0x3F) | (valMPS << 6)
  *  which matches our CabacCtx encoding and cCabacTable[128][4] index.
  */
-inline constexpr uint8_t computeCabacInitState(int32_t m, int32_t n,
-                                                int32_t sliceQpY) noexcept
+inline uint8_t computeCabacInitState(int32_t m, int32_t n,
+                                      int32_t sliceQpY) noexcept
 {
     int32_t preCtxState = ((m * sliceQpY) >> 4) + n;
     // Clip3(1, 126, preCtxState)
