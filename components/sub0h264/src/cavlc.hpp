@@ -458,8 +458,9 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
             run = zerosLeft;
         }
 
-        // Map scan position to raster position via zigzag
-        if (coeffIdx < maxCoeff)
+        // Map scan position to raster position via zigzag.
+        // Scan range: [startIdx .. startIdx + maxCoeff - 1].
+        if (coeffIdx < 16U)
         {
             uint32_t rasterPos = cZigzag4x4[coeffIdx];
             block.coeffs[rasterPos] = levels[i];
