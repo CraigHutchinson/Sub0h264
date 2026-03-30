@@ -34,6 +34,7 @@ CONFIG_ESP_TASK_WDT_TIMEOUT_S=120
 CONFIG_ESP_TASK_WDT_PANIC=n
 
 # ── Stack: larger main task stack for doctest + decoder ────────────────────────
+# 64KB stack — sufficient with heap-allocated decoders (see coding-style.md)
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=65536
 
 # ── Log level ──────────────────────────────────────────────────────────────────

@@ -4,27 +4,16 @@
 #include "../components/sub0h264/src/pps.hpp"
 #include "../components/sub0h264/src/param_sets.hpp"
 
-#include <fstream>
+#include "test_fixtures.hpp"
+
 #include <vector>
 
 using namespace sub0h264;
 
-static std::vector<uint8_t> loadFile(const char* path)
-{
-    std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f.is_open())
-        return {};
-    auto size = f.tellg();
-    f.seekg(0, std::ios::beg);
-    std::vector<uint8_t> data(static_cast<size_t>(size));
-    f.read(reinterpret_cast<char*>(data.data()), size);
-    return data;
-}
-
 /** Helper: find and parse the first SPS NAL from a file. */
 static bool findAndParseSps(const char* path, Sps& sps)
 {
-    auto data = loadFile(path);
+    auto data = getFixture(path);
     if (data.empty())
         return false;
 
@@ -48,7 +37,7 @@ static bool findAndParseSps(const char* path, Sps& sps)
 /** Helper: parse SPS + PPS from a file into ParamSets. */
 static bool parseParamSets(const char* path, ParamSets& ps)
 {
-    auto data = loadFile(path);
+    auto data = getFixture(path);
     if (data.empty())
         return false;
 
@@ -82,7 +71,7 @@ static bool parseParamSets(const char* path, ParamSets& ps)
 TEST_CASE("SPS: flat_black_640x480 — Baseline profile")
 {
     Sps sps;
-    REQUIRE(findAndParseSps(SUB0H264_TEST_FIXTURES_DIR "/flat_black_640x480.h264", sps));
+    REQUIRE(findAndParseSps("flat_black_640x480.h264", sps));
 
     CHECK(sps.valid_);
     CHECK(sps.profileIdc_ == cProfileBaseline);
@@ -103,7 +92,7 @@ TEST_CASE("SPS: flat_black_640x480 — Baseline profile")
 TEST_CASE("SPS: baseline_640x480_short — Baseline profile")
 {
     Sps sps;
-    REQUIRE(findAndParseSps(SUB0H264_TEST_FIXTURES_DIR "/baseline_640x480_short.h264", sps));
+    REQUIRE(findAndParseSps("baseline_640x480_short.h264", sps));
 
     CHECK(sps.valid_);
     CHECK(sps.profileIdc_ == cProfileBaseline);
@@ -114,7 +103,7 @@ TEST_CASE("SPS: baseline_640x480_short — Baseline profile")
 TEST_CASE("PPS: flat_black_640x480 — parse PPS after SPS")
 {
     ParamSets ps;
-    REQUIRE(parseParamSets(SUB0H264_TEST_FIXTURES_DIR "/flat_black_640x480.h264", ps));
+    REQUIRE(parseParamSets("flat_black_640x480.h264", ps));
 
     // Should have at least one SPS and one PPS
     const Sps* sps = ps.getSps(0);
@@ -146,7 +135,7 @@ TEST_CASE("PPS: flat_black_640x480 — parse PPS after SPS")
 TEST_CASE("PPS: baseline_640x480_short — CAVLC entropy")
 {
     ParamSets ps;
-    REQUIRE(parseParamSets(SUB0H264_TEST_FIXTURES_DIR "/baseline_640x480_short.h264", ps));
+    REQUIRE(parseParamSets("baseline_640x480_short.h264", ps));
 
     const Pps* pps = nullptr;
     for (uint8_t i = 0U; i < 255U; ++i)

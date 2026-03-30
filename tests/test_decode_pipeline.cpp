@@ -1,23 +1,11 @@
 #include "doctest.h"
+#include "test_fixtures.hpp"
 #include "../components/sub0h264/src/decoder.hpp"
 
-#include <fstream>
-#include <numeric>
+#include <memory>
 #include <vector>
 
 using namespace sub0h264;
-
-static std::vector<uint8_t> loadFile(const char* path)
-{
-    std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f.is_open())
-        return {};
-    auto size = f.tellg();
-    f.seekg(0, std::ios::beg);
-    std::vector<uint8_t> data(static_cast<size_t>(size));
-    f.read(reinterpret_cast<char*>(data.data()), size);
-    return data;
-}
 
 /** Compute a simple checksum of a frame's Y plane (sum of all bytes). */
 static uint64_t yPlaneSum(const Frame& frame)
@@ -34,15 +22,15 @@ static uint64_t yPlaneSum(const Frame& frame)
 
 TEST_CASE("Pipeline: H264Decoder decodes flat_black IDR")
 {
-    auto data = loadFile(SUB0H264_TEST_FIXTURES_DIR "/flat_black_640x480.h264");
+    auto data = getFixture("flat_black_640x480.h264");
     REQUIRE_FALSE(data.empty());
 
-    H264Decoder decoder;
-    int32_t frames = decoder.decodeStream(data.data(), static_cast<uint32_t>(data.size()));
+    auto decoder = std::make_unique<H264Decoder>();
+    int32_t frames = decoder->decodeStream(data.data(), static_cast<uint32_t>(data.size()));
 
     CHECK(frames >= 1);
 
-    const Frame* frame = decoder.currentFrame();
+    const Frame* frame = decoder->currentFrame();
     REQUIRE(frame != nullptr);
     CHECK(frame->width() == 640U);
     CHECK(frame->height() == 480U);
@@ -61,10 +49,10 @@ TEST_CASE("Pipeline: H264Decoder decodes flat_black IDR")
 
 TEST_CASE("Pipeline: H264Decoder processes SPS/PPS from baseline stream")
 {
-    auto data = loadFile(SUB0H264_TEST_FIXTURES_DIR "/baseline_640x480_short.h264");
+    auto data = getFixture("baseline_640x480_short.h264");
     REQUIRE_FALSE(data.empty());
 
-    H264Decoder decoder;
+    auto decoder = std::make_unique<H264Decoder>();
 
     // Feed just the first few NALs to test SPS/PPS processing
     std::vector<NalBounds> bounds;
@@ -75,16 +63,16 @@ TEST_CASE("Pipeline: H264Decoder processes SPS/PPS from baseline stream")
     NalUnit spsNal;
     REQUIRE(parseNalUnit(data.data() + bounds[0].offset, bounds[0].size, spsNal));
     CHECK(spsNal.type == NalType::Sps);
-    CHECK(decoder.processNal(spsNal) == DecodeStatus::NeedMoreData);
+    CHECK(decoder->processNal(spsNal) == DecodeStatus::NeedMoreData);
 
     // Process PPS
     NalUnit ppsNal;
     REQUIRE(parseNalUnit(data.data() + bounds[1].offset, bounds[1].size, ppsNal));
     CHECK(ppsNal.type == NalType::Pps);
-    CHECK(decoder.processNal(ppsNal) == DecodeStatus::NeedMoreData);
+    CHECK(decoder->processNal(ppsNal) == DecodeStatus::NeedMoreData);
 
     // Verify parameter sets are stored
-    const Sps* sps = decoder.paramSets().getSps(0);
+    const Sps* sps = decoder->paramSets().getSps(0);
     REQUIRE(sps != nullptr);
     CHECK(sps->width() == 640U);
     CHECK(sps->height() == 480U);
@@ -92,26 +80,26 @@ TEST_CASE("Pipeline: H264Decoder processes SPS/PPS from baseline stream")
 
 TEST_CASE("Pipeline: H264Decoder lifecycle")
 {
-    H264Decoder decoder;
+    auto decoder = std::make_unique<H264Decoder>();
 
-    CHECK(decoder.currentFrame() == nullptr);
-    CHECK(decoder.frameCount() == 0U);
+    CHECK(decoder->currentFrame() == nullptr);
+    CHECK(decoder->frameCount() == 0U);
 
     // Decode empty stream
     const uint8_t empty[] = { 0x00 };
-    int32_t frames = decoder.decodeStream(empty, 1U);
+    int32_t frames = decoder->decodeStream(empty, 1U);
     CHECK(frames == 0);
 }
 
 TEST_CASE("Pipeline: frame allocation matches SPS")
 {
-    auto data = loadFile(SUB0H264_TEST_FIXTURES_DIR "/flat_black_640x480.h264");
+    auto data = getFixture("flat_black_640x480.h264");
     REQUIRE_FALSE(data.empty());
 
-    H264Decoder decoder;
-    decoder.decodeStream(data.data(), static_cast<uint32_t>(data.size()));
+    auto decoder = std::make_unique<H264Decoder>();
+    decoder->decodeStream(data.data(), static_cast<uint32_t>(data.size()));
 
-    const Frame* frame = decoder.currentFrame();
+    const Frame* frame = decoder->currentFrame();
     REQUIRE(frame != nullptr);
 
     // Y plane should be 640*480 = 307200 bytes
@@ -128,20 +116,20 @@ TEST_CASE("Pipeline: frame allocation matches SPS")
 
 TEST_CASE("Pipeline: baseline_640x480_short — IDR + P-frames")
 {
-    auto data = loadFile(SUB0H264_TEST_FIXTURES_DIR "/baseline_640x480_short.h264");
+    auto data = getFixture("baseline_640x480_short.h264");
     REQUIRE_FALSE(data.empty());
 
-    H264Decoder decoder;
-    int32_t frames = decoder.decodeStream(data.data(), static_cast<uint32_t>(data.size()));
+    auto decoder = std::make_unique<H264Decoder>();
+    int32_t frames = decoder->decodeStream(data.data(), static_cast<uint32_t>(data.size()));
 
     MESSAGE("baseline_640x480_short: decoded " << frames << " frames, "
-            << "frameCount=" << decoder.frameCount());
+            << "frameCount=" << decoder->frameCount());
 
     // Should decode IDR + P-frames (stream has 1 IDR + 49 P-frames = 50 total)
     CHECK(frames >= 1);
-    CHECK(decoder.frameCount() >= 1U);
+    CHECK(decoder->frameCount() >= 1U);
 
-    const Frame* frame = decoder.currentFrame();
+    const Frame* frame = decoder->currentFrame();
     REQUIRE(frame != nullptr);
     CHECK(frame->width() == 640U);
     CHECK(frame->height() == 480U);
@@ -156,19 +144,19 @@ TEST_CASE("Pipeline: baseline_640x480_short — IDR + P-frames")
 
 TEST_CASE("Pipeline: high_640x480 — CABAC High profile decode")
 {
-    auto data = loadFile(SUB0H264_TEST_FIXTURES_DIR "/high_640x480.h264");
+    auto data = getFixture("high_640x480.h264");
     REQUIRE_FALSE(data.empty());
 
-    H264Decoder decoder;
-    int32_t frames = decoder.decodeStream(data.data(), static_cast<uint32_t>(data.size()));
+    auto decoder = std::make_unique<H264Decoder>();
+    int32_t frames = decoder->decodeStream(data.data(), static_cast<uint32_t>(data.size()));
 
     MESSAGE("high_640x480: decoded " << frames << " frames, "
-            << "frameCount=" << decoder.frameCount());
+            << "frameCount=" << decoder->frameCount());
 
     // High profile stream should decode at least the IDR frame
     CHECK(frames >= 1);
 
-    const Frame* frame = decoder.currentFrame();
+    const Frame* frame = decoder->currentFrame();
     REQUIRE(frame != nullptr);
     CHECK(frame->width() == 640U);
     CHECK(frame->height() == 480U);

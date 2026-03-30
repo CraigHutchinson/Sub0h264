@@ -5,22 +5,11 @@
 #include "../components/sub0h264/src/param_sets.hpp"
 #include "../components/sub0h264/src/slice.hpp"
 
-#include <fstream>
+#include "test_fixtures.hpp"
+
 #include <vector>
 
 using namespace sub0h264;
-
-static std::vector<uint8_t> loadFile(const char* path)
-{
-    std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f.is_open())
-        return {};
-    auto size = f.tellg();
-    f.seekg(0, std::ios::beg);
-    std::vector<uint8_t> data(static_cast<size_t>(size));
-    f.read(reinterpret_cast<char*>(data.data()), size);
-    return data;
-}
 
 /** Parse all NALs from a file, populate ParamSets, and collect slice headers. */
 struct ParsedStream
@@ -31,7 +20,7 @@ struct ParsedStream
 
     bool parse(const char* path)
     {
-        auto data = loadFile(path);
+        auto data = getFixture(path);
         if (data.empty())
             return false;
 
@@ -91,7 +80,7 @@ struct ParsedStream
 TEST_CASE("Slice: flat_black_640x480 — single IDR I-slice")
 {
     ParsedStream stream;
-    REQUIRE(stream.parse(SUB0H264_TEST_FIXTURES_DIR "/flat_black_640x480.h264"));
+    REQUIRE(stream.parse("flat_black_640x480.h264"));
 
     REQUIRE(stream.slices.size() >= 1U);
 
@@ -108,7 +97,7 @@ TEST_CASE("Slice: flat_black_640x480 — single IDR I-slice")
 TEST_CASE("Slice: baseline_640x480_short — IDR + P-frames")
 {
     ParsedStream stream;
-    REQUIRE(stream.parse(SUB0H264_TEST_FIXTURES_DIR "/baseline_640x480_short.h264"));
+    REQUIRE(stream.parse("baseline_640x480_short.h264"));
 
     REQUIRE(stream.slices.size() >= 3U);
 
@@ -140,7 +129,7 @@ TEST_CASE("Slice: baseline_640x480_short — IDR + P-frames")
 TEST_CASE("Slice: frame numbers start at 0 for IDR")
 {
     ParsedStream stream;
-    REQUIRE(stream.parse(SUB0H264_TEST_FIXTURES_DIR "/baseline_640x480_short.h264"));
+    REQUIRE(stream.parse("baseline_640x480_short.h264"));
     REQUIRE(stream.slices.size() >= 3U);
 
     // IDR resets frame_num to 0
@@ -159,7 +148,7 @@ TEST_CASE("Slice: frame numbers start at 0 for IDR")
 TEST_CASE("Slice: QP delta is within valid range")
 {
     ParsedStream stream;
-    REQUIRE(stream.parse(SUB0H264_TEST_FIXTURES_DIR "/baseline_640x480_short.h264"));
+    REQUIRE(stream.parse("baseline_640x480_short.h264"));
 
     for (const auto& sh : stream.slices)
     {

@@ -6,22 +6,9 @@
 #include "../components/sub0h264/src/slice.hpp"
 #include "../components/sub0h264/src/cavlc.hpp"
 
-#include <fstream>
-#include <vector>
+#include "test_fixtures.hpp"
 
 using namespace sub0h264;
-
-static std::vector<uint8_t> loadFile(const char* path)
-{
-    std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f.is_open())
-        return {};
-    auto size = f.tellg();
-    f.seekg(0, std::ios::beg);
-    std::vector<uint8_t> data(static_cast<size_t>(size));
-    f.read(reinterpret_cast<char*>(data.data()), size);
-    return data;
-}
 
 TEST_CASE("CAVLC: coeff_token decode with nC=0 TC=0 TO=0")
 {

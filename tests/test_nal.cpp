@@ -1,23 +1,12 @@
 #include "doctest.h"
 #include "../components/sub0h264/src/annexb.hpp"
 
+#include "test_fixtures.hpp"
+
 #include <cstdio>
-#include <fstream>
 #include <vector>
 
 using namespace sub0h264;
-
-static std::vector<uint8_t> loadFile(const char* path)
-{
-    std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f.is_open())
-        return {};
-    auto size = f.tellg();
-    f.seekg(0, std::ios::beg);
-    std::vector<uint8_t> data(static_cast<size_t>(size));
-    f.read(reinterpret_cast<char*>(data.data()), size);
-    return data;
-}
 
 TEST_CASE("findNalUnits with simple 3-byte start codes")
 {
@@ -109,7 +98,7 @@ TEST_CASE("parseNalUnit rejects forbidden bit")
 
 TEST_CASE("Parse flat_black_640x480.h264 NAL sequence")
 {
-    auto data = loadFile(SUB0H264_TEST_FIXTURES_DIR "/flat_black_640x480.h264");
+    auto data = getFixture("flat_black_640x480.h264");
     REQUIRE_FALSE(data.empty());
 
     std::vector<NalBounds> bounds;
@@ -141,7 +130,7 @@ TEST_CASE("Parse flat_black_640x480.h264 NAL sequence")
 
 TEST_CASE("Parse baseline_640x480_short.h264 NAL sequence")
 {
-    auto data = loadFile(SUB0H264_TEST_FIXTURES_DIR "/baseline_640x480_short.h264");
+    auto data = getFixture("baseline_640x480_short.h264");
     REQUIRE_FALSE(data.empty());
 
     std::vector<NalBounds> bounds;

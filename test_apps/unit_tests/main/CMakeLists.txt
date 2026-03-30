@@ -11,6 +11,7 @@ add_library(${COMPONENT_TARGET} STATIC
 
 target_include_directories(${COMPONENT_TARGET} PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../tests/vendor"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../tests"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../components/sub0h264/src"
 )
 
