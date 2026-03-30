@@ -11,6 +11,8 @@
 
 #include "annexb.hpp"
 #include "bitstream.hpp"
+#include "cabac.hpp"
+#include "cabac_parse.hpp"
 #include "cavlc.hpp"
 #include "deblock.hpp"
 #include "dpb.hpp"
@@ -144,6 +146,11 @@ private:
     // Per-frame MV context for inter prediction
     std::vector<MbMotionInfo> mbMotion_;  // [mbIdx]
 
+    // CABAC state
+    CabacEngine cabacEngine_;
+    std::array<CabacCtx, cNumCabacCtx> cabacCtx_ = {};
+    std::vector<bool> mbIsSkip_;  // [mbIdx] — for CABAC skip context
+
     uint16_t widthInMbs_ = 0U;
     uint16_t heightInMbs_ = 0U;
 
@@ -272,6 +279,27 @@ private:
         // Get reference frame for P-slices
         const Frame* refFrame = dpb_.getReference(0U);
 
+        // Initialize CABAC engine if High profile
+        bool useCabac = pps->isCabac();
+        if (useCabac)
+        {
+            // Align to byte boundary after slice header
+            br.alignToByte();
+
+            // Initialize CABAC contexts
+            uint32_t sliceTypeIdx = (sh.sliceType_ == SliceType::I) ? 2U :
+                                    (sh.sliceType_ == SliceType::P) ? 0U : 1U;
+            initCabacContexts(cabacCtx_.data(), sliceTypeIdx,
+                              sh.cabacInitIdc_, sliceQp);
+
+            // Initialize arithmetic engine
+            cabacEngine_.init(br);
+
+            // Resize skip tracking
+            mbIsSkip_.resize(totalMbs, false);
+            std::fill(mbIsSkip_.begin(), mbIsSkip_.end(), false);
+        }
+
         // Decode macroblocks
         if (sh.sliceType_ == SliceType::I)
         {
@@ -279,60 +307,105 @@ private:
             {
                 uint32_t mbX = mbAddr % widthInMbs_;
                 uint32_t mbY = mbAddr / widthInMbs_;
-                if (!decodeIntraMb(br, *sps, *pps, sh, sliceQp, mbX, mbY))
-                    break;
+
+                if (useCabac)
+                {
+                    if (!decodeCabacIntraMb(br, *sps, *pps, sh, sliceQp, mbX, mbY))
+                        break;
+                }
+                else
+                {
+                    if (!decodeIntraMb(br, *sps, *pps, sh, sliceQp, mbX, mbY))
+                        break;
+                }
             }
         }
         else if (sh.sliceType_ == SliceType::P)
         {
             if (!refFrame)
-            {
-                // No reference available — cannot decode P-slice
-                // This should not happen in a valid stream
                 return DecodeStatus::Error;
-            }
 
-            uint32_t mbSkipRun = 0U;
-            bool needSkipRun = true;
-
-            for (uint32_t mbAddr = sh.firstMbInSlice_; mbAddr < totalMbs; ++mbAddr)
+            if (useCabac)
             {
-                uint32_t mbX = mbAddr % widthInMbs_;
-                uint32_t mbY = mbAddr / widthInMbs_;
-
-                if (needSkipRun)
+                // CABAC P-slice: per-MB skip flag instead of skip run
+                for (uint32_t mbAddr = sh.firstMbInSlice_; mbAddr < totalMbs; ++mbAddr)
                 {
-                    mbSkipRun = br.readUev();
-                    needSkipRun = false;
-                }
+                    uint32_t mbX = mbAddr % widthInMbs_;
+                    uint32_t mbY = mbAddr / widthInMbs_;
 
-                if (mbSkipRun > 0U)
-                {
-                    // P_Skip MB: infer MV from neighbors, no residual
-                    decodePSkipMb(*decodeTarget, *refFrame, mbX, mbY);
-                    --mbSkipRun;
-                    if (mbSkipRun == 0U)
-                        needSkipRun = true;
-                }
-                else
-                {
-                    // Read mb_type
-                    uint32_t mbTypeRaw = br.readUev();
-                    needSkipRun = true;
+                    // Decode mb_skip_flag
+                    bool leftSkip = (mbX > 0U) && mbIsSkip_[mbY * widthInMbs_ + mbX - 1U];
+                    bool topSkip = (mbY > 0U) && mbIsSkip_[(mbY - 1U) * widthInMbs_ + mbX];
+                    uint32_t skipFlag = cabacDecodeMbSkipP(cabacEngine_, cabacCtx_.data(),
+                                                           leftSkip, topSkip);
 
-                    if (mbTypeRaw >= 5U)
+                    if (skipFlag)
                     {
-                        // Intra MB within P-slice (mb_type offset by 5)
-                        mbTypeRaw -= 5U;
-                        if (!decodeIntraMbInPSlice(br, *sps, *pps, sh, sliceQp,
-                                                    mbTypeRaw, *decodeTarget, mbX, mbY))
-                            break;
+                        mbIsSkip_[mbAddr] = true;
+                        decodePSkipMb(*decodeTarget, *refFrame, mbX, mbY);
                     }
                     else
                     {
-                        // P-MB: inter prediction
-                        decodePInterMb(br, *sps, *pps, sliceQp,
-                                       mbTypeRaw, *decodeTarget, *refFrame, mbX, mbY);
+                        mbIsSkip_[mbAddr] = false;
+                        uint32_t mbTypeRaw = cabacDecodeMbTypeP(cabacEngine_, cabacCtx_.data());
+
+                        if (mbTypeRaw >= 5U)
+                        {
+                            mbTypeRaw -= 5U;
+                            if (!decodeIntraMbInPSlice(br, *sps, *pps, sh, sliceQp,
+                                                        mbTypeRaw, *decodeTarget, mbX, mbY))
+                                break;
+                        }
+                        else
+                        {
+                            // CABAC inter MB: use CABAC for MVD + residual
+                            decodeCabacPInterMb(br, *sps, *pps, sliceQp,
+                                                mbTypeRaw, *decodeTarget, *refFrame, mbX, mbY);
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // CAVLC P-slice: skip run based
+                uint32_t mbSkipRun = 0U;
+                bool needSkipRun = true;
+
+                for (uint32_t mbAddr = sh.firstMbInSlice_; mbAddr < totalMbs; ++mbAddr)
+                {
+                    uint32_t mbX = mbAddr % widthInMbs_;
+                    uint32_t mbY = mbAddr / widthInMbs_;
+
+                    if (needSkipRun)
+                    {
+                        mbSkipRun = br.readUev();
+                        needSkipRun = false;
+                    }
+
+                    if (mbSkipRun > 0U)
+                    {
+                        decodePSkipMb(*decodeTarget, *refFrame, mbX, mbY);
+                        --mbSkipRun;
+                        if (mbSkipRun == 0U)
+                            needSkipRun = true;
+                    }
+                    else
+                    {
+                        uint32_t mbTypeRaw = br.readUev();
+                        needSkipRun = true;
+
+                        if (mbTypeRaw >= 5U)
+                        {
+                            mbTypeRaw -= 5U;
+                            if (!decodeIntraMbInPSlice(br, *sps, *pps, sh, sliceQp,
+                                                        mbTypeRaw, *decodeTarget, mbX, mbY))
+                                break;
+                        }
+                        else
+                        {
+                            decodePInterMb(br, *sps, *pps, sliceQp,
+                                           mbTypeRaw, *decodeTarget, *refFrame, mbX, mbY);
+                        }
                     }
                 }
             }
@@ -967,22 +1040,383 @@ private:
                                 uint32_t mbTypeRaw, Frame& target,
                                 uint32_t mbX, uint32_t mbY) noexcept
     {
-        // Mark as intra (no MV)
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
         mbMotion_[mbIdx] = { {0, 0}, -1, true };
 
-        // Delegate to existing intra decode (uses currentFrame_)
-        // Copy target → currentFrame_ so intra prediction reads neighbors from target
-        // This is needed because P-slices write to target (DPB frame)
         int32_t qp = sliceQp;
-
-        if (mbTypeRaw == 25U)
-            return true; // I_PCM
+        if (mbTypeRaw == 25U) return true;
 
         if (isI16x16(static_cast<uint8_t>(mbTypeRaw)))
             return decodeI16x16Mb(br, sps, pps, mbTypeRaw, qp, mbX, mbY);
         else
             return decodeI4x4Mb(br, sps, pps, qp, mbX, mbY);
+    }
+
+    // ── CABAC-specific MB decode methods ────────────────────────────────
+
+    /** Decode an intra MB using CABAC. */
+    bool decodeCabacIntraMb(BitReader& br, const Sps& sps, const Pps& pps,
+                             const SliceHeader& sh, int32_t sliceQp,
+                             uint32_t mbX, uint32_t mbY) noexcept
+    {
+        (void)br; (void)sh;
+        uint32_t mbIdx = mbY * widthInMbs_ + mbX;
+        mbMotion_[mbIdx] = { {0, 0}, -1, true };
+
+        bool leftIsIntra = (mbX == 0U) || (mbMotion_[mbIdx - 1U].refIdx == -1);
+        bool topIsIntra = (mbY == 0U) || (mbMotion_[mbIdx - widthInMbs_].refIdx == -1);
+
+        uint32_t mbTypeRaw = cabacDecodeMbTypeI(cabacEngine_, cabacCtx_.data(),
+                                                 leftIsIntra, topIsIntra);
+
+        if (mbTypeRaw == 25U) return true; // I_PCM
+        if (mbTypeRaw == 0U)
+        {
+            // I_4x4: decode pred modes + residual via CABAC
+            return decodeCabacI4x4Mb(sps, pps, sliceQp, mbX, mbY);
+        }
+        else
+        {
+            // I_16x16: decode using existing path with CABAC residual
+            return decodeCabacI16x16Mb(sps, pps, mbTypeRaw, sliceQp, mbX, mbY);
+        }
+    }
+
+    /** Decode I_4x4 MB with CABAC residual. */
+    bool decodeCabacI4x4Mb(const Sps& sps, const Pps& pps,
+                            int32_t& qp, uint32_t mbX, uint32_t mbY) noexcept
+    {
+        (void)sps;
+        // Read intra 4x4 prediction modes using CABAC
+        uint8_t predModes[16] = {};
+        for (uint32_t i = 0U; i < 16U; ++i)
+        {
+            uint8_t result = cabacDecodeIntra4x4PredMode(cabacEngine_, cabacCtx_.data());
+            if (result == 0xFFU)
+                predModes[i] = 2U; // Most probable → DC (simplified)
+            else
+                predModes[i] = result;
+        }
+
+        // Chroma pred mode
+        uint32_t mbIdx = mbY * widthInMbs_ + mbX;
+        bool leftIntra = (mbX == 0U) || (mbMotion_[mbIdx - 1U].refIdx == -1);
+        bool topIntra = (mbY == 0U) || (mbMotion_[mbIdx - widthInMbs_].refIdx == -1);
+        uint32_t chromaPredMode = cabacDecodeIntraChromaMode(cabacEngine_, cabacCtx_.data(),
+                                                              leftIntra, topIntra);
+
+        // CBP via CABAC
+        uint8_t cbp = cabacDecodeCbp(cabacEngine_, cabacCtx_.data(),
+                                      true, true, false, false);
+        uint8_t cbpLuma = cbp & 0x0FU;
+        uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
+
+        // QP delta
+        if (cbp > 0U)
+        {
+            int32_t qpDelta = cabacDecodeMbQpDelta(cabacEngine_, cabacCtx_.data(), false);
+            qp += qpDelta;
+            if (qp < 0) qp += 52;
+            if (qp > 51) qp -= 52;
+        }
+
+        // Decode luma 4x4 blocks
+        uint8_t* mbLuma = currentFrame_.yMb(mbX, mbY);
+        uint32_t yStride = currentFrame_.yStride();
+
+        for (uint32_t blkIdx = 0U; blkIdx < 16U; ++blkIdx)
+        {
+            uint32_t blkX = (blkIdx & 3U) * 4U;
+            uint32_t blkY = (blkIdx >> 2U) * 4U;
+            uint32_t absX = mbX * cMbSize + blkX;
+            uint32_t absY = mbY * cMbSize + blkY;
+
+            // Prediction
+            uint8_t pred4x4[16];
+            uint8_t topBuf[8] = {}, leftBuf[4] = {}, topLeftVal = cDefaultPredValue;
+            const uint8_t *top = nullptr, *topRight = nullptr, *left = nullptr, *topLeft = nullptr;
+            if (absY > 0U) { const uint8_t* row = currentFrame_.yRow(absY - 1U); for (uint32_t i = 0U; i < 4U; ++i) topBuf[i] = row[absX + i]; top = topBuf; if (absX + 4U < currentFrame_.width()) { for (uint32_t i = 0U; i < 4U; ++i) topBuf[4+i] = row[absX+4U+i]; topRight = topBuf+4U; } }
+            if (absX > 0U) { for (uint32_t i = 0U; i < 4U; ++i) leftBuf[i] = currentFrame_.y(absX-1U, absY+i); left = leftBuf; }
+            if (absX > 0U && absY > 0U) { topLeftVal = currentFrame_.y(absX-1U, absY-1U); topLeft = &topLeftVal; }
+
+            intraPred4x4(static_cast<Intra4x4Mode>(predModes[blkIdx]), top, topRight, left, topLeft, pred4x4);
+
+            // Residual via CABAC
+            uint32_t group8x8 = (blkY >= 8U ? 2U : 0U) + (blkX >= 8U ? 1U : 0U);
+            bool hasResidual = (cbpLuma >> group8x8) & 1U;
+
+            int16_t coeffs[16] = {};
+            if (hasResidual)
+            {
+                cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), coeffs, 16U, 2U);
+                nnzLuma_[mbIdx * 16U + blkIdx] = 1U; // Simplified NNZ tracking
+                inverseQuantize4x4(coeffs, qp);
+            }
+
+            uint8_t* outPtr = mbLuma + blkY * yStride + blkX;
+            inverseDct4x4AddPred(coeffs, pred4x4, 4U, outPtr, yStride);
+        }
+
+        // Chroma (use existing CAVLC chroma path — structure is the same,
+        // only entropy coding differs. For CABAC chroma, use CABAC residual.)
+        decodeChromaCabac(pps, chromaPredMode, cbpChroma, qp, mbX, mbY);
+        return true;
+    }
+
+    /** Decode I_16x16 MB with CABAC. */
+    bool decodeCabacI16x16Mb(const Sps& sps, const Pps& pps,
+                              uint32_t mbTypeRaw, int32_t& qp,
+                              uint32_t mbX, uint32_t mbY) noexcept
+    {
+        (void)sps;
+        uint8_t predMode = i16x16PredMode(static_cast<uint8_t>(mbTypeRaw));
+        uint8_t cbpLuma  = i16x16CbpLuma(static_cast<uint8_t>(mbTypeRaw));
+        uint8_t cbpChroma = i16x16CbpChroma(static_cast<uint8_t>(mbTypeRaw));
+
+        uint32_t mbIdx = mbY * widthInMbs_ + mbX;
+        bool leftIntra = (mbX == 0U) || (mbMotion_[mbIdx - 1U].refIdx == -1);
+        bool topIntra = (mbY == 0U) || (mbMotion_[mbIdx - widthInMbs_].refIdx == -1);
+        uint32_t chromaPredMode = cabacDecodeIntraChromaMode(cabacEngine_, cabacCtx_.data(),
+                                                              leftIntra, topIntra);
+
+        // QP delta
+        int32_t qpDelta = cabacDecodeMbQpDelta(cabacEngine_, cabacCtx_.data(), false);
+        qp += qpDelta;
+        if (qp < 0) qp += 52;
+        if (qp > 51) qp -= 52;
+
+        // Generate 16x16 prediction
+        uint8_t lumaPred[256];
+        intraPred16x16(static_cast<Intra16x16Mode>(predMode), currentFrame_, mbX, mbY, lumaPred);
+
+        // Decode DC block via CABAC (category 0 = Luma DC)
+        int16_t dcCoeffs[16] = {};
+        cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), dcCoeffs, 16U, 0U);
+        inverseHadamard4x4(dcCoeffs);
+
+        int32_t qpDiv6 = qp / 6;
+        int32_t qpMod6 = qp % 6;
+        int32_t dcScale = cDequantScale[qpMod6][0];
+        for (uint32_t i = 0U; i < 16U; ++i)
+        {
+            if (dcCoeffs[i] != 0)
+            {
+                int32_t val = dcCoeffs[i] * dcScale;
+                dcCoeffs[i] = static_cast<int16_t>(qpDiv6 >= 2 ? val << (qpDiv6 - 2) : (val + (1 << (1 - qpDiv6))) >> (2 - qpDiv6));
+            }
+        }
+
+        // Decode AC blocks
+        uint8_t* mbLuma = currentFrame_.yMb(mbX, mbY);
+        uint32_t yStride = currentFrame_.yStride();
+
+        for (uint32_t blkIdx = 0U; blkIdx < 16U; ++blkIdx)
+        {
+            uint32_t blkX = (blkIdx & 3U) * 4U;
+            uint32_t blkY = (blkIdx >> 2U) * 4U;
+
+            int16_t coeffs[16] = {};
+            coeffs[0] = dcCoeffs[blkIdx];
+
+            if (cbpLuma)
+            {
+                int16_t acCoeffs[16] = {};
+                cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), acCoeffs, 15U, 1U);
+                for (uint32_t i = 1U; i < 16U; ++i)
+                    coeffs[i] = acCoeffs[i - 1U];
+                nnzLuma_[mbIdx * 16U + blkIdx] = 1U;
+            }
+
+            inverseQuantize4x4(coeffs, qp);
+            uint8_t* predPtr = lumaPred + blkY * 16U + blkX;
+            uint8_t* outPtr = mbLuma + blkY * yStride + blkX;
+            inverseDct4x4AddPred(coeffs, predPtr, 16U, outPtr, yStride);
+        }
+
+        decodeChromaCabac(pps, chromaPredMode, cbpChroma, qp, mbX, mbY);
+        return true;
+    }
+
+    /** Decode P-inter MB with CABAC entropy. */
+    void decodeCabacPInterMb(BitReader& br, const Sps& sps, const Pps& pps,
+                              int32_t sliceQp, uint32_t mbTypeRaw,
+                              Frame& target, const Frame& ref,
+                              uint32_t mbX, uint32_t mbY) noexcept
+    {
+        (void)br; (void)sps;
+        // Decode MVD via CABAC
+        int16_t mvdX = cabacDecodeMvd(cabacEngine_, cabacCtx_.data(), cCtxMvdX, 0);
+        int16_t mvdY = cabacDecodeMvd(cabacEngine_, cabacCtx_.data(), cCtxMvdY, 0);
+
+        // MV prediction (same as CAVLC path)
+        MbMotionInfo left    = getMbMotionNeighbor(mbX, mbY, -1, 0);
+        MbMotionInfo top     = getMbMotionNeighbor(mbX, mbY, 0, -1);
+        MbMotionInfo topRight = getMbMotionNeighbor(mbX, mbY, 1, -1);
+        if (!topRight.available) topRight = getMbMotionNeighbor(mbX, mbY, -1, -1);
+
+        MotionVector mvp = computeMvPredictor(left, top, topRight, 0);
+        MotionVector mv = { static_cast<int16_t>(mvp.x + mvdX),
+                            static_cast<int16_t>(mvp.y + mvdY) };
+
+        uint32_t mbIdx = mbY * widthInMbs_ + mbX;
+        mbMotion_[mbIdx] = { mv, 0, true };
+
+        // Motion compensation
+        int32_t refX = static_cast<int32_t>(mbX * cMbSize) + (mv.x >> 2);
+        int32_t refY = static_cast<int32_t>(mbY * cMbSize) + (mv.y >> 2);
+        uint32_t dx = static_cast<uint32_t>(mv.x) & 3U;
+        uint32_t dy = static_cast<uint32_t>(mv.y) & 3U;
+
+        uint8_t predLuma[256];
+        lumaMotionComp(ref, refX, refY, dx, dy, cMbSize, cMbSize, predLuma, cMbSize);
+
+        int32_t chromaRefX = static_cast<int32_t>(mbX * cChromaBlockSize) + (mv.x >> 3);
+        int32_t chromaRefY = static_cast<int32_t>(mbY * cChromaBlockSize) + (mv.y >> 3);
+        uint32_t cdx = static_cast<uint32_t>(mv.x) & 7U;
+        uint32_t cdy = static_cast<uint32_t>(mv.y) & 7U;
+
+        uint8_t predU[64], predV[64];
+        chromaMotionComp(ref, chromaRefX, chromaRefY, cdx, cdy,
+                         cChromaBlockSize, cChromaBlockSize, true, predU, cChromaBlockSize);
+        chromaMotionComp(ref, chromaRefX, chromaRefY, cdx, cdy,
+                         cChromaBlockSize, cChromaBlockSize, false, predV, cChromaBlockSize);
+
+        // CBP via CABAC
+        uint8_t cbp = cabacDecodeCbp(cabacEngine_, cabacCtx_.data(),
+                                      true, true, false, false);
+        uint8_t cbpLuma = cbp & 0x0FU;
+        uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
+
+        int32_t qp = sliceQp;
+        if (cbp > 0U)
+        {
+            int32_t qpDelta = cabacDecodeMbQpDelta(cabacEngine_, cabacCtx_.data(), false);
+            qp += qpDelta;
+            if (qp < 0) qp += 52;
+            if (qp > 51) qp -= 52;
+        }
+
+        // Luma residual via CABAC
+        uint32_t yStride = target.yStride();
+        for (uint32_t blkIdx = 0U; blkIdx < 16U; ++blkIdx)
+        {
+            uint32_t blkX = (blkIdx & 3U) * 4U;
+            uint32_t blkY = (blkIdx >> 2U) * 4U;
+            uint32_t group8x8 = (blkY >= 8U ? 2U : 0U) + (blkX >= 8U ? 1U : 0U);
+
+            int16_t coeffs[16] = {};
+            if ((cbpLuma >> group8x8) & 1U)
+            {
+                cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), coeffs, 16U, 2U);
+                nnzLuma_[mbIdx * 16U + blkIdx] = 1U;
+                inverseQuantize4x4(coeffs, qp);
+            }
+
+            uint8_t* predPtr = predLuma + blkY * cMbSize + blkX;
+            uint8_t* outPtr = target.yMb(mbX, mbY) + blkY * yStride + blkX;
+            inverseDct4x4AddPred(coeffs, predPtr, cMbSize, outPtr, yStride);
+        }
+
+        // Chroma residual
+        int32_t chromaQpIdx = clampQpIdx(qp + pps.chromaQpIndexOffset_);
+        int32_t chromaQp = cChromaQpTable[chromaQpIdx];
+
+        int16_t dcCb[4] = {}, dcCr[4] = {};
+        if (cbpChroma >= 1U)
+        {
+            cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), dcCb, 4U, 3U);
+            cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), dcCr, 4U, 3U);
+            inverseHadamard2x2(dcCb);
+            inverseHadamard2x2(dcCr);
+
+            int32_t cqpDiv6 = chromaQp / 6, cqpMod6 = chromaQp % 6;
+            int32_t cScale = cDequantScale[cqpMod6][0];
+            for (uint32_t i = 0U; i < 4U; ++i)
+            {
+                if (dcCb[i] != 0) { int32_t v = dcCb[i] * cScale; dcCb[i] = static_cast<int16_t>(cqpDiv6 >= 1 ? v << (cqpDiv6 - 1) : (v + 1) >> 1); }
+                if (dcCr[i] != 0) { int32_t v = dcCr[i] * cScale; dcCr[i] = static_cast<int16_t>(cqpDiv6 >= 1 ? v << (cqpDiv6 - 1) : (v + 1) >> 1); }
+            }
+        }
+
+        uint32_t uvStride = target.uvStride();
+        for (uint32_t blkIdx = 0U; blkIdx < 4U; ++blkIdx)
+        {
+            uint32_t blkX = (blkIdx & 1U) * 4U;
+            uint32_t blkY = (blkIdx >> 1U) * 4U;
+            int16_t cbCoeffs[16] = {}, crCoeffs[16] = {};
+            cbCoeffs[0] = dcCb[blkIdx];
+            crCoeffs[0] = dcCr[blkIdx];
+
+            if (cbpChroma >= 2U)
+            {
+                int16_t acCb[16] = {}, acCr[16] = {};
+                cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), acCb, 15U, 4U);
+                for (uint32_t i = 1U; i < 16U; ++i) cbCoeffs[i] = acCb[i - 1U];
+                inverseQuantize4x4(cbCoeffs, chromaQp);
+                cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), acCr, 15U, 4U);
+                for (uint32_t i = 1U; i < 16U; ++i) crCoeffs[i] = acCr[i - 1U];
+                inverseQuantize4x4(crCoeffs, chromaQp);
+            }
+
+            inverseDct4x4AddPred(cbCoeffs, predU + blkY * 8U + blkX, 8U, target.uMb(mbX, mbY) + blkY * uvStride + blkX, uvStride);
+            inverseDct4x4AddPred(crCoeffs, predV + blkY * 8U + blkX, 8U, target.vMb(mbX, mbY) + blkY * uvStride + blkX, uvStride);
+        }
+    }
+
+    /** Decode chroma using CABAC residual. */
+    void decodeChromaCabac(const Pps& pps, uint32_t chromaPredMode,
+                            uint8_t cbpChroma, int32_t qp,
+                            uint32_t mbX, uint32_t mbY) noexcept
+    {
+        auto chromaMode = static_cast<IntraChromaMode>(chromaPredMode);
+        uint8_t predU[64], predV[64];
+        intraPredChroma8x8(chromaMode, currentFrame_, mbX, mbY, true, predU);
+        intraPredChroma8x8(chromaMode, currentFrame_, mbX, mbY, false, predV);
+
+        int32_t chromaQpIdx = clampQpIdx(qp + pps.chromaQpIndexOffset_);
+        int32_t chromaQp = cChromaQpTable[chromaQpIdx];
+
+        int16_t dcCb[4] = {}, dcCr[4] = {};
+        if (cbpChroma >= 1U)
+        {
+            cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), dcCb, 4U, 3U);
+            cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), dcCr, 4U, 3U);
+            inverseHadamard2x2(dcCb);
+            inverseHadamard2x2(dcCr);
+
+            int32_t cqpDiv6 = chromaQp / 6, cqpMod6 = chromaQp % 6;
+            int32_t cScale = cDequantScale[cqpMod6][0];
+            for (uint32_t i = 0U; i < 4U; ++i)
+            {
+                if (dcCb[i] != 0) { int32_t v = dcCb[i] * cScale; dcCb[i] = static_cast<int16_t>(cqpDiv6 >= 1 ? v << (cqpDiv6 - 1) : (v + 1) >> 1); }
+                if (dcCr[i] != 0) { int32_t v = dcCr[i] * cScale; dcCr[i] = static_cast<int16_t>(cqpDiv6 >= 1 ? v << (cqpDiv6 - 1) : (v + 1) >> 1); }
+            }
+        }
+
+        uint8_t* mbU = currentFrame_.uMb(mbX, mbY);
+        uint8_t* mbV = currentFrame_.vMb(mbX, mbY);
+        uint32_t uvStride = currentFrame_.uvStride();
+        for (uint32_t blkIdx = 0U; blkIdx < 4U; ++blkIdx)
+        {
+            uint32_t blkX = (blkIdx & 1U) * 4U;
+            uint32_t blkY = (blkIdx >> 1U) * 4U;
+            int16_t cbCoeffs[16] = {}, crCoeffs[16] = {};
+            cbCoeffs[0] = dcCb[blkIdx]; crCoeffs[0] = dcCr[blkIdx];
+
+            if (cbpChroma >= 2U)
+            {
+                int16_t acCb[16] = {}, acCr[16] = {};
+                cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), acCb, 15U, 4U);
+                for (uint32_t i = 1U; i < 16U; ++i) cbCoeffs[i] = acCb[i - 1U];
+                inverseQuantize4x4(cbCoeffs, chromaQp);
+                cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), acCr, 15U, 4U);
+                for (uint32_t i = 1U; i < 16U; ++i) crCoeffs[i] = acCr[i - 1U];
+                inverseQuantize4x4(crCoeffs, chromaQp);
+            }
+
+            inverseDct4x4AddPred(cbCoeffs, predU + blkY * 8U + blkX, 8U, mbU + blkY * uvStride + blkX, uvStride);
+            inverseDct4x4AddPred(crCoeffs, predV + blkY * 8U + blkX, 8U, mbV + blkY * uvStride + blkX, uvStride);
+        }
     }
 };
 

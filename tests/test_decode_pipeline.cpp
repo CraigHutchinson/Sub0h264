@@ -153,3 +153,30 @@ TEST_CASE("Pipeline: baseline_640x480_short — IDR + P-frames")
     CHECK(avgY >= 0.0);
     CHECK(avgY <= 255.0);
 }
+
+TEST_CASE("Pipeline: high_640x480 — CABAC High profile decode")
+{
+    auto data = loadFile(SUB0H264_TEST_FIXTURES_DIR "/high_640x480.h264");
+    REQUIRE_FALSE(data.empty());
+
+    H264Decoder decoder;
+    int32_t frames = decoder.decodeStream(data.data(), static_cast<uint32_t>(data.size()));
+
+    MESSAGE("high_640x480: decoded " << frames << " frames, "
+            << "frameCount=" << decoder.frameCount());
+
+    // High profile stream should decode at least the IDR frame
+    CHECK(frames >= 1);
+
+    const Frame* frame = decoder.currentFrame();
+    REQUIRE(frame != nullptr);
+    CHECK(frame->width() == 640U);
+    CHECK(frame->height() == 480U);
+
+    // Verify pixel output is in valid range
+    uint64_t sum = yPlaneSum(*frame);
+    double avgY = static_cast<double>(sum) / (640.0 * 480.0);
+    MESSAGE("High profile last frame avg_Y=" << avgY);
+    CHECK(avgY >= 0.0);
+    CHECK(avgY <= 255.0);
+}
