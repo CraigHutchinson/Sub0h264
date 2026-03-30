@@ -650,22 +650,69 @@ private:
     }
 
     /** Decode an I_4x4 macroblock. */
+    /** Get intra 4x4 prediction mode for a neighboring block.
+     *  Returns DC(2) if neighbor is unavailable or not intra-4x4.
+     *  Block layout within MB (raster scan):
+     *    0  1  2  3
+     *    4  5  6  7
+     *    8  9  10 11
+     *    12 13 14 15
+     */
+    uint8_t getNeighborIntra4x4Mode(uint32_t mbX, uint32_t mbY,
+                                     uint32_t blkIdx, bool isLeft,
+                                     const uint8_t* curMbModes) const noexcept
+    {
+        /// Default intra 4x4 prediction mode when neighbor is unavailable — ITU-T H.264 §8.3.1.1.
+        static constexpr uint8_t cDefaultIntra4x4Mode = 2U; // DC
+
+        uint32_t blkX = blkIdx & 3U;
+        uint32_t blkY = blkIdx >> 2U;
+
+        if (isLeft)
+        {
+            if (blkX > 0U)
+                return curMbModes[blkIdx - 1U]; // Within same MB
+            if (mbX == 0U)
+                return cDefaultIntra4x4Mode; // No left MB
+            // Left MB's rightmost column: blkY*4 + 3
+            // TODO: track per-block intra modes in neighbor MBs for full accuracy
+            return cDefaultIntra4x4Mode;
+        }
+        else // top
+        {
+            if (blkY > 0U)
+                return curMbModes[blkIdx - 4U]; // Within same MB
+            if (mbY == 0U)
+                return cDefaultIntra4x4Mode; // No top MB
+            // TODO: track per-block intra modes in neighbor MBs
+            return cDefaultIntra4x4Mode;
+        }
+    }
+
     bool decodeI4x4Mb(BitReader& br, const Sps& sps, const Pps& pps,
                        int32_t& qp, uint32_t mbX, uint32_t mbY) noexcept
     {
-        // Read intra 4x4 prediction modes for all 16 blocks
+        // Read intra 4x4 prediction modes for all 16 blocks.
+        // ITU-T H.264 §8.3.1.1: most probable mode = min(leftMode, topMode).
+        // If prev_intra4x4_pred_mode_flag=1: use MPM.
+        // If flag=0: read rem_intra4x4_pred_mode (3 bits).
+        //   If rem < MPM: mode = rem. Else: mode = rem + 1.
         uint8_t predModes[16] = {};
         for (uint32_t i = 0U; i < 16U; ++i)
         {
-            uint32_t prevIntraPredModeFlag = br.readBit();
-            if (prevIntraPredModeFlag)
+            uint8_t leftMode = getNeighborIntra4x4Mode(mbX, mbY, i, true, predModes);
+            uint8_t topMode  = getNeighborIntra4x4Mode(mbX, mbY, i, false, predModes);
+            uint8_t mpm = (leftMode < topMode) ? leftMode : topMode;
+
+            uint32_t prevFlag = br.readBit();
+            if (prevFlag)
             {
-                // Use most probable mode (simplified: use DC=2)
-                predModes[i] = 2U; // DC as default
+                predModes[i] = mpm;
             }
             else
             {
-                predModes[i] = static_cast<uint8_t>(br.readBits(3U));
+                uint8_t rem = static_cast<uint8_t>(br.readBits(3U));
+                predModes[i] = (rem < mpm) ? rem : static_cast<uint8_t>(rem + 1U);
             }
         }
 

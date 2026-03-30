@@ -155,19 +155,104 @@ inline void intraPred4x4(Intra4x4Mode mode,
         }
         break;
 
-    default:
-        // Modes 5-8 (VR, HD, VL, HU) — implement using DC as fallback for now
-        // These are less common and will be added as needed for test vector compliance
+    case Intra4x4Mode::VerticalRight:
+        if (top && left && topLeft)
         {
-            uint32_t sum = 0U;
-            uint32_t count = 0U;
-            if (top)  { for (uint32_t i = 0U; i < 4U; ++i) sum += top[i];  count += 4U; }
-            if (left) { for (uint32_t i = 0U; i < 4U; ++i) sum += left[i]; count += 4U; }
-            uint8_t val = cDefaultPredValue;
-            if (count == 8U) val = static_cast<uint8_t>((sum + 4U) >> 3U);
-            else if (count == 4U) val = static_cast<uint8_t>((sum + 2U) >> 2U);
-            std::memset(pred, val, 16U);
+            uint8_t tl = *topLeft;
+            // ITU-T H.264 §8.3.1.2.6
+            pred[0*4+0] = filt11(tl, top[0]);
+            pred[0*4+1] = filt11(top[0], top[1]);
+            pred[0*4+2] = filt11(top[1], top[2]);
+            pred[0*4+3] = filt11(top[2], top[3]);
+            pred[1*4+0] = filt121(left[0], tl, top[0]);
+            pred[1*4+1] = filt121(tl, top[0], top[1]);
+            pred[1*4+2] = filt121(top[0], top[1], top[2]);
+            pred[1*4+3] = filt121(top[1], top[2], top[3]);
+            pred[2*4+0] = filt121(left[1], left[0], tl);
+            pred[2*4+1] = pred[0*4+0];
+            pred[2*4+2] = pred[0*4+1];
+            pred[2*4+3] = pred[0*4+2];
+            pred[3*4+0] = filt121(left[2], left[1], left[0]);
+            pred[3*4+1] = pred[1*4+0];
+            pred[3*4+2] = pred[1*4+1];
+            pred[3*4+3] = pred[1*4+2];
         }
+        break;
+
+    case Intra4x4Mode::HorizontalDown:
+        if (top && left && topLeft)
+        {
+            uint8_t tl = *topLeft;
+            // ITU-T H.264 §8.3.1.2.7
+            pred[0*4+0] = filt11(tl, left[0]);
+            pred[0*4+1] = filt121(left[0], tl, top[0]);
+            pred[0*4+2] = filt121(tl, top[0], top[1]);
+            pred[0*4+3] = filt121(top[0], top[1], top[2]);
+            pred[1*4+0] = filt11(left[0], left[1]);
+            pred[1*4+1] = filt121(tl, left[0], left[1]);
+            pred[1*4+2] = pred[0*4+0];
+            pred[1*4+3] = pred[0*4+1];
+            pred[2*4+0] = filt11(left[1], left[2]);
+            pred[2*4+1] = filt121(left[0], left[1], left[2]);
+            pred[2*4+2] = pred[1*4+0];
+            pred[2*4+3] = pred[1*4+1];
+            pred[3*4+0] = filt11(left[2], left[3]);
+            pred[3*4+1] = filt121(left[1], left[2], left[3]);
+            pred[3*4+2] = pred[2*4+0];
+            pred[3*4+3] = pred[2*4+1];
+        }
+        break;
+
+    case Intra4x4Mode::VerticalLeft:
+        if (top)
+        {
+            const uint8_t* tr = topRight ? topRight : top;
+            uint8_t t[8] = { top[0], top[1], top[2], top[3], tr[0], tr[1], tr[2], tr[3] };
+            // ITU-T H.264 §8.3.1.2.8
+            pred[0*4+0] = filt11(t[0], t[1]);
+            pred[0*4+1] = filt11(t[1], t[2]);
+            pred[0*4+2] = filt11(t[2], t[3]);
+            pred[0*4+3] = filt11(t[3], t[4]);
+            pred[1*4+0] = filt121(t[0], t[1], t[2]);
+            pred[1*4+1] = filt121(t[1], t[2], t[3]);
+            pred[1*4+2] = filt121(t[2], t[3], t[4]);
+            pred[1*4+3] = filt121(t[3], t[4], t[5]);
+            pred[2*4+0] = filt11(t[1], t[2]);
+            pred[2*4+1] = filt11(t[2], t[3]);
+            pred[2*4+2] = filt11(t[3], t[4]);
+            pred[2*4+3] = filt11(t[4], t[5]);
+            pred[3*4+0] = filt121(t[1], t[2], t[3]);
+            pred[3*4+1] = filt121(t[2], t[3], t[4]);
+            pred[3*4+2] = filt121(t[3], t[4], t[5]);
+            pred[3*4+3] = filt121(t[4], t[5], t[6]);
+        }
+        break;
+
+    case Intra4x4Mode::HorizontalUp:
+        if (left)
+        {
+            // ITU-T H.264 §8.3.1.2.9
+            pred[0*4+0] = filt11(left[0], left[1]);
+            pred[0*4+1] = filt121(left[0], left[1], left[2]);
+            pred[0*4+2] = filt11(left[1], left[2]);
+            pred[0*4+3] = filt121(left[1], left[2], left[3]);
+            pred[1*4+0] = pred[0*4+2];
+            pred[1*4+1] = pred[0*4+3];
+            pred[1*4+2] = filt11(left[2], left[3]);
+            pred[1*4+3] = filt121(left[2], left[3], left[3]);
+            pred[2*4+0] = pred[1*4+2];
+            pred[2*4+1] = pred[1*4+3];
+            pred[2*4+2] = left[3];
+            pred[2*4+3] = left[3];
+            pred[3*4+0] = left[3];
+            pred[3*4+1] = left[3];
+            pred[3*4+2] = left[3];
+            pred[3*4+3] = left[3];
+        }
+        break;
+
+    default:
+        std::memset(pred, cDefaultPredValue, 16U);
         break;
     }
 }
