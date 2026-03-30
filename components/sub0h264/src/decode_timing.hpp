@@ -67,7 +67,7 @@ struct StreamTiming
             ? (100.0 * totalReconUs / totalFrameUs) : 0.0;
         double overheadPct = 100.0 - parsePct - reconPct;
 
-        std::printf("  Parse/Recon split (%u frames):\n", frameCount);
+        std::printf("  Parse/Recon split (%lu frames):\n", (unsigned long)frameCount);
         std::printf("    Parse:    %8lld us  (%5.1f%%)\n",
                     (long long)totalParseUs, parsePct);
         std::printf("    Recon:    %8lld us  (%5.1f%%)\n",

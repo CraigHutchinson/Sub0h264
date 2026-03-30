@@ -11,11 +11,13 @@ add_executable(Sub0h264_Tests
     test_deblock.cpp
     test_cabac.cpp
     test_decode_pipeline.cpp
+    test_bench.cpp
 )
 
 target_link_libraries(Sub0h264_Tests PRIVATE Sub0h264::Sub0h264)
 target_include_directories(Sub0h264_Tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/vendor"
+    "${CMAKE_CURRENT_SOURCE_DIR}"
 )
 
 # Path to test fixtures (H.264 test vectors)

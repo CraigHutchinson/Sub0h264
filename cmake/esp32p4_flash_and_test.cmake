@@ -154,7 +154,6 @@ execute_process(
         --test-timeout "${TEST_TIMEOUT}"
         --log-file "${_log_file}"
     RESULT_VARIABLE _capture_rc
-    TIMEOUT 180  # Hard backstop: boot + test + margin
 )
 
 # ── 4. Parse results ────────────────────────────────────────────────────

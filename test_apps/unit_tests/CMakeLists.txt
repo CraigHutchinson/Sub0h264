@@ -65,14 +65,14 @@ if(BUILD_TESTING)
             -D "BUILD_DIR=${CMAKE_BINARY_DIR}"
             -D "COM_PORT=${COM_PORT}"
             -D "BOOT_TIMEOUT=15"
-            -D "TEST_TIMEOUT=120"
+            -D "TEST_TIMEOUT=480"
             -D "LOG_DIR=${CMAKE_BINARY_DIR}/test_logs"
             -D "PYTHON=${_idf_python}"
             -P "${_cmake_dir}/esp32p4_flash_and_test.cmake"
     )
 
     set_tests_properties(esp32p4_unit_tests PROPERTIES
-        TIMEOUT 180                         # CTest backstop (flash + boot + test + margin)
+        TIMEOUT 600                         # CTest backstop: unit tests (~55s) + pipeline decode (~58s) + bench (~180s) + margin
         RESOURCE_LOCK "COM_${COM_PORT}"     # Prevent parallel access to same port
         LABELS "hardware;esp32p4"           # Filter: ctest -L hardware
     )

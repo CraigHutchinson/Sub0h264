@@ -41,6 +41,7 @@
 #include "../../../tests/test_deblock.cpp"
 #include "../../../tests/test_cabac.cpp"
 #include "../../../tests/test_decode_pipeline.cpp"
+#include "../../../tests/test_bench.cpp"
 
 // ── ESP32-P4 specific tests ─────────────────────────────────────────────
 
