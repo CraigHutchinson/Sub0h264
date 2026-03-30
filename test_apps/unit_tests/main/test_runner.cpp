@@ -1,16 +1,13 @@
 /** Sub0h264 ESP32-P4 unit test runner
  *
- *  Runs the SAME doctest test suite as the desktop build on ESP32-P4.
- *  Test files are #included from tests/ — no separate test set.
- *  Test fixtures use embedded binary data via test_fixtures.hpp.
+ *  Provides the doctest entry point for ESP32-P4. Shared test files
+ *  are compiled as separate TUs by the CMake component (from
+ *  tests/test_sources.cmake) — no #include of .cpp files needed.
  *
- *  Platform-specific tests (PSRAM, stack HWM) are guarded by ESP_PLATFORM.
+ *  Platform-specific tests (PSRAM) are guarded by ESP_PLATFORM.
  *
- *  WDT strategy: idle task monitoring is disabled in sdkconfig.defaults
- *  (CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n) so the decode tests can
- *  monopolize the CPU without triggering HP_SYS_HP_WDT_RESET. The task
- *  WDT timeout is 120s which exceeds our longest test (~39s worst case).
- *  No vTaskDelay yields are needed — this preserves accurate timing.
+ *  WDT: idle task monitoring disabled in sdkconfig.defaults so decode
+ *  tests can monopolize the CPU. 120s task WDT timeout. No yields.
  *
  *  SPDX-License-Identifier: MIT
  */
@@ -20,34 +17,14 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-// ── Doctest configuration for ESP-IDF ───────────────────────────────────
 #define DOCTEST_CONFIG_IMPLEMENT
 #define DOCTEST_CONFIG_NO_POSIX_SIGNALS
 #define DOCTEST_CONFIG_NO_MULTITHREADING
 #include "doctest.h"
 
-// ── Include ALL desktop test files (shared test source) ─────────────────
-// These files use getFixture() from test_fixtures.hpp which resolves to
-// embedded binary data on ESP_PLATFORM and file I/O on desktop.
-
-#include "../../../tests/test_version.cpp"
-#include "../../../tests/test_bitstream.cpp"
-#include "../../../tests/test_nal.cpp"
-#include "../../../tests/test_sps_pps.cpp"
-#include "../../../tests/test_slice.cpp"
-#include "../../../tests/test_cavlc.cpp"
-#include "../../../tests/test_iframe.cpp"
-#include "../../../tests/test_pframe.cpp"
-#include "../../../tests/test_deblock.cpp"
-#include "../../../tests/test_cabac.cpp"
-#include "../../../tests/test_decode_pipeline.cpp"
-#include "../../../tests/test_bench.cpp"
-
 // ── ESP32-P4 specific tests ─────────────────────────────────────────────
 
 static const char* TAG = "sub0h264_test";
-
-#ifdef ESP_PLATFORM
 
 TEST_CASE("ESP32: PSRAM available and sufficient")
 {
@@ -57,8 +34,6 @@ TEST_CASE("ESP32: PSRAM available and sufficient")
     static constexpr size_t cMinPsramBytes = 2U * 1024U * 1024U;
     CHECK(psram >= cMinPsramBytes);
 }
-
-#endif // ESP_PLATFORM
 
 // ── ESP-IDF entry point ─────────────────────────────────────────────────
 
