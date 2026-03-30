@@ -10,21 +10,7 @@
  *  SPDX-License-Identifier: MIT
  */
 #include "test_fixtures.hpp"
-
-// On ESP32, use esp_timer for microsecond precision
-#ifdef ESP_PLATFORM
-#include "esp_timer.h"
-#include "esp_log.h"
-static int64_t nowUs() { return esp_timer_get_time(); }
-#else
-#include <chrono>
-static int64_t nowUs()
-{
-    using namespace std::chrono;
-    return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
-}
-#endif
-
+#include "../components/sub0h264/src/decode_timing.hpp"
 #include "../components/sub0h264/src/decoder.hpp"
 #include <cstdio>
 #include <memory>
@@ -79,9 +65,9 @@ static BenchResult runBench(const char* name, const char* fixture)
     {
         auto decoder = std::make_unique<H264Decoder>();
 
-        int64_t t0 = nowUs();
+        int64_t t0 = sub0h264TimerUs();
         int32_t frames = decoder->decodeStream(data.data(), static_cast<uint32_t>(data.size()));
-        int64_t elapsed = nowUs() - t0;
+        int64_t elapsed = sub0h264TimerUs() - t0;
 
         result.frames = static_cast<uint32_t>(frames);
         result.passMs[pass] = elapsed / 1000.0;
