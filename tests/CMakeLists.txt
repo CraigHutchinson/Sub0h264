@@ -24,3 +24,14 @@ target_compile_definitions(Sub0h264_Tests PRIVATE
 )
 
 add_test(NAME Sub0h264_Tests COMMAND Sub0h264_Tests)
+
+# Benchmark target (not run by ctest — invoke manually)
+add_executable(Sub0h264_Bench bench_decode.cpp)
+target_link_libraries(Sub0h264_Bench PRIVATE Sub0h264::Sub0h264)
+target_include_directories(Sub0h264_Bench PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/vendor"
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_compile_definitions(Sub0h264_Bench PRIVATE
+    SUB0H264_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+)
