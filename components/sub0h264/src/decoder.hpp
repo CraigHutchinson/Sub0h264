@@ -214,6 +214,62 @@ private:
         return 0;
     }
 
+    /** Get nC (CAVLC context) for a chroma 4x4 block.
+     *
+     *  Chroma block layout per MB (Cb or Cr, 2x2 grid):
+     *    0  1
+     *    2  3
+     *
+     *  @param mbX,mbY    Macroblock position
+     *  @param blkIdx     Chroma block index [0-3]
+     *  @param isCb       True for Cb plane, false for Cr
+     *  @return nC context value
+     *
+     *  Reference: ITU-T H.264 §9.2.1
+     */
+    int32_t getChromaNc(uint32_t mbX, uint32_t mbY, uint32_t blkIdx, bool isCb) const noexcept
+    {
+        const auto& nnz = isCb ? nnzCb_ : nnzCr_;
+        uint32_t blkX = blkIdx & 1U;
+        uint32_t blkY = blkIdx >> 1U;
+
+        int32_t leftNnz = 0, topNnz = 0;
+        bool hasLeft = false, hasTop = false;
+
+        // Left neighbor
+        if (blkX > 0U)
+        {
+            leftNnz = nnz[(mbY * widthInMbs_ + mbX) * 4U + blkIdx - 1U];
+            hasLeft = true;
+        }
+        else if (mbX > 0U)
+        {
+            /// Right column of left MB: blkY * 2 + 1
+            uint32_t leftBlk = blkY * 2U + 1U;
+            leftNnz = nnz[(mbY * widthInMbs_ + mbX - 1U) * 4U + leftBlk];
+            hasLeft = true;
+        }
+
+        // Top neighbor
+        if (blkY > 0U)
+        {
+            topNnz = nnz[(mbY * widthInMbs_ + mbX) * 4U + blkIdx - 2U];
+            hasTop = true;
+        }
+        else if (mbY > 0U)
+        {
+            /// Bottom row of top MB: 2 + blkX
+            uint32_t topBlk = 2U + blkX;
+            topNnz = nnz[((mbY - 1U) * widthInMbs_ + mbX) * 4U + topBlk];
+            hasTop = true;
+        }
+
+        if (hasLeft && hasTop) return (leftNnz + topNnz + 1) >> 1;
+        if (hasLeft) return leftNnz;
+        if (hasTop) return topNnz;
+        return 0;
+    }
+
     /** Decode a slice (IDR or non-IDR). */
     DecodeStatus decodeSlice(BitReader& br, const NalUnit& nal) noexcept
     {
@@ -787,9 +843,10 @@ private:
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
 
 #ifndef SUB0H264_NO_DEBUG_TRACE
-        if (mbX == 10U && mbY == 0U)
-            std::printf("[DBG] MB(10,0) cbpCode=%lu → cbp=0x%02x bitOff=%lu\n",
-                (unsigned long)cbpCode, cbp, (unsigned long)br.bitOffset());
+        if (mbY == 0U && (mbX == 9U || mbX == 10U))
+            std::printf("[DBG] MB(%lu,0) cbpCode=%lu → cbp=0x%02x cbpL=%u cbpC=%u bitOff=%lu\n",
+                (unsigned long)mbX, (unsigned long)cbpCode, cbp, cbpLuma, cbpChroma,
+                (unsigned long)br.bitOffset());
 #endif
 
         // QP delta (only if CBP > 0)
@@ -869,8 +926,18 @@ private:
             if (hasResidual)
             {
                 int32_t nc = getLumaNc(mbX, mbY, blkIdx);
+#ifndef SUB0H264_NO_DEBUG_TRACE
+                uint32_t blkBitBefore = br.bitOffset();
+#endif
                 ResidualBlock4x4 resBlock;
                 decodeResidualBlock4x4(br, nc, cMaxCoeff4x4, 0U, resBlock);
+
+#ifndef SUB0H264_NO_DEBUG_TRACE
+                if (mbX == 9U && mbY == 0U)
+                    std::printf("[DBG]   MB9 luma blk%lu: nC=%d tc=%u bits=%lu\n",
+                        (unsigned long)blkIdx, nc, resBlock.totalCoeff,
+                        (unsigned long)(br.bitOffset() - blkBitBefore));
+#endif
 
                 for (uint32_t i = 0U; i < 16U; ++i)
                     coeffs[i] = resBlock.coeffs[i];
@@ -919,7 +986,7 @@ private:
                         int32_t qp, uint32_t mbX, uint32_t mbY) noexcept
     {
 #ifndef SUB0H264_NO_DEBUG_TRACE
-        if (mbY == 0U && mbX < 2U)
+        if (mbY == 0U && (mbX < 2U || mbX == 9U))
             std::printf("[DBG] MB(%lu,0) chromaMb START bitOff=%lu cbpC=%u\n",
                 (unsigned long)mbX, (unsigned long)br.bitOffset(), cbpChroma);
 #endif
@@ -989,16 +1056,20 @@ private:
             uint32_t blkX = (blkIdx & 1U) * 4U;
             uint32_t blkY = (blkIdx >> 1U) * 4U;
 
+            uint32_t mbIdx = mbY * widthInMbs_ + mbX;
+
             // Cb block
             int16_t cbCoeffs[16] = {};
             cbCoeffs[0] = dcCb[blkIdx];
 
             if (cbpChroma >= 2U)
             {
+                int32_t ncCb = getChromaNc(mbX, mbY, blkIdx, true);
                 ResidualBlock4x4 acBlock;
-                decodeResidualBlock4x4(br, 0, 15U, 1U, acBlock);
+                decodeResidualBlock4x4(br, ncCb, 15U, 1U, acBlock);
                 for (uint32_t i = 1U; i < 16U; ++i)
                     cbCoeffs[i] = acBlock.coeffs[i];
+                nnzCb_[mbIdx * 4U + blkIdx] = acBlock.totalCoeff;
                 inverseQuantize4x4(cbCoeffs, chromaQp);
             }
 
@@ -1012,10 +1083,12 @@ private:
 
             if (cbpChroma >= 2U)
             {
+                int32_t ncCr = getChromaNc(mbX, mbY, blkIdx, false);
                 ResidualBlock4x4 acBlock;
-                decodeResidualBlock4x4(br, 0, 15U, 1U, acBlock);
+                decodeResidualBlock4x4(br, ncCr, 15U, 1U, acBlock);
                 for (uint32_t i = 1U; i < 16U; ++i)
                     crCoeffs[i] = acBlock.coeffs[i];
+                nnzCr_[mbIdx * 4U + blkIdx] = acBlock.totalCoeff;
                 inverseQuantize4x4(crCoeffs, chromaQp);
             }
 

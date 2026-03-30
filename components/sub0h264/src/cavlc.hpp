@@ -156,33 +156,58 @@ inline CoeffToken decodeCoeffToken(BitReader& br, int32_t nC) noexcept
  *  @param suffixLen  Current suffix length [0-6], updated after decode
  *  @return Decoded signed level value
  */
+/** Decode one coefficient level value.
+ *
+ *  Reference: ITU-T H.264 §9.2.2
+ *  level_code = (level_prefix << suffixLength) + level_suffix
+ *
+ *  @param br         Bitstream reader
+ *  @param suffixLen  Current suffix length [0-6], updated after decode
+ *  @return Decoded signed level value
+ */
 inline int32_t decodeLevel(BitReader& br, uint32_t& suffixLen) noexcept
 {
-    // Count leading zeros (level prefix)
+    // Count leading zeros → level_prefix — ITU-T H.264 §9.2.2.1
     uint32_t prefix = 0U;
     while (prefix < 32U && br.readBit() == 0U)
         ++prefix;
 
-    int32_t levelCode = static_cast<int32_t>(prefix < 15U ? prefix : 15U);
+    // Compute levelCode = (level_prefix << suffixLength) + level_suffix
+    int32_t levelCode;
 
-    uint32_t suffixSize = suffixLen;
-    if (prefix == 14U && suffixLen == 0U)
-        suffixSize = 4U;
-    else if (prefix >= 15U)
-        suffixSize = prefix - 3U;
+    if (prefix < 14U)
+    {
+        // Normal case: suffix is suffixLen bits
+        uint32_t suffix = 0U;
+        if (suffixLen > 0U)
+            suffix = br.readBits(suffixLen);
+        levelCode = static_cast<int32_t>((prefix << suffixLen) + suffix);
+    }
+    else if (prefix == 14U)
+    {
+        // prefix=14: suffix is suffixLen bits (or 4 if suffixLen==0)
+        uint32_t suffixSize = (suffixLen == 0U) ? 4U : suffixLen;
+        uint32_t suffix = br.readBits(suffixSize);
+        levelCode = static_cast<int32_t>((prefix << suffixLen) + suffix);
+    }
+    else
+    {
+        // prefix >= 15: levelCode = (15 << suffixLen) + suffix + adjustments
+        // ITU-T H.264 §9.2.2 — three-part formula for large levels
+        uint32_t suffixSize = prefix - 3U;
+        uint32_t suffix = br.readBits(suffixSize);
+        levelCode = static_cast<int32_t>((15U << suffixLen) + suffix);
+        if (suffixLen == 0U)
+            levelCode += 15;
+        if (prefix >= 16U)
+            levelCode += static_cast<int32_t>((1U << (prefix - 3U)) - 4096U);
+    }
 
-    if (suffixSize > 0U && br.hasBits(suffixSize))
-        levelCode += static_cast<int32_t>(br.readBits(suffixSize)) ;
-
-    if (prefix >= 15U && suffixLen == 0U)
-        levelCode += 15;
-    if (prefix >= 16U)
-        levelCode += (1 << (prefix - 3U)) - 4096;
-
-    // Convert to signed
+    // Convert to signed — ITU-T H.264 §9.2.2
     int32_t absLevel = (levelCode + 2) >> 1;
     int32_t sign = (levelCode & 1) ? -1 : 1;
     int32_t level = absLevel * sign;
+
 
     // Update suffix length — ITU-T H.264 §9.2.2
     uint32_t absVal = static_cast<uint32_t>(absLevel);
