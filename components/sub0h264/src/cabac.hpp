@@ -356,38 +356,68 @@ private:
 
 // ── Context initialization — ITU-T H.264 §9.3.1.1 ──────────────────────
 
-/// Initialization parameters (m, n) for each of the 460 CABAC contexts.
-/// From ITU-T H.264 Tables 9-12 through 9-23.
-/// Stored as pairs: m in [-128, 127], n in [-128, 127].
-/// pStateIdx = Clip3(1, 126, ((m * SliceQPY) >> 4) + n)
-///
-/// The full 460×2 init table is large — we use the libavc pre-computed
-/// init table approach: gau1_ih264d_cabac_ctxt_init_table[4][52][460].
-/// For now, we provide the initialization formula and a runtime init function.
+#include "cabac_init_mn.hpp"
+
+/** Compute a single CABAC context initial state from (m, n) parameters.
+ *
+ *  Formula (ITU-T H.264 §9.3.1.1):
+ *    preCtxState = Clip3(1, 126, ((m * SliceQPY) >> 4) + n)
+ *    if preCtxState <= 63: pStateIdx = 63 - preCtxState, valMPS = 0
+ *    else:                 pStateIdx = preCtxState - 64,  valMPS = 1
+ *
+ *  Returns packed mpsState: (pStateIdx & 0x3F) | (valMPS << 6)
+ *  which matches our CabacCtx encoding and cCabacTable[128][4] index.
+ */
+inline constexpr uint8_t computeCabacInitState(int32_t m, int32_t n,
+                                                int32_t sliceQpY) noexcept
+{
+    int32_t preCtxState = ((m * sliceQpY) >> 4) + n;
+    // Clip3(1, 126, preCtxState)
+    if (preCtxState < 1) preCtxState = 1;
+    if (preCtxState > 126) preCtxState = 126;
+
+    uint8_t pStateIdx;
+    uint8_t valMPS;
+    if (preCtxState <= 63)
+    {
+        pStateIdx = static_cast<uint8_t>(63 - preCtxState);
+        valMPS = 0U;
+    }
+    else
+    {
+        pStateIdx = static_cast<uint8_t>(preCtxState - 64);
+        valMPS = 1U;
+    }
+
+    return (pStateIdx & 0x3FU) | (valMPS << 6U);
+}
 
 /** Initialize CABAC context models for a slice.
+ *
+ *  Uses constexpr (m, n) parameters from ITU-T H.264 Tables 9-12 through 9-23
+ *  to compute initial probability states. The computation is:
+ *    preCtxState = Clip3(1, 126, ((m * SliceQPY) >> 4) + n)
  *
  *  @param[out] ctx       Array of 460 context models
  *  @param sliceType      0=P, 1=B, 2=I
  *  @param cabacInitIdc   PPS cabac_init_idc [0-2] (ignored for I-slices)
  *  @param sliceQpY       Slice QP Y value [0-51]
- *
- *  For a minimal initial implementation, contexts are initialized to
- *  a neutral state (pStateIdx=63, MPS=0) which gives 50/50 probability.
- *  Full initialization from spec tables can be added incrementally.
  */
 inline void initCabacContexts(CabacCtx* ctx, uint32_t sliceType,
                                uint32_t cabacInitIdc, int32_t sliceQpY) noexcept
 {
-    (void)sliceType;
-    (void)cabacInitIdc;
-    (void)sliceQpY;
+    // I-slices always use init_idc 3 (spec §9.3.1.1)
+    /// Index into cCabacInitMN: 0-2 for P/B slices, 3 for I-slices.
+    static constexpr uint32_t cISliceInitIdc = 3U;
+    uint32_t idc = (sliceType == 2U) ? cISliceInitIdc : cabacInitIdc;
+    if (idc > 3U) idc = 0U;
 
-    // Default initialization: neutral probability (state=0, MPS=0)
-    // This gives correct structure but non-optimal compression efficiency.
-    // Full m,n table initialization will be added for production use.
     for (uint32_t i = 0U; i < cNumCabacCtx; ++i)
-        ctx[i].mpsState = 0U;
+    {
+        int32_t m = cCabacInitMN[idc][i][0];
+        int32_t n = cCabacInitMN[idc][i][1];
+        ctx[i].mpsState = computeCabacInitState(m, n, sliceQpY);
+    }
 }
 
 } // namespace sub0h264

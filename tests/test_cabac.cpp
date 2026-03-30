@@ -74,16 +74,25 @@ TEST_CASE("CABAC: clz32 correctness")
     CHECK(clz32(0U) == 32U);
 }
 
-TEST_CASE("CABAC: context init sets neutral state")
+TEST_CASE("CABAC: context init computes from m,n table")
 {
     CabacCtx ctx[cNumCabacCtx];
-    initCabacContexts(ctx, 2U, 0U, 26);
+    /// I-slice (sliceType=2), cabacInitIdc=0 (ignored for I), QP=26 (mid-range).
+    static constexpr uint32_t cISliceType = 2U;
+    static constexpr int32_t cMidRangeQp = 26;
+    initCabacContexts(ctx, cISliceType, 0U, cMidRangeQp);
 
-    // All contexts should be initialized
+    // Verify contexts are non-trivially initialized (not all zero)
+    uint32_t nonZeroCount = 0U;
     for (uint32_t i = 0U; i < cNumCabacCtx; ++i)
-    {
-        CHECK(ctx[i].mpsState == 0U);
-    }
+        if (ctx[i].mpsState != 0U) ++nonZeroCount;
+    CHECK(nonZeroCount > 100U); // Most of 460 contexts should be non-zero
+
+    // Spot-check: verify computeCabacInitState matches expected for known (m, n)
+    // I-slice init_idc=3, context 1: m=2, n=54 → preCtxState = ((2*26)>>4)+54 = 3+54 = 57
+    // preCtxState=57 <= 63 → pStateIdx = 63-57 = 6, valMPS = 0
+    // mpsState = (6 & 0x3F) | (0 << 6) = 6
+    CHECK(computeCabacInitState(2, 54, cMidRangeQp) == 6U);
 }
 
 TEST_CASE("CABAC: table has 128 entries with 4 ranges each")
