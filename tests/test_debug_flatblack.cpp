@@ -66,6 +66,52 @@ TEST_CASE("Debug: flat_black NAL + mb_type analysis")
     }
 }
 
+TEST_CASE("Debug: dump baseline frame 0 to file for comparison")
+{
+    auto data = getFixture("baseline_640x480_short.h264");
+    REQUIRE_FALSE(data.empty());
+
+    std::vector<NalBounds> bounds;
+    findNalUnits(data.data(), static_cast<uint32_t>(data.size()), bounds);
+
+    auto decoder = std::make_unique<H264Decoder>();
+    for (const auto& b : bounds)
+    {
+        NalUnit nal;
+        if (!parseNalUnit(data.data() + b.offset, b.size, nal))
+            continue;
+        DecodeStatus status = decoder->processNal(nal);
+        if (status == DecodeStatus::FrameDecoded)
+            break;
+    }
+
+    const Frame* frame = decoder->currentFrame();
+    REQUIRE(frame != nullptr);
+
+    // Dump Y plane to file for comparison with ffmpeg reference
+#ifndef ESP_PLATFORM
+    FILE* f = std::fopen("debug_baseline_frame0.yuv", "wb");
+    if (f)
+    {
+        // Write I420: Y plane, then U, then V (no stride padding)
+        for (uint32_t r = 0U; r < frame->height(); ++r)
+            std::fwrite(frame->yRow(r), 1, frame->width(), f);
+        for (uint32_t r = 0U; r < frame->height() / 2U; ++r)
+            std::fwrite(frame->uRow(r), 1, frame->width() / 2U, f);
+        for (uint32_t r = 0U; r < frame->height() / 2U; ++r)
+            std::fwrite(frame->vRow(r), 1, frame->width() / 2U, f);
+        std::fclose(f);
+        MESSAGE("Dumped baseline frame 0 to debug_baseline_frame0.yuv");
+    }
+#endif
+
+    uint32_t crc = frameCrc32(*frame);
+    char buf[128];
+    std::snprintf(buf, sizeof(buf), "Baseline frame 0 CRC: 0x%08lx (ref 0x62f18fa1)",
+                  (unsigned long)crc);
+    MESSAGE(buf);
+}
+
 TEST_CASE("Debug: flat_black pixel inspection")
 {
     auto data = getFixture("flat_black_640x480.h264");
