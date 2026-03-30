@@ -236,6 +236,48 @@ inline uint32_t decodeTotalZeros(BitReader& br, uint32_t totalCoeff) noexcept
     return 0U;
 }
 
+/** Decode total_zeros for chroma DC 2x2 block using Table 9-9.
+ *  @param br          Bitstream reader
+ *  @param totalCoeff  Number of non-zero coefficients [1-3]
+ *  @return Total number of zero coefficients
+ *
+ *  Reference: ITU-T H.264 §9.2.3, Table 9-9
+ */
+inline uint32_t decodeTotalZerosChromaDC(BitReader& br, uint32_t totalCoeff) noexcept
+{
+    if (totalCoeff == 0U || totalCoeff > 3U)
+        return 0U;
+
+    /// Chroma DC total_zeros index offsets by totalCoeff (1-based).
+    static constexpr uint8_t cChromaTzIndex[3] = { 0, 4, 7 };
+
+    uint32_t maxZeros = 4U - totalCoeff;
+    uint32_t tableOffset = cChromaTzIndex[totalCoeff - 1U];
+    uint32_t tableLen = ((totalCoeff < 3U)
+        ? cChromaTzIndex[totalCoeff] : 9U) - tableOffset;
+
+    uint32_t peekBuf = br.peekBits(3U);
+
+    for (uint32_t tzVal = 0U; tzVal < tableLen; ++tzVal)
+    {
+        uint8_t codeSize = cTotalZerosSizeChroma[tableOffset + tzVal];
+        uint8_t codeVal  = cTotalZerosCodeChroma[tableOffset + tzVal];
+
+        if (codeSize == 0U || codeSize > 3U)
+            continue;
+
+        uint32_t peeked = (peekBuf >> (3U - codeSize)) & ((1U << codeSize) - 1U);
+        if (peeked == codeVal)
+        {
+            br.skipBits(codeSize);
+            return (tzVal < maxZeros) ? tzVal : maxZeros;
+        }
+    }
+
+    br.skipBits(1U);
+    return 0U;
+}
+
 // ── Run before decoding — ITU-T H.264 §9.2.3 ───────────────────────────
 
 /** Decode run_before (zeros before a coefficient) using spec VLC tables.
@@ -364,7 +406,15 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
     // 4. Decode total_zeros
     uint32_t totalZeros = 0U;
     if (ct.totalCoeff < maxCoeff)
-        totalZeros = decodeTotalZeros(br, ct.totalCoeff);
+    {
+        /// Chroma DC blocks (maxCoeff=4) use a separate total_zeros table
+        /// — ITU-T H.264 Table 9-9 (2x2 block, 3 sub-tables for TC 1-3).
+        static constexpr uint32_t cChromaDcMaxCoeff = 4U;
+        if (maxCoeff == cChromaDcMaxCoeff)
+            totalZeros = decodeTotalZerosChromaDC(br, ct.totalCoeff);
+        else
+            totalZeros = decodeTotalZeros(br, ct.totalCoeff);
+    }
 
     // 5. Decode run_before and map to scan positions
     uint32_t zerosLeft = totalZeros;

@@ -266,6 +266,32 @@ def decode_total_zeros(br, total_coeff):
     return 0, br.pos - start
 
 
+CHROMA_TZ_SIZE = [1, 2, 3, 3, 1, 2, 2, 1, 1]
+CHROMA_TZ_CODE = [1, 1, 1, 0, 1, 1, 0, 1, 0]
+CHROMA_TZ_INDEX = [0, 4, 7]
+
+
+def decode_total_zeros_chroma_dc(br, total_coeff):
+    """Decode total_zeros for chroma DC 2x2 block (Table 9-9)."""
+    if total_coeff == 0 or total_coeff > 3:
+        return 0, 0
+    start = br.pos
+    offset = CHROMA_TZ_INDEX[total_coeff - 1]
+    n_entries = (CHROMA_TZ_INDEX[total_coeff] if total_coeff < 3 else 9) - offset
+    peek = br.peek(3)
+    for tz_val in range(n_entries):
+        sz = CHROMA_TZ_SIZE[offset + tz_val]
+        code = CHROMA_TZ_CODE[offset + tz_val]
+        if sz == 0 or sz > 3:
+            continue
+        peeked = (peek >> (3 - sz)) & ((1 << sz) - 1)
+        if peeked == code:
+            br.skip(sz)
+            return tz_val, br.pos - start
+    br.skip(1)
+    return 0, br.pos - start
+
+
 def decode_run_before(br, zeros_left):
     """Decode run_before VLC."""
     if zeros_left == 0:
@@ -341,10 +367,13 @@ def decode_residual_block(br, nc, max_coeff=16, start_idx=0):
             if suffix_len > 6:
                 suffix_len = 6
 
-    # Total zeros
+    # Total zeros — chroma DC (max_coeff=4) uses Table 9-9
     total_zeros = 0
     if tc < max_coeff:
-        total_zeros, _ = decode_total_zeros(br, tc)
+        if max_coeff == 4:
+            total_zeros, _ = decode_total_zeros_chroma_dc(br, tc)
+        else:
+            total_zeros, _ = decode_total_zeros(br, tc)
 
     # Run before
     zeros_left = total_zeros
