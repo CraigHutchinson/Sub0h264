@@ -488,6 +488,15 @@ private:
 
         int32_t currentQp = sliceQp;
 
+#ifndef SUB0H264_NO_DEBUG_TRACE
+        if (mbX == 10U && mbY == 0U)
+            std::printf("[DBG] MB(10,0) mbType=%lu (I_4x4=%d I_16x16=%d) bitOff=%lu\n",
+                (unsigned long)mbTypeRaw,
+                mbTypeRaw == 0U ? 1 : 0,
+                isI16x16(static_cast<uint8_t>(mbTypeRaw)) ? 1 : 0,
+                (unsigned long)br.bitOffset());
+#endif
+
         if (mbTypeRaw == 25U)
         {
             // I_PCM: raw samples, skip for now
@@ -736,6 +745,15 @@ private:
             if (qp > 51) qp -= 52;
         }
 
+#ifndef SUB0H264_NO_DEBUG_TRACE
+        if (mbX == 10U && mbY == 0U)
+        {
+            std::printf("[DBG] MB(10,0) I4x4: modes=[");
+            for (uint32_t k = 0U; k < 16U; ++k) std::printf("%u ", predModes[k]);
+            std::printf("] cbp=0x%02x cbpL=%u cbpC=%u qp=%d\n", cbp, cbpLuma, cbpChroma, qp);
+        }
+#endif
+
         // Decode and reconstruct each 4x4 luma block
         uint8_t* mbLuma = currentFrame_.yMb(mbX, mbY);
         uint32_t yStride = currentFrame_.yStride();
@@ -806,6 +824,20 @@ private:
 
                 inverseQuantize4x4(coeffs, qp);
             }
+
+#ifndef SUB0H264_NO_DEBUG_TRACE
+            if (mbX == 10U && mbY == 0U && blkIdx == 0U)
+            {
+                std::printf("[DBG]   blk0: mode=%u pred=[%u %u %u %u] hasRes=%d\n",
+                    predModes[0], pred4x4[0], pred4x4[1], pred4x4[2], pred4x4[3], hasResidual);
+                if (hasResidual)
+                {
+                    std::printf("[DBG]   coeffs (dequant)=[");
+                    for (uint32_t k = 0U; k < 16U; ++k) std::printf("%d ", coeffs[k]);
+                    std::printf("]\n");
+                }
+            }
+#endif
 
             // Reconstruct: inverse DCT + prediction + clip
             uint8_t* outPtr = mbLuma + blkY * yStride + blkX;
