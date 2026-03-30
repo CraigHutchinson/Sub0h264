@@ -1,0 +1,43 @@
+# test_apps/unit_tests/sdkconfig.defaults
+# ESP32-P4 config for unit test runner.
+
+# ── Chip / flash ──────────────────────────────────────────────────────────────
+CONFIG_IDF_TARGET="esp32p4"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# ── Chip revision — device is v1.3 (rev <3.0) ─────────────────────────────────
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# ── PSRAM (OPI, 200 MHz) ───────────────────────────────────────────────────────
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_SPEED_200M=y
+
+# ── C++ ─────────────────────────────────────────────────────────────────────────
+CONFIG_COMPILER_CXX_EXCEPTIONS=y
+CONFIG_COMPILER_CXX_EXCEPTIONS_EMG_POOL_SIZE=1024
+CONFIG_COMPILER_CXX_RTTI=n
+
+# ── CPU frequency — 360 MHz ────────────────────────────────────────────────────
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
+
+# ── Compiler optimisation ──────────────────────────────────────────────────────
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# ── Watchdog: generous timeout for decode tests ────────────────────────────────
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=120
+# Disable panic on WDT: log warning instead of reboot during testing
+CONFIG_ESP_TASK_WDT_PANIC=n
+
+# ── Stack: larger main task stack for doctest + decoder ────────────────────────
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=65536
+
+# ── Log level ──────────────────────────────────────────────────────────────────
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# ── Disable Bluetooth ──────────────────────────────────────────────────────────
+CONFIG_BT_ENABLED=n

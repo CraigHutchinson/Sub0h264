@@ -1,0 +1,38 @@
+{
+    "version": 9,
+    "configurePresets": [
+        {
+            "name": "esp32p4",
+            "displayName": "unit_tests — ESP32-P4",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/esp32p4",
+            "environment": {
+                "IDF_PATH":             "C:/esp/master/esp-idf",
+                "IDF_TOOLS_PATH":       "C:/Espressif/tools",
+                "IDF_PYTHON_ENV_PATH":  "$env{IDF_TOOLS_PATH}/python/master/venv",
+                "ESP_ROM_ELF_DIR":      "$env{IDF_TOOLS_PATH}/esp-rom-elfs/20241011",
+                "PATH": "$env{IDF_PYTHON_ENV_PATH}/Scripts;$env{IDF_TOOLS_PATH}/riscv32-esp-elf/esp-15.2.0_20251204/riscv32-esp-elf/bin;$penv{PATH}"
+            },
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "IDF_TARGET": "esp32p4"
+            }
+        }
+    ],
+    "buildPresets": [
+        { "name": "esp32p4", "configurePreset": "esp32p4", "jobs": 0 }
+    ],
+    "testPresets": [
+        {
+            "name": "esp32p4",
+            "configurePreset": "esp32p4",
+            "output": {
+                "outputOnFailure": true,
+                "verbosity": "verbose"
+            },
+            "execution": {
+                "jobs": 1
+            }
+        }
+    ]
+}
