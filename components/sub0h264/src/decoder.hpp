@@ -146,6 +146,11 @@ private:
     // Per-frame MV context for inter prediction
     std::vector<MbMotionInfo> mbMotion_;  // [mbIdx]
 
+    // Per-MB intra 4x4 prediction modes for MPM derivation across MBs.
+    // [mbIdx * 16 + blkIdx] — only valid for I_4x4 MBs.
+    // For I_16x16 MBs, all entries set to DC(2) per spec §8.3.1.1.
+    std::vector<uint8_t> mbIntra4x4Modes_;  // [mbIdx * 16 + blkIdx]
+
     // CABAC state
     CabacEngine cabacEngine_;
     std::array<CabacCtx, cNumCabacCtx> cabacCtx_ = {};
@@ -259,6 +264,7 @@ private:
         nnzCb_.resize(totalMbs * 4U, 0U);
         nnzCr_.resize(totalMbs * 4U, 0U);
         mbMotion_.resize(totalMbs);
+        mbIntra4x4Modes_.resize(totalMbs * 16U, 2U); // Default DC(2)
 
         // Clear context for new frame
         if (isIdr)
@@ -272,6 +278,7 @@ private:
         std::fill(nnzCb_.begin(), nnzCb_.end(), static_cast<uint8_t>(0U));
         std::fill(nnzCr_.begin(), nnzCr_.end(), static_cast<uint8_t>(0U));
         std::fill(mbMotion_.begin(), mbMotion_.end(), MbMotionInfo{});
+        std::fill(mbIntra4x4Modes_.begin(), mbIntra4x4Modes_.end(), static_cast<uint8_t>(2U));
 
 #ifndef SUB0H264_NO_DEBUG_TRACE
         std::printf("[DBG] Slice header parsed: type=%u firstMb=%lu frameNum=%u qpDelta=%d bitOffset=%lu\n",
@@ -489,11 +496,9 @@ private:
         int32_t currentQp = sliceQp;
 
 #ifndef SUB0H264_NO_DEBUG_TRACE
-        if (mbX == 10U && mbY == 0U)
-            std::printf("[DBG] MB(10,0) mbType=%lu (I_4x4=%d I_16x16=%d) bitOff=%lu\n",
-                (unsigned long)mbTypeRaw,
-                mbTypeRaw == 0U ? 1 : 0,
-                isI16x16(static_cast<uint8_t>(mbTypeRaw)) ? 1 : 0,
+        if (mbY == 0U && mbX < 12U)
+            std::printf("[DBG] MB(%lu,0) mbType=%lu bitOff=%lu\n",
+                (unsigned long)mbX, (unsigned long)mbTypeRaw,
                 (unsigned long)br.bitOffset());
 #endif
 
@@ -661,17 +666,22 @@ private:
     /** Decode an I_4x4 macroblock. */
     /** Get intra 4x4 prediction mode for a neighboring block.
      *  Returns DC(2) if neighbor is unavailable or not intra-4x4.
+     *  For cross-MB lookups, uses mbIntra4x4Modes_ which stores
+     *  all previously decoded MB intra modes.
+     *
      *  Block layout within MB (raster scan):
      *    0  1  2  3
      *    4  5  6  7
      *    8  9  10 11
      *    12 13 14 15
+     *
+     *  Reference: ITU-T H.264 §8.3.1.1
      */
     uint8_t getNeighborIntra4x4Mode(uint32_t mbX, uint32_t mbY,
                                      uint32_t blkIdx, bool isLeft,
                                      const uint8_t* curMbModes) const noexcept
     {
-        /// Default intra 4x4 prediction mode when neighbor is unavailable — ITU-T H.264 §8.3.1.1.
+        /// Default intra 4x4 prediction mode when neighbor unavailable — ITU-T H.264 §8.3.1.1.
         static constexpr uint8_t cDefaultIntra4x4Mode = 2U; // DC
 
         uint32_t blkX = blkIdx & 3U;
@@ -683,9 +693,10 @@ private:
                 return curMbModes[blkIdx - 1U]; // Within same MB
             if (mbX == 0U)
                 return cDefaultIntra4x4Mode; // No left MB
-            // Left MB's rightmost column: blkY*4 + 3
-            // TODO: track per-block intra modes in neighbor MBs for full accuracy
-            return cDefaultIntra4x4Mode;
+            // Left MB's rightmost column: same row, column 3
+            uint32_t leftMbIdx = mbY * widthInMbs_ + (mbX - 1U);
+            uint32_t leftBlk = blkY * 4U + 3U;
+            return mbIntra4x4Modes_[leftMbIdx * 16U + leftBlk];
         }
         else // top
         {
@@ -693,8 +704,10 @@ private:
                 return curMbModes[blkIdx - 4U]; // Within same MB
             if (mbY == 0U)
                 return cDefaultIntra4x4Mode; // No top MB
-            // TODO: track per-block intra modes in neighbor MBs
-            return cDefaultIntra4x4Mode;
+            // Top MB's bottom row: same column, row 3
+            uint32_t topMbIdx = (mbY - 1U) * widthInMbs_ + mbX;
+            uint32_t topBlk = 12U + blkX;
+            return mbIntra4x4Modes_[topMbIdx * 16U + topBlk];
         }
     }
 
@@ -707,6 +720,17 @@ private:
         // If flag=0: read rem_intra4x4_pred_mode (3 bits).
         //   If rem < MPM: mode = rem. Else: mode = rem + 1.
         uint8_t predModes[16] = {};
+
+#ifndef SUB0H264_NO_DEBUG_TRACE
+        uint32_t predModeStartBit = 0U;
+        if (mbX == 10U && mbY == 0U)
+        {
+            predModeStartBit = br.bitOffset();
+            std::printf("[DBG] MB(10,0) pred modes start at bitOff=%lu\n",
+                (unsigned long)predModeStartBit);
+        }
+#endif
+
         for (uint32_t i = 0U; i < 16U; ++i)
         {
             uint8_t leftMode = getNeighborIntra4x4Mode(mbX, mbY, i, true, predModes);
@@ -723,6 +747,13 @@ private:
                 uint8_t rem = static_cast<uint8_t>(br.readBits(3U));
                 predModes[i] = (rem < mpm) ? rem : static_cast<uint8_t>(rem + 1U);
             }
+
+#ifndef SUB0H264_NO_DEBUG_TRACE
+            if (mbX == 10U && mbY == 0U && i < 4U)
+                std::printf("[DBG]   blk%lu: prevFlag=%lu mpm=%u mode=%u\n",
+                    (unsigned long)i, (unsigned long)prevFlag,
+                    mpm, predModes[i]);
+#endif
         }
 
         // Intra chroma prediction mode
@@ -735,6 +766,12 @@ private:
             cbp = cCbpTable[cbpCode][0]; // Intra
         uint8_t cbpLuma = cbp & 0x0FU;
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
+
+#ifndef SUB0H264_NO_DEBUG_TRACE
+        if (mbX == 10U && mbY == 0U)
+            std::printf("[DBG] MB(10,0) cbpCode=%lu → cbp=0x%02x bitOff=%lu\n",
+                (unsigned long)cbpCode, cbp, (unsigned long)br.bitOffset());
+#endif
 
         // QP delta (only if CBP > 0)
         if (cbp > 0U)
@@ -842,6 +879,13 @@ private:
             // Reconstruct: inverse DCT + prediction + clip
             uint8_t* outPtr = mbLuma + blkY * yStride + blkX;
             inverseDct4x4AddPred(coeffs, pred4x4, 4U, outPtr, yStride);
+        }
+
+        // Store intra 4x4 modes for cross-MB MPM derivation
+        {
+            uint32_t mbIdx = mbY * widthInMbs_ + mbX;
+            for (uint32_t k = 0U; k < 16U; ++k)
+                mbIntra4x4Modes_[mbIdx * 16U + k] = predModes[k];
         }
 
         // Decode chroma
