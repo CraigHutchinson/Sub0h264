@@ -28,6 +28,7 @@ extern const uint8_t high_640x480_h264_end[]   asm("_binary_high_640x480_h264_en
 #include "doctest.h"
 
 // ── Decoder headers ─────────────────────────────────────────────────────
+#include <memory>
 #include "decoder.hpp"
 #include "bitstream.hpp"
 #include "annexb.hpp"
@@ -129,22 +130,65 @@ TEST_CASE("ESP32: Deblocking tables valid")
 
 // ── Pipeline tests with embedded fixtures ───────────────────────────────
 
+TEST_CASE("ESP32: AAA NAL parse only (no decode)")
+{
+    // Lightweight test: just parse NAL units from flat_black, no reconstruction
+    uint32_t size = static_cast<uint32_t>(flat_black_640x480_h264_end - flat_black_640x480_h264_start);
+    ESP_LOGI(TAG, "NAL parse test: flat_black %u bytes", size);
+    REQUIRE(size > 0U);
+
+    std::vector<NalBounds> bounds;
+    findNalUnits(flat_black_640x480_h264_start, size, bounds);
+    ESP_LOGI(TAG, "Found %u NAL units", (unsigned)bounds.size());
+    CHECK(bounds.size() >= 3U); // SPS + PPS + IDR at minimum
+
+    // Parse first NAL (should be SPS)
+    NalUnit spsNal;
+    bool ok = parseNalUnit(flat_black_640x480_h264_start + bounds[0].offset, bounds[0].size, spsNal);
+    CHECK(ok);
+    CHECK(spsNal.type == NalType::Sps);
+    ESP_LOGI(TAG, "NAL parse test PASSED");
+}
+
+TEST_CASE("ESP32: AAB SPS/PPS parse (no decode)")
+{
+    uint32_t size = static_cast<uint32_t>(flat_black_640x480_h264_end - flat_black_640x480_h264_start);
+    std::vector<NalBounds> bounds;
+    findNalUnits(flat_black_640x480_h264_start, size, bounds);
+
+    // Heap-allocate decoder to avoid stack overflow (ParamSets is large)
+    auto decoder = std::make_unique<H264Decoder>();
+    for (uint32_t i = 0U; i < bounds.size() && i < 2U; ++i)
+    {
+        NalUnit nal;
+        if (parseNalUnit(flat_black_640x480_h264_start + bounds[i].offset, bounds[i].size, nal))
+            decoder->processNal(nal);
+    }
+    const Sps* sps = decoder->paramSets().getSps(0);
+    REQUIRE(sps != nullptr);
+    CHECK(sps->width() == 640U);
+    CHECK(sps->height() == 480U);
+    ESP_LOGI(TAG, "SPS/PPS parse PASSED: %ux%u", sps->width(), sps->height());
+}
+
 TEST_CASE("ESP32: Decode flat_black IDR")
 {
     uint32_t size = static_cast<uint32_t>(flat_black_640x480_h264_end - flat_black_640x480_h264_start);
-    ESP_LOGI(TAG, "flat_black fixture: %u bytes", size);
+    ESP_LOGI(TAG, "flat_black fixture: %u bytes, starting decode...", size);
     REQUIRE(size > 0U);
 
+    ESP_LOGI(TAG, "Free heap before decode: %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+
     int64_t t0 = esp_timer_get_time();
-    H264Decoder decoder;
-    int32_t frames = decoder.decodeStream(flat_black_640x480_h264_start, size);
+    auto decoder = std::make_unique<H264Decoder>();
+    int32_t frames = decoder->decodeStream(flat_black_640x480_h264_start, size);
     int64_t elapsed = esp_timer_get_time() - t0;
 
     ESP_LOGI(TAG, "flat_black: %d frames in %lld us (%.1f ms)",
              frames, elapsed, elapsed / 1000.0);
 
     CHECK(frames >= 1);
-    const Frame* frame = decoder.currentFrame();
+    const Frame* frame = decoder->currentFrame();
     REQUIRE(frame != nullptr);
     CHECK(frame->width() == 640U);
     CHECK(frame->height() == 480U);
@@ -161,8 +205,8 @@ TEST_CASE("ESP32: Decode baseline_640x480_short (CAVLC I+P)")
     REQUIRE(size > 0U);
 
     int64_t t0 = esp_timer_get_time();
-    H264Decoder decoder;
-    int32_t frames = decoder.decodeStream(baseline_640x480_short_h264_start, size);
+    auto decoder = std::make_unique<H264Decoder>();
+    int32_t frames = decoder->decodeStream(baseline_640x480_short_h264_start, size);
     int64_t elapsed = esp_timer_get_time() - t0;
 
     double fps = (elapsed > 0) ? (frames * 1000000.0 / elapsed) : 0;
@@ -170,7 +214,7 @@ TEST_CASE("ESP32: Decode baseline_640x480_short (CAVLC I+P)")
              frames, elapsed, elapsed / 1000.0, fps);
 
     CHECK(frames >= 1);
-    const Frame* frame = decoder.currentFrame();
+    const Frame* frame = decoder->currentFrame();
     REQUIRE(frame != nullptr);
     CHECK(frame->width() == 640U);
     CHECK(frame->height() == 480U);
@@ -183,8 +227,8 @@ TEST_CASE("ESP32: Decode high_640x480 (CABAC I+P)")
     REQUIRE(size > 0U);
 
     int64_t t0 = esp_timer_get_time();
-    H264Decoder decoder;
-    int32_t frames = decoder.decodeStream(high_640x480_h264_start, size);
+    auto decoder = std::make_unique<H264Decoder>();
+    int32_t frames = decoder->decodeStream(high_640x480_h264_start, size);
     int64_t elapsed = esp_timer_get_time() - t0;
 
     double fps = (elapsed > 0) ? (frames * 1000000.0 / elapsed) : 0;
@@ -192,7 +236,7 @@ TEST_CASE("ESP32: Decode high_640x480 (CABAC I+P)")
              frames, elapsed, elapsed / 1000.0, fps);
 
     CHECK(frames >= 1);
-    const Frame* frame = decoder.currentFrame();
+    const Frame* frame = decoder->currentFrame();
     REQUIRE(frame != nullptr);
     CHECK(frame->width() == 640U);
     CHECK(frame->height() == 480U);

@@ -161,8 +161,9 @@ execute_process(
 
 if(EXISTS "${_log_file}")
     file(READ "${_log_file}" _raw_log)
-    # Strip ANSI escape codes for clean matching
-    string(REGEX REPLACE "\x1b\\[[0-9;]*[a-zA-Z]" "" _clean_log "${_raw_log}")
+    # The Python script already strips ANSI codes, so log should be clean.
+    # Just use the raw log as-is.
+    set(_clean_log "${_raw_log}")
 else()
     set(_clean_log "")
 endif()

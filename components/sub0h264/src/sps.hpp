@@ -81,7 +81,9 @@ struct Sps
     int32_t offsetForNonRefPic_ = 0;
     int32_t offsetForTopToBottomField_ = 0;
     uint8_t numRefFramesInPocCycle_ = 0U;
-    int32_t offsetForRefFrame_[255]{};
+    /// Max entries in offsetForRefFrame (spec allows 255, capped for stack safety).
+    static constexpr uint32_t cMaxRefFramesInPocCycle = 16U;
+    int32_t offsetForRefFrame_[cMaxRefFramesInPocCycle]{};
 
     // Reference frames
     uint8_t numRefFrames_ = 0U;            ///< max_num_ref_frames
@@ -240,8 +242,10 @@ inline Result parseSps(BitReader& br, Sps& sps) noexcept
         sps.offsetForNonRefPic_ = br.readSev();
         sps.offsetForTopToBottomField_ = br.readSev();
         sps.numRefFramesInPocCycle_ = static_cast<uint8_t>(br.readUev());
-        for (uint32_t i = 0U; i < sps.numRefFramesInPocCycle_; ++i)
+        for (uint32_t i = 0U; i < sps.numRefFramesInPocCycle_ && i < Sps::cMaxRefFramesInPocCycle; ++i)
             sps.offsetForRefFrame_[i] = br.readSev();
+        for (uint32_t i = Sps::cMaxRefFramesInPocCycle; i < sps.numRefFramesInPocCycle_; ++i)
+            br.readSev(); // Consume but discard entries beyond our cap
     }
 
     // max_num_ref_frames
