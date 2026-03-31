@@ -193,8 +193,8 @@ inline int32_t decodeLevel(BitReader& br, uint32_t suffixLen) noexcept
     if (suffixSize > 0U)
         suffix = br.readBits(suffixSize);
 
-    /// Compute levelCode = (min(15, level_prefix) << suffixLength) + level_suffix
-    /// plus adjustments for prefix >= 15.
+    /// Compute levelCode — ITU-T H.264 §9.2.2.
+    /// levelCode = (min(15, level_prefix) << suffixLength) + level_suffix
     int32_t levelCode = static_cast<int32_t>(
         (static_cast<uint32_t>(prefix < 15U ? prefix : 15U) << suffixLen) + suffix);
 
