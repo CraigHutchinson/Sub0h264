@@ -156,65 +156,58 @@ inline CoeffToken decodeCoeffToken(BitReader& br, int32_t nC) noexcept
  *  @param suffixLen  Current suffix length [0-6], updated after decode
  *  @return Decoded signed level value
  */
-/** Decode one coefficient level value.
+/** Decode one coefficient level value from the bitstream.
  *
- *  Reference: ITU-T H.264 §9.2.2
- *  level_code = (level_prefix << suffixLength) + level_suffix
+ *  Reads level_prefix (leading zeros + 1) and level_suffix, computes
+ *  levelCode per ITU-T H.264 §9.2.2, converts to signed level.
+ *
+ *  NOTE: suffixLen is NOT updated here — the caller must update it
+ *  after applying the ±1 trailing-ones adjustment, so the adaptation
+ *  threshold uses the correct final magnitude.
  *
  *  @param br         Bitstream reader
- *  @param suffixLen  Current suffix length [0-6], updated after decode
- *  @return Decoded signed level value
+ *  @param suffixLen  Current suffix length [0-6] (read-only)
+ *  @return Decoded signed level value (before trailing-ones adjustment)
  */
-inline int32_t decodeLevel(BitReader& br, uint32_t& suffixLen) noexcept
+inline int32_t decodeLevel(BitReader& br, uint32_t suffixLen) noexcept
 {
-    // Count leading zeros → level_prefix — ITU-T H.264 §9.2.2.1
+    /// Count leading zeros → level_prefix — ITU-T H.264 §9.2.2.1, Table 9-6.
     uint32_t prefix = 0U;
     while (prefix < 32U && br.readBit() == 0U)
         ++prefix;
 
-    // Compute levelCode = (level_prefix << suffixLength) + level_suffix
-    int32_t levelCode;
-
-    if (prefix < 14U)
-    {
-        // Normal case: suffix is suffixLen bits
-        uint32_t suffix = 0U;
-        if (suffixLen > 0U)
-            suffix = br.readBits(suffixLen);
-        levelCode = static_cast<int32_t>((prefix << suffixLen) + suffix);
-    }
-    else if (prefix == 14U)
-    {
-        // prefix=14: suffix is suffixLen bits (or 4 if suffixLen==0)
-        uint32_t suffixSize = (suffixLen == 0U) ? 4U : suffixLen;
-        uint32_t suffix = br.readBits(suffixSize);
-        levelCode = static_cast<int32_t>((prefix << suffixLen) + suffix);
-    }
+    /// Compute levelSuffixSize — ITU-T H.264 §9.2.2.
+    ///   Normal:            levelSuffixSize = suffixLength
+    ///   prefix==14, sL==0: levelSuffixSize = 4
+    ///   prefix>=15:        levelSuffixSize = prefix - 3
+    uint32_t suffixSize;
+    if (prefix == 14U && suffixLen == 0U)
+        suffixSize = 4U;
+    else if (prefix >= 15U)
+        suffixSize = prefix - 3U;
     else
-    {
-        // prefix >= 15: levelCode = (15 << suffixLen) + suffix + adjustments
-        // ITU-T H.264 §9.2.2 — three-part formula for large levels
-        uint32_t suffixSize = prefix - 3U;
-        uint32_t suffix = br.readBits(suffixSize);
-        levelCode = static_cast<int32_t>((15U << suffixLen) + suffix);
-        if (suffixLen == 0U)
-            levelCode += 15;
-        if (prefix >= 16U)
-            levelCode += static_cast<int32_t>((1U << (prefix - 3U)) - 4096U);
-    }
+        suffixSize = suffixLen;
 
-    // Convert to signed — ITU-T H.264 §9.2.2
+    /// Read level_suffix (suffixSize bits).
+    uint32_t suffix = 0U;
+    if (suffixSize > 0U)
+        suffix = br.readBits(suffixSize);
+
+    /// Compute levelCode = (min(15, level_prefix) << suffixLength) + level_suffix
+    /// plus adjustments for prefix >= 15.
+    int32_t levelCode = static_cast<int32_t>(
+        (static_cast<uint32_t>(prefix < 15U ? prefix : 15U) << suffixLen) + suffix);
+
+    if (prefix >= 15U && suffixLen == 0U)
+        levelCode += 15;
+    if (prefix >= 16U)
+        levelCode += static_cast<int32_t>((1U << (prefix - 3U)) - 4096U);
+
+    /// Convert to signed — ITU-T H.264 §9.2.2.
+    /// levelCode even → positive, odd → negative.
     int32_t absLevel = (levelCode + 2) >> 1;
     int32_t sign = (levelCode & 1) ? -1 : 1;
-    int32_t level = absLevel * sign;
-
-
-    // Update suffix length — ITU-T H.264 §9.2.2
-    uint32_t absVal = static_cast<uint32_t>(absLevel);
-    if (suffixLen < cMaxSuffixLength && absVal > cLevelSuffixThreshold[suffixLen])
-        ++suffixLen;
-
-    return level;
+    return absLevel * sign;
 }
 
 // ── Total zeros decoding — ITU-T H.264 §9.2.3 ──────────────────────────
@@ -419,13 +412,23 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
     {
         int32_t level = decodeLevel(br, suffixLen);
 
-        // First non-trailing level has +1/-1 offset if trailing_ones < 3
+        /// First non-trailing level has ±1 offset when trailingOnes < 3
+        /// — ITU-T H.264 §9.2.2. Applied BEFORE suffixLength adaptation
+        /// so the threshold comparison uses the correct final magnitude.
         if (i == ct.trailingOnes && ct.trailingOnes < cMaxTrailingOnes)
         {
             level += (level > 0) ? 1 : -1;
         }
 
         levels[levelIdx++] = static_cast<int16_t>(level);
+
+        /// Update suffixLength based on FINAL level magnitude (after ±1).
+        /// Spec: increment suffixLength when |level| exceeds threshold.
+        uint32_t absVal = static_cast<uint32_t>(std::abs(level));
+        if (suffixLen == 0U)
+            suffixLen = 1U;
+        if (suffixLen < cMaxSuffixLength && absVal > cLevelSuffixThreshold[suffixLen])
+            ++suffixLen;
     }
 
     // 4. Decode total_zeros
