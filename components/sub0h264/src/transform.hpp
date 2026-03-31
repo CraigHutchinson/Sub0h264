@@ -212,6 +212,8 @@ inline void inverseHadamard2x2(int16_t* dc) noexcept
  */
 inline void inverseQuantize4x4(int16_t* coeffs, int32_t qp, bool isDc = false) noexcept
 {
+    // Ensure QP is in valid range [0, 51] — protects against bitstream errors.
+    qp = ((qp % 52) + 52) % 52;
     int32_t qpDiv6 = qp / 6;
     int32_t qpMod6 = qp % 6;
 
