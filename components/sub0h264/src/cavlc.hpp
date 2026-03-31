@@ -422,13 +422,19 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
 
         levels[levelIdx++] = static_cast<int16_t>(level);
 
-        /// Update suffixLength based on FINAL level magnitude (after ±1).
-        /// Spec: increment suffixLength when |level| exceeds threshold.
+        /// Update suffixLength — ITU-T H.264 §9.2.2.
+        /// When suffixLength is 0, unconditionally set to 1.
+        /// Otherwise, increment when |level| exceeds threshold.
+        /// NOTE: these are mutually exclusive (else-if, not two separate ifs).
         uint32_t absVal = static_cast<uint32_t>(std::abs(level));
         if (suffixLen == 0U)
+        {
             suffixLen = 1U;
-        if (suffixLen < cMaxSuffixLength && absVal > cLevelSuffixThreshold[suffixLen])
+        }
+        else if (suffixLen < cMaxSuffixLength && absVal > cLevelSuffixThreshold[suffixLen])
+        {
             ++suffixLen;
+        }
     }
 
     // 4. Decode total_zeros
