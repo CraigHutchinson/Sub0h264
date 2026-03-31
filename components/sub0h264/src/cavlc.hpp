@@ -14,6 +14,8 @@
 #include "bitstream.hpp"
 #include "cavlc_tables.hpp"
 #include "tables.hpp"
+
+#include <cstdio>
 #include "sub0h264/sub0h264_types.hpp"
 
 #include <cstdint>
@@ -403,6 +405,11 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
         levels[levelIdx++] = sign ? -1 : 1;
     }
 
+#if SUB0H264_TRACE
+    // Dump levels array after all levels are decoded (at the end of function)
+    // This trace is placed early but the actual dump happens after placement.
+#endif
+
     // 3. Decode remaining levels
     uint32_t suffixLen = 0U;
     if (ct.totalCoeff > 10U && ct.trailingOnes < cMaxTrailingOnes)
@@ -478,6 +485,30 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
         if (coeffIdx >= run)
             coeffIdx -= (run + 1U);
     }
+
+#if SUB0H264_TRACE
+    // Dump raw levels for debugging — controlled by a static call counter
+    static uint32_t sResidualCallCount = 0U;
+    ++sResidualCallCount;
+    // Block 11 of MB 9 is the 2nd residual block call for MB 9
+    // (block 10 has TC=0 so decodeResidualBlock returns early at TC=0 check,
+    //  but the call still increments this counter)
+    // MB 0-8 = 9 MBs × 1 DC block each = 9 calls (some with TC=0)
+    // MB 5 has cbpC=1 → 2 chroma DC blocks = +2 calls
+    // Total before MB 9: ~11 calls
+    // MB 9: block 10 (TC=0) = 1 call, block 11 (TC=16) = 2nd call
+    if (ct.totalCoeff > 0U && ct.totalCoeff >= 10U)
+    {
+        std::printf("[CAVLC] call#%u tc=%u to=%u levels=[",
+            sResidualCallCount, ct.totalCoeff, ct.trailingOnes);
+        for (uint32_t k = 0U; k < ct.totalCoeff; ++k)
+            std::printf("%d ", levels[k]);
+        std::printf("] coeffs=[");
+        for (uint32_t k = 0U; k < 16U; ++k)
+            std::printf("%d ", block.coeffs[k]);
+        std::printf("]\n");
+    }
+#endif
 
     return Result::Ok;
 }
