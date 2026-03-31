@@ -1,0 +1,43 @@
+set pagination off
+set print array on
+
+# Break at inverseDct4x4AddPred in decodeI4x4Mb
+# We need to find the right location — break on the function and filter
+break inverseDct4x4AddPred
+condition 1 mbX == 9 && mbY == 0 && blkIdx == 15
+
+run -tc "*Debug*dump*baseline*"
+
+# When we hit the breakpoint, print the key data
+print mbX
+print mbY
+print blkIdx
+print qp
+print predModes[15]
+
+# Print coefficients array
+print coeffs[0]
+print coeffs[1]
+print coeffs[2]
+print coeffs[3]
+print coeffs[4]
+print coeffs[5]
+print coeffs[6]
+print coeffs[7]
+print coeffs[8]
+print coeffs[9]
+print coeffs[10]
+print coeffs[11]
+print coeffs[12]
+print coeffs[13]
+print coeffs[14]
+print coeffs[15]
+
+# Print prediction array
+print pred4x4[0]
+print pred4x4[1]
+print pred4x4[2]
+print pred4x4[3]
+
+continue
+quit

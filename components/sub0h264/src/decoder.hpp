@@ -953,10 +953,11 @@ private:
             }
 
 #if SUB0H264_TRACE
-            if (mbX == 10U && mbY == 0U && blkIdx == 0U)
+            if (mbX == 9U && mbY == 0U && (blkIdx == 11U || blkIdx == 15U))
             {
-                std::printf("[DBG]   blk0: mode=%u pred=[%u %u %u %u] hasRes=%d\n",
-                    predModes[0], pred4x4[0], pred4x4[1], pred4x4[2], pred4x4[3], hasResidual);
+                std::printf("[DBG]   MB9 blk%lu: mode=%u pred=[%u %u %u %u] hasRes=%d qp=%d\n",
+                    (unsigned long)blkIdx, predModes[blkIdx],
+                    pred4x4[0], pred4x4[1], pred4x4[2], pred4x4[3], hasResidual, qp);
                 if (hasResidual)
                 {
                     std::printf("[DBG]   coeffs (dequant)=[");
@@ -969,6 +970,16 @@ private:
             // Reconstruct: inverse DCT + prediction + clip
             uint8_t* outPtr = mbLuma + blkY * yStride + blkX;
             inverseDct4x4AddPred(coeffs, pred4x4, 4U, outPtr, yStride);
+
+#if SUB0H264_TRACE
+            if (mbX == 9U && mbY == 0U && (blkIdx == 11U || blkIdx == 15U))
+            {
+                std::printf("[DBG]   output row0=[%u %u %u %u] row3=[%u %u %u %u]\n",
+                    outPtr[0], outPtr[1], outPtr[2], outPtr[3],
+                    outPtr[3*yStride], outPtr[3*yStride+1],
+                    outPtr[3*yStride+2], outPtr[3*yStride+3]);
+            }
+#endif
         }
 
         // Store intra 4x4 modes for cross-MB MPM derivation
