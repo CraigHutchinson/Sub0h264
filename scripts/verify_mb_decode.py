@@ -132,7 +132,7 @@ def decode_level(br, suffix_len, trace_fn=None):
     if trace_fn:
         trace_fn(f"      level: prefix={prefix} suffixLen={suffix_len} "
                  f"levelCode={level_code} abs={abs_level} sign={sign} "
-                 f"→ {level} ({br.pos - start} bits)")
+                 f"-> {level} ({br.pos - start} bits)")
     return level
 
 
@@ -278,6 +278,36 @@ def main():
         if dd != 1: br.read_se(); br.read_se()
         print(f"Slice header end: bit {br.pos}, qp_delta={qp_d}")
 
+        # NNZ tracking for luma nC context (40 MBs wide × 30 MBs tall × 16 blocks)
+        WIDTH_MBS = 40
+        nnz_luma = {}  # (mbAddr, blkIdx) -> totalCoeff
+
+        def get_luma_nc(mb_a, blk_idx):
+            """Compute nC from left and top neighbor NNZ."""
+            bx, by = blk_idx & 3, blk_idx >> 2
+            m_x, m_y = mb_a % WIDTH_MBS, mb_a // WIDTH_MBS
+            left_nnz, top_nnz = 0, 0
+            has_left, has_top = False, False
+            # Left
+            if bx > 0:
+                left_nnz = nnz_luma.get((mb_a, blk_idx - 1), 0)
+                has_left = True
+            elif m_x > 0:
+                left_nnz = nnz_luma.get((mb_a - 1, by * 4 + 3), 0)
+                has_left = True
+            # Top
+            if by > 0:
+                top_nnz = nnz_luma.get((mb_a, blk_idx - 4), 0)
+                has_top = True
+            elif m_y > 0:
+                top_nnz = nnz_luma.get((mb_a - WIDTH_MBS, 12 + bx), 0)
+                has_top = True
+            if has_left and has_top:
+                return (left_nnz + top_nnz + 1) >> 1
+            if has_left: return left_nnz
+            if has_top: return top_nnz
+            return 0
+
         for mb_addr in range(mb_start, mb_end + 1):
             mb_s = br.pos
             mt = br.read_ue()
@@ -300,11 +330,13 @@ def main():
                     bx, by = (bi&3)*4, (bi>>2)*4
                     grp = (1 if by >= 8 else 0)*2 + (1 if bx >= 8 else 0)
                     if (cbp_l >> grp) & 1:
+                        nc = get_luma_nc(mb_addr, bi)
                         bs = br.pos
-                        tfn = (lambda msg: print(msg)) if (trace_this and (level_blk < 0 or level_blk == bi)) else None
-                        coeffs, tc, bits = decode_residual(br, 0, 16, 0, tfn)
+                        tfn = print if (trace_this and (level_blk < 0 or level_blk == bi)) else None
+                        coeffs, tc, bits = decode_residual(br, nc, 16, 0, tfn)
+                        nnz_luma[(mb_addr, bi)] = tc
                         if detail or (trace_this and (level_blk < 0 or level_blk == bi)):
-                            print(f"    blk{bi}: tc={tc} bits={bits} ({bs}->{br.pos})")
+                            print(f"    blk{bi}: nC={nc} tc={tc} bits={bits} ({bs}->{br.pos})")
                 if cbp_c >= 1:
                     for _ in range(2): decode_residual(br, -1, 4, 0, is_chroma_dc=True)
                 if cbp_c >= 2:
