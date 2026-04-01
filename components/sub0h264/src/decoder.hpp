@@ -697,16 +697,19 @@ private:
 
         for (uint32_t blkIdx = 0U; blkIdx < 16U; ++blkIdx)
         {
-            uint32_t blkX = (blkIdx & 3U) * 4U;
-            uint32_t blkY = (blkIdx >> 2U) * 4U;
+            // H.264 §6.4.3: blocks iterate in spec scan order, not raster.
+            uint32_t blkX = cLuma4x4BlkX[blkIdx];
+            uint32_t blkY = cLuma4x4BlkY[blkIdx];
+            uint32_t rasterIdx = cLuma4x4ToRaster[blkIdx];
 
             int16_t coeffs[16] = {};
-            coeffs[0] = dcCoeffs[blkIdx]; // DC from Hadamard
+            // Hadamard output is in raster order (4x4 grid row-major)
+            coeffs[0] = dcCoeffs[rasterIdx]; // DC from Hadamard
 
             if (cbpLuma)
             {
                 // Decode AC coefficients (start from index 1)
-                int32_t nc = getLumaNc(mbX, mbY, blkIdx);
+                int32_t nc = getLumaNc(mbX, mbY, rasterIdx);
                 ResidualBlock4x4 acBlock;
                 decodeResidualBlock4x4(br, nc, 15U, 1U, acBlock);
 
@@ -714,9 +717,9 @@ private:
                 for (uint32_t i = 1U; i < 16U; ++i)
                     coeffs[i] = acBlock.coeffs[i];
 
-                // Store NNZ for context
+                // Store NNZ for context (raster order)
                 uint32_t mbIdx = mbY * widthInMbs_ + mbX;
-                nnzLuma_[mbIdx * 16U + blkIdx] = acBlock.totalCoeff;
+                nnzLuma_[mbIdx * 16U + rasterIdx] = acBlock.totalCoeff;
             }
 
             // Inverse quantize AC coefficients only — DC was already dequantized
@@ -812,26 +815,29 @@ private:
 
         for (uint32_t i = 0U; i < 16U; ++i)
         {
-            uint8_t leftMode = getNeighborIntra4x4Mode(mbX, mbY, i, true, predModes);
-            uint8_t topMode  = getNeighborIntra4x4Mode(mbX, mbY, i, false, predModes);
+            // Prediction modes are coded in spec scan order (§6.4.3).
+            // Store in raster order for consistent neighbor lookup.
+            uint32_t rasterIdx = cLuma4x4ToRaster[i];
+            uint8_t leftMode = getNeighborIntra4x4Mode(mbX, mbY, rasterIdx, true, predModes);
+            uint8_t topMode  = getNeighborIntra4x4Mode(mbX, mbY, rasterIdx, false, predModes);
             uint8_t mpm = (leftMode < topMode) ? leftMode : topMode;
 
             uint32_t prevFlag = br.readBit();
             if (prevFlag)
             {
-                predModes[i] = mpm;
+                predModes[rasterIdx] = mpm;
             }
             else
             {
                 uint8_t rem = static_cast<uint8_t>(br.readBits(3U));
-                predModes[i] = (rem < mpm) ? rem : static_cast<uint8_t>(rem + 1U);
+                predModes[rasterIdx] = (rem < mpm) ? rem : static_cast<uint8_t>(rem + 1U);
             }
 
 #if SUB0H264_TRACE
             if (mbX == 10U && mbY == 0U && i < 4U)
-                std::printf("[DBG]   blk%lu: prevFlag=%lu mpm=%u mode=%u\n",
-                    (unsigned long)i, (unsigned long)prevFlag,
-                    mpm, predModes[i]);
+                std::printf("[DBG]   blk%lu(raster%lu): prevFlag=%lu mpm=%u mode=%u\n",
+                    (unsigned long)i, (unsigned long)rasterIdx, (unsigned long)prevFlag,
+                    mpm, predModes[rasterIdx]);
 #endif
         }
 
@@ -877,8 +883,10 @@ private:
 
         for (uint32_t blkIdx = 0U; blkIdx < 16U; ++blkIdx)
         {
-            uint32_t blkX = (blkIdx & 3U) * 4U;
-            uint32_t blkY = (blkIdx >> 2U) * 4U;
+            // H.264 §6.4.3: iterate in spec scan order, not raster.
+            uint32_t blkX = cLuma4x4BlkX[blkIdx];
+            uint32_t blkY = cLuma4x4BlkY[blkIdx];
+            uint32_t rasterIdx = cLuma4x4ToRaster[blkIdx];
 
             // Generate 4x4 prediction
             uint8_t pred4x4[16];
@@ -901,7 +909,12 @@ private:
                 for (uint32_t i = 0U; i < 4U; ++i) topBuf[i] = row[absX + i];
                 top = topBuf;
 
-                if (absX + 4U < currentFrame_.width())
+                // Top-right availability — ITU-T H.264 §6.4.11.
+                bool topRightAvailable = (absX + 4U < currentFrame_.width());
+                if (cTopRightUnavailScan[blkIdx])
+                    topRightAvailable = false;
+
+                if (topRightAvailable)
                 {
                     for (uint32_t i = 0U; i < 4U; ++i) topBuf[4 + i] = row[absX + 4U + i];
                     topRight = topBuf + 4U;
@@ -919,17 +932,18 @@ private:
                 topLeft = &topLeftVal;
             }
 
-            intraPred4x4(static_cast<Intra4x4Mode>(predModes[blkIdx]),
+            // predModes is stored in raster order
+            intraPred4x4(static_cast<Intra4x4Mode>(predModes[rasterIdx]),
                          top, topRight, left, topLeft, pred4x4);
 
             // Decode residual if CBP indicates this 8x8 group has coefficients
-            uint32_t group8x8 = (blkY >= 8U ? 2U : 0U) + (blkX >= 8U ? 1U : 0U);
+            uint32_t group8x8 = blkIdx >> 2U; // scan order: 0-3=8x8_0, 4-7=8x8_1, ...
             bool hasResidual = (cbpLuma >> group8x8) & 1U;
 
             int16_t coeffs[16] = {};
             if (hasResidual)
             {
-                int32_t nc = getLumaNc(mbX, mbY, blkIdx);
+                int32_t nc = getLumaNc(mbX, mbY, rasterIdx);
 #if SUB0H264_TRACE
                 uint32_t blkBitBefore = br.bitOffset();
 #endif
@@ -938,8 +952,9 @@ private:
 
 #if SUB0H264_TRACE
                 if (mbX == 9U && mbY == 0U)
-                    std::printf("[DBG]   MB9 luma blk%lu: nC=%d tc=%u bits=%lu\n",
-                        (unsigned long)blkIdx, nc, resBlock.totalCoeff,
+                    std::printf("[DBG]   MB9 luma scan%lu(raster%lu): nC=%d tc=%u bits=%lu\n",
+                        (unsigned long)blkIdx, (unsigned long)rasterIdx,
+                        nc, resBlock.totalCoeff,
                         (unsigned long)(br.bitOffset() - blkBitBefore));
 #endif
 
@@ -947,7 +962,7 @@ private:
                     coeffs[i] = resBlock.coeffs[i];
 
                 uint32_t mbIdx = mbY * widthInMbs_ + mbX;
-                nnzLuma_[mbIdx * 16U + blkIdx] = resBlock.totalCoeff;
+                nnzLuma_[mbIdx * 16U + rasterIdx] = resBlock.totalCoeff;
 
                 inverseQuantize4x4(coeffs, qp);
             }
@@ -955,8 +970,8 @@ private:
 #if SUB0H264_TRACE
             if (mbX == 9U && mbY == 0U && (blkIdx == 11U || blkIdx == 15U))
             {
-                std::printf("[DBG]   MB9 blk%lu: mode=%u pred=[%u %u %u %u] hasRes=%d qp=%d\n",
-                    (unsigned long)blkIdx, predModes[blkIdx],
+                std::printf("[DBG]   MB9 scan%lu(raster%lu): mode=%u pred=[%u %u %u %u] hasRes=%d qp=%d\n",
+                    (unsigned long)blkIdx, (unsigned long)rasterIdx, predModes[rasterIdx],
                     pred4x4[0], pred4x4[1], pred4x4[2], pred4x4[3], hasResidual, qp);
                 if (hasResidual)
                 {
@@ -1246,25 +1261,26 @@ private:
             if (qp > 51) qp -= 52;
         }
 
-        // Decode luma residual and reconstruct
+        // Decode luma residual and reconstruct (spec scan order §6.4.3)
         uint32_t yStride = target.yStride();
         for (uint32_t blkIdx = 0U; blkIdx < 16U; ++blkIdx)
         {
-            uint32_t blkX = (blkIdx & 3U) * 4U;
-            uint32_t blkY = (blkIdx >> 2U) * 4U;
+            uint32_t blkX = cLuma4x4BlkX[blkIdx];
+            uint32_t blkY = cLuma4x4BlkY[blkIdx];
+            uint32_t rasterIdx = cLuma4x4ToRaster[blkIdx];
 
-            uint32_t group8x8 = (blkY >= 8U ? 2U : 0U) + (blkX >= 8U ? 1U : 0U);
+            uint32_t group8x8 = blkIdx >> 2U;
             bool hasResidual = (cbpLuma >> group8x8) & 1U;
 
             int16_t coeffs[16] = {};
             if (hasResidual)
             {
-                int32_t nc = getLumaNc(mbX, mbY, blkIdx);
+                int32_t nc = getLumaNc(mbX, mbY, rasterIdx);
                 ResidualBlock4x4 resBlock;
                 decodeResidualBlock4x4(br, nc, cMaxCoeff4x4, 0U, resBlock);
                 for (uint32_t i = 0U; i < 16U; ++i)
                     coeffs[i] = resBlock.coeffs[i];
-                nnzLuma_[mbIdx * 16U + blkIdx] = resBlock.totalCoeff;
+                nnzLuma_[mbIdx * 16U + rasterIdx] = resBlock.totalCoeff;
                 inverseQuantize4x4(coeffs, qp);
             }
 
@@ -1376,15 +1392,17 @@ private:
                             int32_t& qp, uint32_t mbX, uint32_t mbY) noexcept
     {
         (void)sps;
-        // Read intra 4x4 prediction modes using CABAC
+        // Read intra 4x4 prediction modes using CABAC (spec scan order §6.4.3)
+        // Store in raster order for consistent neighbor lookup.
         uint8_t predModes[16] = {};
         for (uint32_t i = 0U; i < 16U; ++i)
         {
+            uint32_t rasterIdx = cLuma4x4ToRaster[i];
             uint8_t result = cabacDecodeIntra4x4PredMode(cabacEngine_, cabacCtx_.data());
             if (result == 0xFFU)
-                predModes[i] = 2U; // Most probable → DC (simplified)
+                predModes[rasterIdx] = 2U; // Most probable → DC (simplified)
             else
-                predModes[i] = result;
+                predModes[rasterIdx] = result;
         }
 
         // Chroma pred mode
@@ -1409,14 +1427,15 @@ private:
             if (qp > 51) qp -= 52;
         }
 
-        // Decode luma 4x4 blocks
+        // Decode luma 4x4 blocks (spec scan order §6.4.3)
         uint8_t* mbLuma = currentFrame_.yMb(mbX, mbY);
         uint32_t yStride = currentFrame_.yStride();
 
         for (uint32_t blkIdx = 0U; blkIdx < 16U; ++blkIdx)
         {
-            uint32_t blkX = (blkIdx & 3U) * 4U;
-            uint32_t blkY = (blkIdx >> 2U) * 4U;
+            uint32_t blkX = cLuma4x4BlkX[blkIdx];
+            uint32_t blkY = cLuma4x4BlkY[blkIdx];
+            uint32_t rasterIdx = cLuma4x4ToRaster[blkIdx];
             uint32_t absX = mbX * cMbSize + blkX;
             uint32_t absY = mbY * cMbSize + blkY;
 
@@ -1424,21 +1443,21 @@ private:
             uint8_t pred4x4[16];
             uint8_t topBuf[8] = {}, leftBuf[4] = {}, topLeftVal = cDefaultPredValue;
             const uint8_t *top = nullptr, *topRight = nullptr, *left = nullptr, *topLeft = nullptr;
-            if (absY > 0U) { const uint8_t* row = currentFrame_.yRow(absY - 1U); for (uint32_t i = 0U; i < 4U; ++i) topBuf[i] = row[absX + i]; top = topBuf; if (absX + 4U < currentFrame_.width()) { for (uint32_t i = 0U; i < 4U; ++i) topBuf[4+i] = row[absX+4U+i]; topRight = topBuf+4U; } }
+            if (absY > 0U) { const uint8_t* row = currentFrame_.yRow(absY - 1U); for (uint32_t i = 0U; i < 4U; ++i) topBuf[i] = row[absX + i]; top = topBuf; if (absX + 4U < currentFrame_.width() && !cTopRightUnavailScan[blkIdx]) { for (uint32_t i = 0U; i < 4U; ++i) topBuf[4+i] = row[absX+4U+i]; topRight = topBuf+4U; } }
             if (absX > 0U) { for (uint32_t i = 0U; i < 4U; ++i) leftBuf[i] = currentFrame_.y(absX-1U, absY+i); left = leftBuf; }
             if (absX > 0U && absY > 0U) { topLeftVal = currentFrame_.y(absX-1U, absY-1U); topLeft = &topLeftVal; }
 
-            intraPred4x4(static_cast<Intra4x4Mode>(predModes[blkIdx]), top, topRight, left, topLeft, pred4x4);
+            intraPred4x4(static_cast<Intra4x4Mode>(predModes[rasterIdx]), top, topRight, left, topLeft, pred4x4);
 
             // Residual via CABAC
-            uint32_t group8x8 = (blkY >= 8U ? 2U : 0U) + (blkX >= 8U ? 1U : 0U);
+            uint32_t group8x8 = blkIdx >> 2U;
             bool hasResidual = (cbpLuma >> group8x8) & 1U;
 
             int16_t coeffs[16] = {};
             if (hasResidual)
             {
                 cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), coeffs, 16U, 2U);
-                nnzLuma_[mbIdx * 16U + blkIdx] = 1U; // Simplified NNZ tracking
+                nnzLuma_[mbIdx * 16U + rasterIdx] = 1U; // Simplified NNZ tracking
                 inverseQuantize4x4(coeffs, qp);
             }
 
@@ -1494,17 +1513,19 @@ private:
             }
         }
 
-        // Decode AC blocks
+        // Decode AC blocks (spec scan order §6.4.3)
         uint8_t* mbLuma = currentFrame_.yMb(mbX, mbY);
         uint32_t yStride = currentFrame_.yStride();
 
         for (uint32_t blkIdx = 0U; blkIdx < 16U; ++blkIdx)
         {
-            uint32_t blkX = (blkIdx & 3U) * 4U;
-            uint32_t blkY = (blkIdx >> 2U) * 4U;
+            uint32_t blkX = cLuma4x4BlkX[blkIdx];
+            uint32_t blkY = cLuma4x4BlkY[blkIdx];
+            uint32_t rasterIdx = cLuma4x4ToRaster[blkIdx];
 
             int16_t coeffs[16] = {};
-            coeffs[0] = dcCoeffs[blkIdx];
+            // Hadamard output is in raster order
+            coeffs[0] = dcCoeffs[rasterIdx];
 
             if (cbpLuma)
             {
@@ -1512,7 +1533,7 @@ private:
                 cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), acCoeffs, 15U, 1U);
                 for (uint32_t i = 1U; i < 16U; ++i)
                     coeffs[i] = acCoeffs[i - 1U];
-                nnzLuma_[mbIdx * 16U + blkIdx] = 1U;
+                nnzLuma_[mbIdx * 16U + rasterIdx] = 1U;
             }
 
             inverseQuantize4x4(coeffs, qp);
@@ -1584,19 +1605,20 @@ private:
             if (qp > 51) qp -= 52;
         }
 
-        // Luma residual via CABAC
+        // Luma residual via CABAC (spec scan order §6.4.3)
         uint32_t yStride = target.yStride();
         for (uint32_t blkIdx = 0U; blkIdx < 16U; ++blkIdx)
         {
-            uint32_t blkX = (blkIdx & 3U) * 4U;
-            uint32_t blkY = (blkIdx >> 2U) * 4U;
-            uint32_t group8x8 = (blkY >= 8U ? 2U : 0U) + (blkX >= 8U ? 1U : 0U);
+            uint32_t blkX = cLuma4x4BlkX[blkIdx];
+            uint32_t blkY = cLuma4x4BlkY[blkIdx];
+            uint32_t rasterIdx = cLuma4x4ToRaster[blkIdx];
+            uint32_t group8x8 = blkIdx >> 2U;
 
             int16_t coeffs[16] = {};
             if ((cbpLuma >> group8x8) & 1U)
             {
                 cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), coeffs, 16U, 2U);
-                nnzLuma_[mbIdx * 16U + blkIdx] = 1U;
+                nnzLuma_[mbIdx * 16U + rasterIdx] = 1U;
                 inverseQuantize4x4(coeffs, qp);
             }
 

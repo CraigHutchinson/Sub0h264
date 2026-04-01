@@ -24,6 +24,7 @@ set(SUB0H264_TEST_SOURCES
     test_sps_pps.cpp
     test_slice.cpp
     test_cavlc.cpp
+    test_cavlc_levels.cpp
     test_iframe.cpp
     test_pframe.cpp
     test_deblock.cpp
@@ -32,4 +33,5 @@ set(SUB0H264_TEST_SOURCES
     test_frame_verify.cpp
     test_debug_flatblack.cpp
     test_bench.cpp
+    test_reconstruct.cpp
 )

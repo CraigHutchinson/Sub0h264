@@ -43,6 +43,20 @@
             }
         },
         {
+            "name": "asan",
+            "displayName": "ASan/UBSan (MinGW GCC)",
+            "generator": "MinGW Makefiles",
+            "binaryDir": "${sourceDir}/build-asan-mingw",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_C_COMPILER": "gcc",
+                "CMAKE_CXX_COMPILER": "g++",
+                "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+                "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
+                "SUB0H264_BUILD_TESTING": "ON"
+            }
+        },
+        {
             "name": "ci-asan",
             "displayName": "CI - ASan/UBSan",
             "binaryDir": "${sourceDir}/build-asan",
@@ -88,6 +102,10 @@
             "name": "debug-trace",
             "configurePreset": "debug-trace",
             "configuration": "Debug"
+        },
+        {
+            "name": "asan",
+            "configurePreset": "asan"
         },
         {
             "name": "ci-msvc",

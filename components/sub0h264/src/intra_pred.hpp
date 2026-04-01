@@ -119,7 +119,10 @@ inline void intraPred4x4(Intra4x4Mode mode,
     case Intra4x4Mode::DiagDownLeft:
         if (top)
         {
-            const uint8_t* tr = topRight ? topRight : top; // Fallback
+            // ITU-T H.264 §8.3.1.2.3: when top-right unavailable,
+            // substitute all 4 samples with top[3] (last top pixel).
+            uint8_t trBuf[4] = { top[3], top[3], top[3], top[3] };
+            const uint8_t* tr = topRight ? topRight : trBuf;
             uint8_t t[8] = { top[0], top[1], top[2], top[3],
                              tr[0], tr[1], tr[2], tr[3] };
             for (uint32_t row = 0U; row < 4U; ++row)
@@ -206,7 +209,10 @@ inline void intraPred4x4(Intra4x4Mode mode,
     case Intra4x4Mode::VerticalLeft:
         if (top)
         {
-            const uint8_t* tr = topRight ? topRight : top;
+            // ITU-T H.264 §8.3.1.2.8: when top-right unavailable,
+            // substitute all 4 samples with top[3].
+            uint8_t trBuf[4] = { top[3], top[3], top[3], top[3] };
+            const uint8_t* tr = topRight ? topRight : trBuf;
             uint8_t t[8] = { top[0], top[1], top[2], top[3], tr[0], tr[1], tr[2], tr[3] };
             // ITU-T H.264 §8.3.1.2.8
             pred[0*4+0] = filt11(t[0], t[1]);

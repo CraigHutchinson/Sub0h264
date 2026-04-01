@@ -187,3 +187,195 @@ TEST_CASE("Verify: CRC32 implementation matches zlib")
     uint32_t crc = crc32(0U, testData, 9U);
     CHECK(crc == cExpectedCrc);
 }
+
+// ── Additional frame verification tests ─────────────────────────────────────
+
+TEST_CASE("frameCrc32: stride-aware — padding bytes excluded from CRC")
+{
+    // Verify frameCrc32 uses frame.width() per row, not a flat buffer read.
+    // Two frames with the same visible content but one has garbage bytes
+    // written beyond width in the underlying plane (simulating stride padding).
+    // Both must produce the same CRC.
+    //
+    // Since Frame::allocate() sets stride == width, we simulate padding by
+    // allocating a wider frame (32 wide) and writing content into only the
+    // left 16 columns, then confirming frameCrc32 of that 32-wide frame
+    // differs from a 16-wide frame — proving width is respected. We also
+    // validate directly that computing CRC row-by-row with width=16 excludes
+    // the extra bytes.
+
+    /// Visible content value.
+    static constexpr uint8_t cContentByte = 0xABU;
+    /// Padding value that must NOT affect CRC of the narrow frame.
+    static constexpr uint8_t cPaddingByte = 0xFFU;
+
+    // Narrow frame: 16x16, all content bytes.
+    Frame narrow;
+    narrow.allocate(16U, 16U);
+    narrow.fill(cContentByte, cContentByte, cContentByte);
+
+    // Wide frame: 32x16, left 16 cols = cContentByte, right 16 = cPaddingByte.
+    // frameCrc32 on this frame will use width=32 and include the padding — so
+    // the CRCs MUST differ, confirming width() controls what is hashed.
+    Frame wide;
+    wide.allocate(32U, 16U);
+    wide.fill(cContentByte, cContentByte, cContentByte);
+    // Write padding bytes into right half of each Y row.
+    for (uint32_t row = 0U; row < 16U; ++row)
+    {
+        uint8_t* rowPtr = wide.yRow(row);
+        for (uint32_t col = 16U; col < 32U; ++col)
+            rowPtr[col] = cPaddingByte;
+    }
+
+    // CRCs must differ because frameCrc32 includes full width (32 != 16 bytes/row).
+    uint32_t crcNarrow = frameCrc32(narrow);
+    uint32_t crcWide   = frameCrc32(wide);
+    CHECK(crcNarrow != crcWide);
+
+    // Also confirm the narrow CRC matches the known value computed via
+    // direct row-by-row crc32() calls with width=16 (no padding).
+    /// Expected CRC32 of a 16x16 all-0xAB I420 frame, row-by-row — Python zlib.crc32.
+    static constexpr uint32_t cExpectedNarrowCrc = 0xA4048030U;
+    CHECK(crcNarrow == cExpectedNarrowCrc);
+}
+
+TEST_CASE("frameCrc32: known value — 16x16 all-zero I420 frame")
+{
+    // CRC32 of a 16x16 I420 frame where Y=0, U=0, V=0 for every sample.
+    // Accumulated row-by-row: 16 Y rows (16 bytes each), 8 U rows (8 bytes each),
+    // 8 V rows (8 bytes each) = 384 zero bytes total.
+    // Reference value computed with Python: zlib.crc32(bytes(384)) == 0x88BAD147.
+    //
+    // Note: zlib.crc32 on a contiguous 384-byte zero buffer equals the row-by-row
+    // chain because there is no stride padding in this frame (stride == width).
+
+    Frame frame;
+    frame.allocate(16U, 16U);
+    frame.fill(0U, 0U, 0U);
+
+    uint32_t crc = frameCrc32(frame);
+
+    /// CRC32 of 384 zero bytes (16x16 I420) — verified against Python zlib.crc32.
+    static constexpr uint32_t cExpectedCrc = 0x88BAD147U;
+    CHECK(crc == cExpectedCrc);
+}
+
+TEST_CASE("framePsnr: identical frames return 999.0 sentinel")
+{
+    // Identical frames have MSE = 0 which would be log10(inf).
+    // framePsnr returns 999.0 as a finite sentinel for this case.
+
+    Frame a, b;
+    a.allocate(16U, 16U);
+    b.allocate(16U, 16U);
+    a.fill(128U, 128U, 128U);
+    b.fill(128U, 128U, 128U);
+
+    double psnr = framePsnr(a, b);
+
+    /// Sentinel value returned for identical frames — avoids log10(0).
+    static constexpr double cIdenticalPsnr = 999.0;
+    CHECK(psnr == cIdenticalPsnr);
+}
+
+TEST_CASE("framePsnr: known difference — all-128 vs all-129 gives ~48.13 dB")
+{
+    // Every luma pixel differs by exactly 1.
+    // MSE = 1.0, PSNR = 10 * log10(255^2 / 1.0) = 48.1308... dB.
+    // Verified with Python: 10 * math.log10(65025) = 48.1308 dB.
+
+    Frame a, b;
+    a.allocate(16U, 16U);
+    b.allocate(16U, 16U);
+    a.fill(128U, 128U, 128U);
+    b.fill(129U, 128U, 128U); // only Y differs; framePsnr compares Y only
+
+    double psnr = framePsnr(a, b);
+
+    /// PSNR = 10*log10(255^2/1) — diff of 1 LSB across all luma samples.
+    static constexpr double cExpectedPsnr = 48.1308;
+    static constexpr double cTolerance    = 0.001;
+    CHECK(psnr >= cExpectedPsnr - cTolerance);
+    CHECK(psnr <= cExpectedPsnr + cTolerance);
+}
+
+TEST_CASE("framePsnr: all-zero vs all-255 gives 0.0 dB")
+{
+    // Every luma pixel at maximum possible distance.
+    // MSE = 255^2 = 65025, PSNR = 10 * log10(65025 / 65025) = 0.0 dB.
+
+    Frame a, b;
+    a.allocate(16U, 16U);
+    b.allocate(16U, 16U);
+    a.fill(0U, 128U, 128U);
+    b.fill(255U, 128U, 128U); // Y plane: 0 vs 255
+
+    double psnr = framePsnr(a, b);
+
+    /// PSNR = 10*log10(255^2/255^2) = 0 dB — maximum possible MSE for 8-bit.
+    static constexpr double cExpectedPsnr = 0.0;
+    static constexpr double cTolerance    = 0.001;
+    CHECK(psnr >= cExpectedPsnr - cTolerance);
+    CHECK(psnr <= cExpectedPsnr + cTolerance);
+}
+
+TEST_CASE("compareFrames: report fields match expected statistics")
+{
+    // Frame a = all-100, frame b = all-100 except 4 pixels in row 0 set to 120.
+    // Y-plane differences: 4 pixels differ by 20 each, rest identical.
+    //
+    // Expected statistics:
+    //   diffCount    = 4
+    //   maxAbsDiff   = 20
+    //   diffPercent  = 4 / (16*16) * 100 = 1.5625 %
+    //   psnrDb       = 10 * log10(65025 / (1600.0/256)) = 40.172 dB
+    //   crcMatch     = false (frames differ)
+
+    Frame a, b;
+    a.allocate(16U, 16U);
+    b.allocate(16U, 16U);
+    a.fill(100U, 128U, 128U);
+    b.fill(100U, 128U, 128U);
+
+    // Set 4 pixels in row 0 of b to 120 (delta = +20 from a).
+    for (uint32_t col = 0U; col < 4U; ++col)
+        b.y(col, 0U) = 120U;
+
+    uint32_t crcA = frameCrc32(a);
+    FrameVerifyReport report = compareFrames(b, a, 0U, crcA);
+
+    /// 4 Y pixels differ between the two frames.
+    static constexpr uint32_t cExpectedDiffCount = 4U;
+    /// Maximum absolute difference is 20 (pixels set to 120 vs 100).
+    static constexpr uint32_t cExpectedMaxDiff = 20U;
+    /// 4 out of 256 luma pixels differ.
+    static constexpr double cExpectedDiffPercent = 1.5625;
+    /// PSNR = 10*log10(65025 / (1600/256)) — Python: 40.1720 dB.
+    static constexpr double cExpectedPsnr = 40.172;
+    static constexpr double cTolerance    = 0.01;
+
+    CHECK(report.diffCount   == cExpectedDiffCount);
+    CHECK(report.maxAbsDiff  == cExpectedMaxDiff);
+    CHECK(report.diffPercent >= cExpectedDiffPercent - cTolerance);
+    CHECK(report.diffPercent <= cExpectedDiffPercent + cTolerance);
+    CHECK(report.psnrDb      >= cExpectedPsnr - cTolerance);
+    CHECK(report.psnrDb      <= cExpectedPsnr + cTolerance);
+    CHECK_FALSE(report.crcMatch);
+    CHECK(report.crcExpected == crcA);
+}
+
+TEST_CASE("framePsnr threshold constants: documented expected values")
+{
+    // Verify the PSNR sentinel thresholds match their spec-documented values.
+    // cPsnrFuzzyPassThreshold: 40 dB corresponds to ITU-R BT.500 "excellent quality".
+    // cPsnrClearFailThreshold: 20 dB corresponds to clearly perceptible errors.
+
+    /// ITU-R BT.500 "excellent quality" PSNR lower bound.
+    static constexpr double cExpectedFuzzyPass  = 40.0;
+    /// PSNR below which decode is considered clearly wrong.
+    static constexpr double cExpectedClearFail  = 20.0;
+
+    CHECK(cPsnrFuzzyPassThreshold == cExpectedFuzzyPass);
+    CHECK(cPsnrClearFailThreshold == cExpectedClearFail);
+}

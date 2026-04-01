@@ -127,15 +127,19 @@ TEST_CASE("CAVLC: decodeLevel larger values")
     CHECK(level == 2);
 }
 
-TEST_CASE("CAVLC: suffix length adaptation")
+TEST_CASE("CAVLC: suffix length adaptation moved to caller")
 {
-    // Decode a level that triggers suffix length increase
-    // threshold[0]=0, so any level > 0 should bump suffixLen from 0 to 1
-    const uint8_t data[] = { 0x80 }; // prefix=0 → level=1
+    // decodeLevel no longer updates suffixLen (it takes it by value).
+    // The caller (decodeResidualBlock4x4) handles adaptation per spec:
+    //   if (suffixLen == 0) suffixLen = 1;
+    //   else if (|level| > threshold) ++suffixLen;
+    // See test_cavlc_levels.cpp for the full adaptation tests.
+    const uint8_t data[] = { 0x80 }; // prefix=0 → level=+1
     BitReader br(data, 1U);
     uint32_t suffixLen = 0U;
-    decodeLevel(br, suffixLen);
-    CHECK(suffixLen == 1U); // Should have incremented from 0 to 1
+    int32_t level = decodeLevel(br, suffixLen);
+    CHECK(level == 1);
+    CHECK(suffixLen == 0U); // NOT modified by decodeLevel (caller's job)
 }
 
 TEST_CASE("CAVLC: decodeRunBefore zerosLeft=0")

@@ -35,16 +35,17 @@ TEST_CASE("Pipeline: H264Decoder decodes flat_black IDR")
     CHECK(frame->width() == 640U);
     CHECK(frame->height() == 480U);
 
-    // Flat black frame: Y should be near 0 (all-black content).
-    // BT.601 "legal black" is Y=16, but ffmpeg testsrc black is Y=0.
+    // Flat black frame: BT.601 "legal black" = Y=16, U=128, V=128.
+    // CRC-verified against ffmpeg reference (0x509df05f).
     uint64_t sum = yPlaneSum(*frame);
     double avgY = static_cast<double>(sum) / (640.0 * 480.0);
 
     MESSAGE("flat_black decoded: " << frame->width() << "x" << frame->height()
             << " avg_Y=" << avgY);
 
-    // Average Y should be very low for an all-black frame
-    CHECK(avgY < 5.0);
+    /// BT.601 legal black luma value.
+    static constexpr double cBt601BlackY = 16.0;
+    CHECK(avgY == cBt601BlackY);
 }
 
 TEST_CASE("Pipeline: H264Decoder processes SPS/PPS from baseline stream")

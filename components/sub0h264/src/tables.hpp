@@ -37,6 +37,49 @@ inline constexpr std::array<uint8_t, 64> cZigzag8x8 = {
     53, 60, 61, 54, 47, 55, 62, 63,
 };
 
+// ── Luma 4x4 block scan order — ITU-T H.264 §6.4.3 ────────────────────
+
+/// Pixel X offset within MB for each luma4x4BlkIdx in spec scan order.
+/// The scan groups four 4x4 blocks within each 8x8 partition:
+///   i8x8=0: blk 0(0,0) 1(4,0) 2(0,4) 3(4,4)
+///   i8x8=1: blk 4(8,0) 5(12,0) 6(8,4) 7(12,4)
+///   i8x8=2: blk 8(0,8) 9(4,8) 10(0,12) 11(4,12)
+///   i8x8=3: blk 12(8,8) 13(12,8) 14(8,12) 15(12,12)
+inline constexpr std::array<uint8_t, 16> cLuma4x4BlkX = {
+     0,  4,  0,  4,   8, 12,  8, 12,   0,  4,  0,  4,   8, 12,  8, 12
+};
+
+/// Pixel Y offset within MB for each luma4x4BlkIdx in spec scan order.
+inline constexpr std::array<uint8_t, 16> cLuma4x4BlkY = {
+     0,  0,  4,  4,   0,  0,  4,  4,   8,  8, 12, 12,   8,  8, 12, 12
+};
+
+/// Maps luma4x4BlkIdx (spec scan order) → raster index (row-major 4x4 grid).
+/// Raster layout:  0  1  2  3 /  4  5  6  7 /  8  9 10 11 / 12 13 14 15
+/// Used for NNZ and mode arrays that are stored in raster order.
+inline constexpr std::array<uint8_t, 16> cLuma4x4ToRaster = {
+     0,  1,  4,  5,   2,  3,  6,  7,   8,  9, 12, 13,  10, 11, 14, 15
+};
+
+/// Maps raster index → luma4x4BlkIdx (spec scan order).
+/// This is the inverse of cLuma4x4ToRaster (and happens to be the same
+/// permutation — it is an involution).
+inline constexpr std::array<uint8_t, 16> cRasterToLuma4x4 = {
+     0,  1,  4,  5,   2,  3,  6,  7,   8,  9, 12, 13,  10, 11, 14, 15
+};
+
+/// Top-right 4x4 block availability indexed by luma4x4BlkIdx (spec scan order).
+/// True when top-right hasn't been decoded yet (higher scan index) or lies
+/// beyond the MB right edge (blkX=12). Does NOT cover frame boundary —
+/// caller must also check absX + 4 < frameWidth.
+/// Reference: ITU-T H.264 §6.4.11.
+inline constexpr std::array<bool, 16> cTopRightUnavailScan = {
+    false, false, false, true,   // scan 0-3: 3(4,4)→TR=scan4
+    false, false, false, true,   // scan 4-7: 7(12,4)→beyond MB
+    false, false, false, true,   // scan 8-11: 11(4,12)→TR=scan12
+    false, true,  false, true,   // scan 12-15: 13(12,8), 15(12,12)→beyond MB
+};
+
 // ── Coded block pattern mapping — ITU-T H.264 Table 9-4 ─────────────────
 
 /// CBP mapping table: [code_num][0=intra, 1=inter] → coded_block_pattern.
