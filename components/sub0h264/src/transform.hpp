@@ -42,15 +42,34 @@ inline constexpr std::array<std::array<int32_t, 3>, 6> cDequantScale = {{
     {{ 18, 23, 29 }},
 }};
 
-/// Position class for each position in a 4x4 block — ITU-T H.264 §8.5.12.1.
-/// 0 = (0,0),(0,2),(2,0),(2,2); 1 = (1,1),(1,3),(3,1),(3,3); 2 = rest.
+/// Position class for each raster position in a 4x4 block — §8.5.12.1.
+/// Derived from (row, col) parity:
+///   both-even (0,0),(0,2),(2,0),(2,2) → class 0
+///   both-odd  (1,1),(1,3),(3,1),(3,3) → class 1
+///   mixed                             → class 2
 /// Determines which normAdjust column is used in dequantization.
-inline constexpr std::array<uint8_t, 16> cDequantPosClass = {
-    0, 2, 0, 2,
-    2, 1, 2, 1,
-    0, 2, 0, 2,
-    2, 1, 2, 1,
-};
+inline constexpr std::array<uint8_t, 16> cDequantPosClass = []() constexpr
+{
+    std::array<uint8_t, 16> t{};
+    for (uint32_t i = 0U; i < 16U; ++i)
+    {
+        uint32_t col = i % 4U;
+        uint32_t row = i / 4U;
+        if (col % 2U == 0U && row % 2U == 0U)
+            t[i] = 0U;
+        else if (col % 2U == 1U && row % 2U == 1U)
+            t[i] = 1U;
+        else
+            t[i] = 2U;
+    }
+    return t;
+}();
+
+// Compile-time spot-checks — ITU-T H.264 §8.5.12.1 Table 8-14.
+static_assert(cDequantPosClass[0]  == 0U, "pos(0,0) → class 0");
+static_assert(cDequantPosClass[5]  == 1U, "pos(1,1) → class 1");
+static_assert(cDequantPosClass[1]  == 2U, "pos(0,1) → class 2");
+static_assert(cDequantPosClass[15] == 1U, "pos(3,3) → class 1");
 
 // ── 4x4 Inverse Integer DCT — ITU-T H.264 §8.5.12 ─────────────────────
 

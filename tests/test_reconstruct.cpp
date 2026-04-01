@@ -491,6 +491,64 @@ TEST_CASE("IntraPred4x4: VL top-right substitution uses top[3] repeated")
         CHECK(pred[i] == pred2[i]);
 }
 
+// ── §6.4.3 InverseRasterScan function tests ─────────────────────────────
+
+TEST_CASE("InverseRasterScan: spec §6.4.3 formula cross-check")
+{
+    // InverseRasterScan(a, b, c, d, e):
+    //   e=0: (a % (d/b)) * b  — x-offset
+    //   e=1: (a / (d/b)) * c  — y-offset
+    //
+    // Grid: two 8x8 blocks wide (d=16, b=8) — i8x8=0..3 maps to a 2×2 grid.
+    CHECK(inverseRasterScan(0U, 8U, 8U, 16U, 0U) == 0U);  // i8x8=0 → x=0
+    CHECK(inverseRasterScan(0U, 8U, 8U, 16U, 1U) == 0U);  // i8x8=0 → y=0
+    CHECK(inverseRasterScan(1U, 8U, 8U, 16U, 0U) == 8U);  // i8x8=1 → x=8
+    CHECK(inverseRasterScan(1U, 8U, 8U, 16U, 1U) == 0U);  // i8x8=1 → y=0
+    CHECK(inverseRasterScan(2U, 8U, 8U, 16U, 0U) == 0U);  // i8x8=2 → x=0
+    CHECK(inverseRasterScan(2U, 8U, 8U, 16U, 1U) == 8U);  // i8x8=2 → y=8
+    CHECK(inverseRasterScan(3U, 8U, 8U, 16U, 0U) == 8U);  // i8x8=3 → x=8
+    CHECK(inverseRasterScan(3U, 8U, 8U, 16U, 1U) == 8U);  // i8x8=3 → y=8
+
+    // Sub-4x4 grid within 8x8: d=8, b=4, c=4 — i4x4=0..3 maps to 2×2 grid.
+    CHECK(inverseRasterScan(0U, 4U, 4U, 8U, 0U) == 0U);   // i4x4=0 → x=0
+    CHECK(inverseRasterScan(1U, 4U, 4U, 8U, 0U) == 4U);   // i4x4=1 → x=4
+    CHECK(inverseRasterScan(2U, 4U, 4U, 8U, 0U) == 0U);   // i4x4=2 → x=0
+    CHECK(inverseRasterScan(2U, 4U, 4U, 8U, 1U) == 4U);   // i4x4=2 → y=4
+    CHECK(inverseRasterScan(3U, 4U, 4U, 8U, 0U) == 4U);   // i4x4=3 → x=4
+    CHECK(inverseRasterScan(3U, 4U, 4U, 8U, 1U) == 4U);   // i4x4=3 → y=4
+
+    // Key luma4x4BlkIdx positions derived per §6.4.3.
+    // blkIdx=5 (i8x8=1, i4x4=1): x=8+4=12, y=0+0=0
+    CHECK(inverseRasterScan(5U/4U, 8U, 8U, 16U, 0U) + inverseRasterScan(5U%4U, 4U, 4U, 8U, 0U) == 12U);
+    CHECK(inverseRasterScan(5U/4U, 8U, 8U, 16U, 1U) + inverseRasterScan(5U%4U, 4U, 4U, 8U, 1U) == 0U);
+    // blkIdx=11 (i8x8=2, i4x4=3): x=0+4=4, y=8+4=12
+    CHECK(inverseRasterScan(11U/4U, 8U, 8U, 16U, 0U) + inverseRasterScan(11U%4U, 4U, 4U, 8U, 0U) == 4U);
+    CHECK(inverseRasterScan(11U/4U, 8U, 8U, 16U, 1U) + inverseRasterScan(11U%4U, 4U, 4U, 8U, 1U) == 12U);
+}
+
+// ── §8.5.12.1 DequantPosClass derivation test ───────────────────────────
+
+TEST_CASE("DequantPosClass: derived from row/col parity per §8.5.12.1")
+{
+    // Class rule: col%2==0 && row%2==0 → 0; col%2==1 && row%2==1 → 1; else → 2.
+    // Exhaustive check for all 16 positions.
+    static constexpr std::array<uint8_t, 16> cExpected = {
+        0, 2, 0, 2,   // row 0: cols 0,1,2,3
+        2, 1, 2, 1,   // row 1
+        0, 2, 0, 2,   // row 2
+        2, 1, 2, 1,   // row 3
+    };
+    for (uint32_t i = 0U; i < 16U; ++i)
+        CHECK(cDequantPosClass[i] == cExpected[i]);
+
+    // Spot-checks matching Table 8-14 footnotes:
+    CHECK(cDequantPosClass[0]  == 0U);  // (0,0) → class 0
+    CHECK(cDequantPosClass[5]  == 1U);  // (1,1) → class 1
+    CHECK(cDequantPosClass[15] == 1U);  // (3,3) → class 1
+    CHECK(cDequantPosClass[4]  == 2U);  // (1,0) → class 2
+    CHECK(cDequantPosClass[3]  == 2U);  // (0,3) → class 2
+}
+
 // ── Dequant formula verification — ITU-T H.264 §8.5.12.1 ───────────────
 
 TEST_CASE("Dequant: MB(9,0) block (12,8) formula comparison")

@@ -1,7 +1,9 @@
 /** Sub0h264 — H.264 lookup tables
  *
  *  constexpr tables for CAVLC decoding, zigzag scan, CBP mapping.
- *  All tables computed/stored at compile time for flash efficiency.
+ *  Where the spec provides derivation formulas, tables are computed at
+ *  compile time from those formulas (ITU-T H.264 §6.4.3, §6.4.11).
+ *  All remaining tables are stored as constexpr literals from spec tables.
  *
  *  Reference: ITU-T H.264 §9.2 (CAVLC), Tables 9-5 through 9-10
  *
@@ -14,6 +16,17 @@
 #include <array>
 
 namespace sub0h264 {
+
+// ── §6.4.3 InverseRasterScan derivation helper ──────────────────────────
+
+/// ITU-T H.264 §6.4.3 InverseRasterScan(a, b, c, d, e).
+/// Returns x-offset (e=0) or y-offset (e=1) of scan index a within a
+/// (d/b)-wide grid of (b × c) blocks.
+constexpr uint32_t inverseRasterScan(uint32_t a, uint32_t b, uint32_t c,
+                                      uint32_t d, uint32_t e) noexcept
+{
+    return (e == 0U) ? ((a % (d / b)) * b) : ((a / (d / b)) * c);
+}
 
 // ── Zigzag scan order — ITU-T H.264 §8.5.6 ─────────────────────────────
 
@@ -37,48 +50,127 @@ inline constexpr std::array<uint8_t, 64> cZigzag8x8 = {
     53, 60, 61, 54, 47, 55, 62, 63,
 };
 
-// ── Luma 4x4 block scan order — ITU-T H.264 §6.4.3 / Table 6-2 ────────
+// ── Luma 4x4 block scan order — ITU-T H.264 §6.4.3 ─────────────────────
+//
+// The spec defines luma4x4BlkIdx positions via InverseRasterScan:
+//   x = InverseRasterScan(i/4, 8, 8, 16, 0) + InverseRasterScan(i%4, 4, 4, 8, 0)
+//   y = InverseRasterScan(i/4, 8, 8, 16, 1) + InverseRasterScan(i%4, 4, 4, 8, 1)
+// Tables below are computed from this formula at compile time.
 
-/// Pixel X offset within MB for each luma4x4BlkIdx in spec scan order.
-/// The scan groups four 4x4 blocks within each 8x8 partition:
-///   i8x8=0: blk 0(0,0) 1(4,0) 2(0,4) 3(4,4)
-///   i8x8=1: blk 4(8,0) 5(12,0) 6(8,4) 7(12,4)
-///   i8x8=2: blk 8(0,8) 9(4,8) 10(0,12) 11(4,12)
-///   i8x8=3: blk 12(8,8) 13(12,8) 14(8,12) 15(12,12)
-inline constexpr std::array<uint8_t, 16> cLuma4x4BlkX = {
-     0,  4,  0,  4,   8, 12,  8, 12,   0,  4,  0,  4,   8, 12,  8, 12
-};
+/// Pixel X offset within MB for each luma4x4BlkIdx — derived from
+/// InverseRasterScan per ITU-T H.264 §6.4.3.
+inline constexpr std::array<uint8_t, 16> cLuma4x4BlkX = []() constexpr
+{
+    std::array<uint8_t, 16> t{};
+    for (uint32_t i = 0U; i < 16U; ++i)
+        t[i] = static_cast<uint8_t>(
+            inverseRasterScan(i / 4U, 8U, 8U, 16U, 0U) +
+            inverseRasterScan(i % 4U, 4U, 4U,  8U, 0U));
+    return t;
+}();
 
-/// Pixel Y offset within MB for each luma4x4BlkIdx in spec scan order.
-inline constexpr std::array<uint8_t, 16> cLuma4x4BlkY = {
-     0,  0,  4,  4,   0,  0,  4,  4,   8,  8, 12, 12,   8,  8, 12, 12
-};
+/// Pixel Y offset within MB for each luma4x4BlkIdx — derived from
+/// InverseRasterScan per ITU-T H.264 §6.4.3.
+inline constexpr std::array<uint8_t, 16> cLuma4x4BlkY = []() constexpr
+{
+    std::array<uint8_t, 16> t{};
+    for (uint32_t i = 0U; i < 16U; ++i)
+        t[i] = static_cast<uint8_t>(
+            inverseRasterScan(i / 4U, 8U, 8U, 16U, 1U) +
+            inverseRasterScan(i % 4U, 4U, 4U,  8U, 1U));
+    return t;
+}();
 
-/// Maps luma4x4BlkIdx (spec scan order) → raster index (row-major 4x4 grid).
-/// Raster layout:  0  1  2  3 /  4  5  6  7 /  8  9 10 11 / 12 13 14 15
+/// Maps luma4x4BlkIdx (spec scan order) → raster index (row-major 4×4 grid).
+/// rasterIdx = (blkY / 4) * 4 + (blkX / 4) — derived from §6.4.3 positions.
 /// Used for NNZ and mode arrays that are stored in raster order.
-inline constexpr std::array<uint8_t, 16> cLuma4x4ToRaster = {
-     0,  1,  4,  5,   2,  3,  6,  7,   8,  9, 12, 13,  10, 11, 14, 15
-};
+inline constexpr std::array<uint8_t, 16> cLuma4x4ToRaster = []() constexpr
+{
+    std::array<uint8_t, 16> t{};
+    for (uint32_t i = 0U; i < 16U; ++i)
+    {
+        uint32_t bx = inverseRasterScan(i / 4U, 8U, 8U, 16U, 0U)
+                    + inverseRasterScan(i % 4U, 4U, 4U,  8U, 0U);
+        uint32_t by = inverseRasterScan(i / 4U, 8U, 8U, 16U, 1U)
+                    + inverseRasterScan(i % 4U, 4U, 4U,  8U, 1U);
+        t[i] = static_cast<uint8_t>((by / 4U) * 4U + (bx / 4U));
+    }
+    return t;
+}();
 
-/// Maps raster index → luma4x4BlkIdx (spec scan order).
-/// This is the inverse of cLuma4x4ToRaster (and happens to be the same
-/// permutation — it is an involution).
-inline constexpr std::array<uint8_t, 16> cRasterToLuma4x4 = {
-     0,  1,  4,  5,   2,  3,  6,  7,   8,  9, 12, 13,  10, 11, 14, 15
-};
+/// Maps raster index → luma4x4BlkIdx (inverse of cLuma4x4ToRaster).
+/// Derived by inverting the §6.4.3 scan-order mapping.
+inline constexpr std::array<uint8_t, 16> cRasterToLuma4x4 = []() constexpr
+{
+    std::array<uint8_t, 16> t{};
+    for (uint32_t i = 0U; i < 16U; ++i)
+    {
+        uint32_t bx = inverseRasterScan(i / 4U, 8U, 8U, 16U, 0U)
+                    + inverseRasterScan(i % 4U, 4U, 4U,  8U, 0U);
+        uint32_t by = inverseRasterScan(i / 4U, 8U, 8U, 16U, 1U)
+                    + inverseRasterScan(i % 4U, 4U, 4U,  8U, 1U);
+        uint32_t raster = (by / 4U) * 4U + (bx / 4U);
+        t[raster] = static_cast<uint8_t>(i);
+    }
+    return t;
+}();
 
 /// Top-right 4x4 block availability indexed by luma4x4BlkIdx (spec scan order).
-/// True when top-right hasn't been decoded yet (higher scan index) or lies
-/// beyond the MB right edge (blkX=12). Does NOT cover frame boundary —
-/// caller must also check absX + 4 < frameWidth.
-/// Reference: ITU-T H.264 §6.4.11.
-inline constexpr std::array<bool, 16> cTopRightUnavailScan = {
-    false, false, false, true,   // scan 0-3: 3(4,4)→TR=scan4
-    false, false, false, true,   // scan 4-7: 7(12,4)→beyond MB
-    false, false, false, true,   // scan 8-11: 11(4,12)→TR=scan12
-    false, true,  false, true,   // scan 12-15: 13(12,8), 15(12,12)→beyond MB
-};
+/// True when top-right block (blkX+4, blkY-4) is either beyond the MB right
+/// edge (blkX+4 >= 16) or has a higher scan index (not yet decoded).
+/// Does NOT cover frame boundary — caller must also check absX+4 < frameWidth.
+/// Derived from §6.4.3 scan order per ITU-T H.264 §6.4.11.
+inline constexpr std::array<bool, 16> cTopRightUnavailScan = []() constexpr
+{
+    std::array<bool, 16> t{};
+    for (uint32_t i = 0U; i < 16U; ++i)
+    {
+        uint32_t bx = inverseRasterScan(i / 4U, 8U, 8U, 16U, 0U)
+                    + inverseRasterScan(i % 4U, 4U, 4U,  8U, 0U);
+        uint32_t by = inverseRasterScan(i / 4U, 8U, 8U, 16U, 1U)
+                    + inverseRasterScan(i % 4U, 4U, 4U,  8U, 1U);
+        if (by == 0U)
+        {
+            // Top row of MB: top-right is in a neighboring MB (runtime check).
+            t[i] = false;
+            continue;
+        }
+        if (bx + 4U >= 16U)
+        {
+            // Top-right lies beyond the MB right edge.
+            t[i] = true;
+            continue;
+        }
+        // Find scan index of block at (bx+4, by-4) within this MB.
+        uint32_t trX = bx + 4U;
+        uint32_t trY = by - 4U;
+        uint32_t trScan = 0xFFU;
+        for (uint32_t j = 0U; j < 16U; ++j)
+        {
+            uint32_t jx = inverseRasterScan(j / 4U, 8U, 8U, 16U, 0U)
+                        + inverseRasterScan(j % 4U, 4U, 4U,  8U, 0U);
+            uint32_t jy = inverseRasterScan(j / 4U, 8U, 8U, 16U, 1U)
+                        + inverseRasterScan(j % 4U, 4U, 4U,  8U, 1U);
+            if (jx == trX && jy == trY)
+            {
+                trScan = j;
+                break;
+            }
+        }
+        // Unavailable if the top-right block has a higher scan index.
+        t[i] = (trScan > i);
+    }
+    return t;
+}();
+
+// Compile-time spot-checks — ITU-T H.264 §6.4.11.
+static_assert(cLuma4x4BlkX[5]  == 12U,  "scan 5 must be at x=12");
+static_assert(cLuma4x4BlkY[8]  ==  8U,  "scan 8 must be at y=8");
+static_assert(cLuma4x4ToRaster[0]  == 0U,  "scan 0 → raster 0");
+static_assert(cLuma4x4ToRaster[13] == 11U, "scan 13 → raster 11");
+static_assert(!cTopRightUnavailScan[0],  "scan 0 top-right: in neighboring MB");
+static_assert( cTopRightUnavailScan[3],  "scan 3 top-right: higher scan index");
+static_assert( cTopRightUnavailScan[13], "scan 13 top-right: beyond MB right edge");
 
 // ── Coded block pattern mapping — ITU-T H.264 Table 9-4 ─────────────────
 
