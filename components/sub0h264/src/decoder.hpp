@@ -968,10 +968,12 @@ private:
             }
 
 #if SUB0H264_TRACE
-            if (mbX == 9U && mbY == 0U && (blkIdx == 11U || blkIdx == 15U))
+            if (mbX == 9U && mbY == 0U && blkIdx >= 12U)
             {
-                std::printf("[DBG]   MB9 scan%lu(raster%lu): mode=%u pred=[%u %u %u %u] hasRes=%d qp=%d\n",
-                    (unsigned long)blkIdx, (unsigned long)rasterIdx, predModes[rasterIdx],
+                std::printf("[DBG]   MB9 scan%lu(raster%lu) pos(%lu,%lu): mode=%u pred=[%u %u %u %u] hasRes=%d qp=%d\n",
+                    (unsigned long)blkIdx, (unsigned long)rasterIdx,
+                    (unsigned long)blkX, (unsigned long)blkY,
+                    predModes[rasterIdx],
                     pred4x4[0], pred4x4[1], pred4x4[2], pred4x4[3], hasResidual, qp);
                 if (hasResidual)
                 {
@@ -987,7 +989,7 @@ private:
             inverseDct4x4AddPred(coeffs, pred4x4, 4U, outPtr, yStride);
 
 #if SUB0H264_TRACE
-            if (mbX == 9U && mbY == 0U && (blkIdx == 11U || blkIdx == 15U))
+            if (mbX == 9U && mbY == 0U && blkIdx >= 12U)
             {
                 std::printf("[DBG]   output row0=[%u %u %u %u] row3=[%u %u %u %u]\n",
                     outPtr[0], outPtr[1], outPtr[2], outPtr[3],
