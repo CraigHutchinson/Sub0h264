@@ -381,6 +381,8 @@ private:
         // Decode macroblocks
         if (sh.sliceType_ == SliceType::I)
         {
+            // QPY accumulates across MBs — ITU-T H.264 §7.4.5.
+            int32_t mbQp = sliceQp;
             for (uint32_t mbAddr = sh.firstMbInSlice_; mbAddr < totalMbs; ++mbAddr)
             {
                 uint32_t mbX = mbAddr % widthInMbs_;
@@ -388,12 +390,12 @@ private:
 
                 if (useCabac)
                 {
-                    if (!decodeCabacIntraMb(br, *sps, *pps, sh, sliceQp, mbX, mbY))
+                    if (!decodeCabacIntraMb(br, *sps, *pps, sh, mbQp, mbX, mbY))
                         break;
                 }
                 else
                 {
-                    if (!decodeIntraMb(br, *sps, *pps, sh, sliceQp, mbX, mbY))
+                    if (!decodeIntraMb(br, *sps, *pps, sh, mbQp, mbX, mbY))
                         break;
                 }
             }
@@ -402,6 +404,9 @@ private:
         {
             if (!refFrame)
                 return DecodeStatus::Error;
+
+            // QPY accumulates across MBs — ITU-T H.264 §7.4.5.
+            int32_t mbQp = sliceQp;
 
             if (useCabac)
             {
@@ -430,14 +435,14 @@ private:
                         if (mbTypeRaw >= 5U)
                         {
                             mbTypeRaw -= 5U;
-                            if (!decodeIntraMbInPSlice(br, *sps, *pps, sh, sliceQp,
+                            if (!decodeIntraMbInPSlice(br, *sps, *pps, sh, mbQp,
                                                         mbTypeRaw, *decodeTarget, mbX, mbY))
                                 break;
                         }
                         else
                         {
                             // CABAC inter MB: use CABAC for MVD + residual
-                            decodeCabacPInterMb(br, *sps, *pps, sliceQp,
+                            decodeCabacPInterMb(br, *sps, *pps, mbQp,
                                                 mbTypeRaw, *decodeTarget, *refFrame, mbX, mbY);
                         }
                     }
@@ -475,13 +480,13 @@ private:
                         if (mbTypeRaw >= 5U)
                         {
                             mbTypeRaw -= 5U;
-                            if (!decodeIntraMbInPSlice(br, *sps, *pps, sh, sliceQp,
+                            if (!decodeIntraMbInPSlice(br, *sps, *pps, sh, mbQp,
                                                         mbTypeRaw, *decodeTarget, mbX, mbY))
                                 break;
                         }
                         else
                         {
-                            decodePInterMb(br, *sps, *pps, sliceQp,
+                            decodePInterMb(br, *sps, *pps, mbQp,
                                            mbTypeRaw, *decodeTarget, *refFrame, mbX, mbY);
                         }
                     }
@@ -543,9 +548,12 @@ private:
         return DecodeStatus::FrameDecoded;
     }
 
-    /** Decode one intra macroblock. */
+    /** Decode one intra macroblock.
+     *  @param currentQp  [in/out] Accumulated QP — updated by mb_qp_delta.
+     *                    ITU-T H.264 §7.4.5: QPY is accumulated across MBs.
+     */
     bool decodeIntraMb(BitReader& br, const Sps& sps, const Pps& pps,
-                       const SliceHeader& sh, int32_t sliceQp,
+                       const SliceHeader& sh, int32_t& currentQp,
                        uint32_t mbX, uint32_t mbY) noexcept
     {
         if (!br.hasBits(1U))
@@ -557,8 +565,6 @@ private:
         // Check for end-of-slice (bitstream exhausted)
         if (br.isExhausted())
             return false;
-
-        int32_t currentQp = sliceQp;
 
 #if SUB0H264_TRACE
         if (mbY == 0U && mbX < 12U)
@@ -1199,8 +1205,11 @@ private:
     }
 
     /** Decode a P-inter macroblock (16x16 only for now). */
+    /** Decode P-inter macroblock.
+     *  @param mbQp  [in/out] Accumulated QP — ITU-T H.264 §7.4.5.
+     */
     void decodePInterMb(BitReader& br, const Sps& sps, const Pps& pps,
-                         int32_t sliceQp, uint32_t mbTypeRaw,
+                         int32_t& mbQp, uint32_t mbTypeRaw,
                          Frame& target, const Frame& ref,
                          uint32_t mbX, uint32_t mbY) noexcept
     {
@@ -1258,7 +1267,7 @@ private:
         uint8_t cbpLuma = cbp & 0x0FU;
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
 
-        int32_t qp = sliceQp;
+        int32_t qp = mbQp;
         if (cbp > 0U)
         {
             int32_t qpDelta = br.readSev();
@@ -1343,31 +1352,33 @@ private:
             inverseDct4x4AddPred(cbCoeffs, predU + blkY * 8U + blkX, 8U, target.uMb(mbX, mbY) + blkY * uvStride + blkX, uvStride);
             inverseDct4x4AddPred(crCoeffs, predV + blkY * 8U + blkX, 8U, target.vMb(mbX, mbY) + blkY * uvStride + blkX, uvStride);
         }
+        mbQp = qp; // Propagate accumulated QP to next MB
     }
 
     /** Decode an intra MB within a P-slice (mb_type offset already applied). */
     bool decodeIntraMbInPSlice(BitReader& br, const Sps& sps, const Pps& pps,
-                                const SliceHeader& sh, int32_t sliceQp,
+                                const SliceHeader& sh, int32_t& mbQp,
                                 uint32_t mbTypeRaw, Frame& target,
                                 uint32_t mbX, uint32_t mbY) noexcept
     {
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
         mbMotion_[mbIdx] = { {0, 0}, -1, true };
 
-        int32_t qp = sliceQp;
         if (mbTypeRaw == 25U) return true;
 
         if (isI16x16(static_cast<uint8_t>(mbTypeRaw)))
-            return decodeI16x16Mb(br, sps, pps, mbTypeRaw, qp, mbX, mbY);
+            return decodeI16x16Mb(br, sps, pps, mbTypeRaw, mbQp, mbX, mbY);
         else
-            return decodeI4x4Mb(br, sps, pps, qp, mbX, mbY);
+            return decodeI4x4Mb(br, sps, pps, mbQp, mbX, mbY);
     }
 
     // ── CABAC-specific MB decode methods ────────────────────────────────
 
-    /** Decode an intra MB using CABAC. */
+    /** Decode an intra MB using CABAC.
+     *  @param mbQp  [in/out] Accumulated QP — ITU-T H.264 §7.4.5.
+     */
     bool decodeCabacIntraMb(BitReader& br, const Sps& sps, const Pps& pps,
-                             const SliceHeader& sh, int32_t sliceQp,
+                             const SliceHeader& sh, int32_t& mbQp,
                              uint32_t mbX, uint32_t mbY) noexcept
     {
         (void)br; (void)sh;
@@ -1384,12 +1395,12 @@ private:
         if (mbTypeRaw == 0U)
         {
             // I_4x4: decode pred modes + residual via CABAC
-            return decodeCabacI4x4Mb(sps, pps, sliceQp, mbX, mbY);
+            return decodeCabacI4x4Mb(sps, pps, mbQp, mbX, mbY);
         }
         else
         {
             // I_16x16: decode using existing path with CABAC residual
-            return decodeCabacI16x16Mb(sps, pps, mbTypeRaw, sliceQp, mbX, mbY);
+            return decodeCabacI16x16Mb(sps, pps, mbTypeRaw, mbQp, mbX, mbY);
         }
     }
 
@@ -1552,9 +1563,11 @@ private:
         return true;
     }
 
-    /** Decode P-inter MB with CABAC entropy. */
+    /** Decode P-inter MB with CABAC entropy.
+     *  @param mbQp  [in/out] Accumulated QP — ITU-T H.264 §7.4.5.
+     */
     void decodeCabacPInterMb(BitReader& br, const Sps& sps, const Pps& pps,
-                              int32_t sliceQp, uint32_t mbTypeRaw,
+                              int32_t& mbQp, uint32_t mbTypeRaw,
                               Frame& target, const Frame& ref,
                               uint32_t mbX, uint32_t mbY) noexcept
     {
@@ -1602,7 +1615,7 @@ private:
         uint8_t cbpLuma = cbp & 0x0FU;
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
 
-        int32_t qp = sliceQp;
+        int32_t qp = mbQp;
         if (cbp > 0U)
         {
             int32_t qpDelta = cabacDecodeMbQpDelta(cabacEngine_, cabacCtx_.data(), false);
@@ -1610,6 +1623,7 @@ private:
             if (qp < 0) qp += 52;
             if (qp > 51) qp -= 52;
         }
+        mbQp = qp; // Propagate accumulated QP
 
         // Luma residual via CABAC (spec scan order §6.4.3)
         uint32_t yStride = target.yStride();
