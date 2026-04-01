@@ -148,6 +148,10 @@ private:
     std::vector<uint8_t> nnzCb_;      // [mbIdx * 4 + blkIdx]
     std::vector<uint8_t> nnzCr_;      // [mbIdx * 4 + blkIdx]
 
+    // Per-MB luma QP after mb_qp_delta accumulation — ITU-T H.264 §7.4.5.
+    // Used by deblocking filter: boundary edges require QP averaging (§8.7.2.2).
+    std::vector<int32_t> mbQps_;      // [mbIdx]
+
     // Per-frame MV context for inter prediction
     std::vector<MbMotionInfo> mbMotion_;  // [mbIdx]
 
@@ -328,6 +332,7 @@ private:
         nnzLuma_.resize(totalMbs * 16U, 0U);
         nnzCb_.resize(totalMbs * 4U, 0U);
         nnzCr_.resize(totalMbs * 4U, 0U);
+        mbQps_.resize(totalMbs, 0);
         mbMotion_.resize(totalMbs);
         mbIntra4x4Modes_.resize(totalMbs * 16U, 2U); // Default DC(2)
 
@@ -342,6 +347,7 @@ private:
         std::fill(nnzLuma_.begin(), nnzLuma_.end(), static_cast<uint8_t>(0U));
         std::fill(nnzCb_.begin(), nnzCb_.end(), static_cast<uint8_t>(0U));
         std::fill(nnzCr_.begin(), nnzCr_.end(), static_cast<uint8_t>(0U));
+        std::fill(mbQps_.begin(), mbQps_.end(), 0);
         std::fill(mbMotion_.begin(), mbMotion_.end(), MbMotionInfo{});
         std::fill(mbIntra4x4Modes_.begin(), mbIntra4x4Modes_.end(), static_cast<uint8_t>(2U));
 
@@ -398,6 +404,8 @@ private:
                     if (!decodeIntraMb(br, *sps, *pps, sh, mbQp, mbX, mbY))
                         break;
                 }
+                // Store accumulated QP for deblocking pass — ITU-T H.264 §8.7.2.2.
+                mbQps_[mbAddr] = mbQp;
             }
         }
         else if (sh.sliceType_ == SliceType::P)
@@ -426,6 +434,7 @@ private:
                     {
                         mbIsSkip_[mbAddr] = true;
                         decodePSkipMb(*decodeTarget, *refFrame, mbX, mbY);
+                        // Skip MBs inherit QP — no mb_qp_delta per §7.4.5.
                     }
                     else
                     {
@@ -446,6 +455,8 @@ private:
                                                 mbTypeRaw, *decodeTarget, *refFrame, mbX, mbY);
                         }
                     }
+                    // Store accumulated QP for deblocking pass — §8.7.2.2.
+                    mbQps_[mbAddr] = mbQp;
                 }
             }
             else
@@ -471,6 +482,7 @@ private:
                         --mbSkipRun;
                         if (mbSkipRun == 0U)
                             needSkipRun = true;
+                        // Skip MBs inherit QP — no mb_qp_delta per §7.4.5.
                     }
                     else
                     {
@@ -490,18 +502,19 @@ private:
                                            mbTypeRaw, *decodeTarget, *refFrame, mbX, mbY);
                         }
                     }
+                    // Store accumulated QP for deblocking pass — §8.7.2.2.
+                    mbQps_[mbAddr] = mbQp;
                 }
             }
         }
 
         // Deblocking filter pass (entire frame, after all MBs decoded)
+        // Per-MB QP is used; boundary edges use (qpP + qpQ + 1) >> 1 per §8.7.2.2.
         if (pps->deblockingFilterControlPresent_ == 0U ||
             sh.disableDeblockingFilter_ != 1U)
         {
             int32_t alphaOff = sh.sliceAlphaC0Offset_;
             int32_t betaOff = sh.sliceBetaOffset_;
-            int32_t dbChromaQpIdx = clampQpIdx(sliceQp + pps->chromaQpIndexOffset_);
-            int32_t dbChromaQp = cChromaQpTable[dbChromaQpIdx];
 
             Frame& dbFrame = (sh.sliceType_ == SliceType::I) ? currentFrame_ : *decodeTarget;
 
@@ -510,9 +523,10 @@ private:
                 for (uint32_t mx = 0U; mx < widthInMbs_; ++mx)
                 {
                     bool mbIsIntra = (mbMotion_[my * widthInMbs_ + mx].refIdx == -1);
-                    deblockMb(dbFrame, mx, my, sliceQp, dbChromaQp,
+                    deblockMb(dbFrame, mx, my,
                               mbIsIntra, alphaOff, betaOff,
                               nnzLuma_.data(), mbMotion_.data(),
+                              mbQps_.data(), pps->chromaQpIndexOffset_,
                               widthInMbs_, heightInMbs_);
                 }
             }
@@ -962,10 +976,19 @@ private:
 
 #if SUB0H264_TRACE
                 if (mbX == 9U && mbY == 0U)
+                {
                     std::printf("[DBG]   MB9 luma scan%lu(raster%lu): nC=%d tc=%u bits=%lu\n",
                         (unsigned long)blkIdx, (unsigned long)rasterIdx,
                         nc, resBlock.totalCoeff,
                         (unsigned long)(br.bitOffset() - blkBitBefore));
+                    if (blkIdx >= 12U)
+                    {
+                        std::printf("[DBG]     raw coeffs=[");
+                        for (uint32_t k = 0U; k < 16U; ++k)
+                            std::printf("%d ", resBlock.coeffs[k]);
+                        std::printf("]\n");
+                    }
+                }
 #endif
 
                 for (uint32_t i = 0U; i < 16U; ++i)
