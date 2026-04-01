@@ -50,18 +50,18 @@ enum class IntraChromaMode : uint8_t
     Plane      = 3U,
 };
 
-/// Default prediction value when no neighbors are available.
+/// Default prediction value when no neighbors are available — ITU-T H.264 §8.3.1.
 inline constexpr uint8_t cDefaultPredValue = 128U;
 
-// ── Filter helpers ──────────────────────────────────────────────────────
+// ── Filter helpers — ITU-T H.264 §8.3.1.2 ──────────────────────────────
 
-/// 2-tap average: (a + b + 1) >> 1
+/// 2-tap average: (a + b + 1) >> 1 — used in §8.3.1.2 prediction equations.
 inline constexpr uint8_t filt11(uint8_t a, uint8_t b) noexcept
 {
     return static_cast<uint8_t>((a + b + 1U) >> 1U);
 }
 
-/// 3-tap weighted: (a + 2*b + c + 2) >> 2
+/// 3-tap weighted: (a + 2*b + c + 2) >> 2 — used in §8.3.1.2 prediction equations.
 inline constexpr uint8_t filt121(uint8_t a, uint8_t b, uint8_t c) noexcept
 {
     return static_cast<uint8_t>((a + 2U * b + c + 2U) >> 2U);

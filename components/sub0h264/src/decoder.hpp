@@ -167,9 +167,13 @@ private:
     /** Get nC (CAVLC context) for a luma 4x4 block.
      *  nC = (leftNnz + topNnz + 1) >> 1
      */
+    /** Get nC context for CAVLC coeff_token decode.
+     *  nC = (nA + nB + 1) >> 1 when both available, else nA or nB alone.
+     *  Reference: ITU-T H.264 §9.2.1 Table 9-5 context derivation.
+     */
     int32_t getLumaNc(uint32_t mbX, uint32_t mbY, uint32_t blkIdx) const noexcept
     {
-        // Block position within MB (4x4 grid):
+        // Block position within MB (raster-order 4x4 grid):
         //  0  1  2  3
         //  4  5  6  7
         //  8  9 10 11

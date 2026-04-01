@@ -37,7 +37,7 @@ inline constexpr std::array<uint8_t, 64> cZigzag8x8 = {
     53, 60, 61, 54, 47, 55, 62, 63,
 };
 
-// ── Luma 4x4 block scan order — ITU-T H.264 §6.4.3 ────────────────────
+// ── Luma 4x4 block scan order — ITU-T H.264 §6.4.3 / Table 6-2 ────────
 
 /// Pixel X offset within MB for each luma4x4BlkIdx in spec scan order.
 /// The scan groups four 4x4 blocks within each 8x8 partition:

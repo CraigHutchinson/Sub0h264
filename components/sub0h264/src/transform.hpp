@@ -42,8 +42,9 @@ inline constexpr std::array<std::array<int32_t, 3>, 6> cDequantScale = {{
     {{ 18, 23, 29 }},
 }};
 
-/// Position class for each position in a 4x4 block.
+/// Position class for each position in a 4x4 block — ITU-T H.264 §8.5.12.1.
 /// 0 = (0,0),(0,2),(2,0),(2,2); 1 = (1,1),(1,3),(3,1),(3,3); 2 = rest.
+/// Determines which normAdjust column is used in dequantization.
 inline constexpr std::array<uint8_t, 16> cDequantPosClass = {
     0, 2, 0, 2,
     2, 1, 2, 1,
@@ -54,6 +55,9 @@ inline constexpr std::array<uint8_t, 16> cDequantPosClass = {
 // ── 4x4 Inverse Integer DCT — ITU-T H.264 §8.5.12 ─────────────────────
 
 /** Apply inverse 4x4 integer DCT and add to prediction, storing result.
+ *
+ *  Implements the butterfly in ITU-T H.264 §8.5.12.2.
+ *  The >> 6 normalization is absorbed from the dequant scaling.
  *
  *  @param coeffs     Input: 16 dequantized coefficients in raster order
  *  @param pred       Input: 4x4 prediction block (stride = predStride)

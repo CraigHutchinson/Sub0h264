@@ -66,6 +66,8 @@ inline constexpr uint8_t cTc0Table[52][4] = {
 
 /** Compute boundary strength for a vertical or horizontal edge.
  *
+ *  Reference: ITU-T H.264 §8.7.2.1 Table 8-15.
+ *
  *  @param isIntraP  True if the p-side MB is intra
  *  @param isIntraQ  True if the q-side MB is intra
  *  @param isMbEdge  True if this is a MB boundary (not internal 4x4 edge)
@@ -81,19 +83,19 @@ inline uint8_t computeBs(bool isIntraP, bool isIntraQ, bool isMbEdge,
                           int16_t mvPx, int16_t mvPy, int16_t mvQx, int16_t mvQy,
                           int8_t refP, int8_t refQ) noexcept
 {
-    // BS=4 for intra edges at MB boundaries
+    // §8.7.2.1: BS=4 for intra MB at MB boundary
     if (isMbEdge && (isIntraP || isIntraQ))
         return 4U;
 
-    // BS=3 for intra edges at internal boundaries
+    // §8.7.2.1: BS=3 for intra MB at internal 4x4 boundary
     if (isIntraP || isIntraQ)
         return 3U;
 
-    // BS=2 if either side has non-zero coefficients
+    // §8.7.2.1: BS=2 if either block has non-zero transform coefficients
     if (hasCoeffP || hasCoeffQ)
         return 2U;
 
-    // BS=1 if different reference or MV differs by >= 4 quarter-pel (1 full pel)
+    // §8.7.2.1: BS=1 if different reference or |MV_diff| >= 4 quarter-pel
     if (refP != refQ)
         return 1U;
     if (std::abs(mvPx - mvQx) >= 4 || std::abs(mvPy - mvQy) >= 4)
@@ -107,7 +109,7 @@ inline uint8_t computeBs(bool isIntraP, bool isIntraQ, bool isMbEdge,
 /** Apply weak luma filter (BS=1-3) to one pixel crossing.
  *
  *  Modifies p0, q0 (and optionally p1, q1 for luma).
- *  Samples are passed by pointer for in-place update.
+ *  Reference: ITU-T H.264 §8.7.2.3 (filtering for BS < 4).
  */
 inline void filterLumaWeak(uint8_t& p0, uint8_t& p1, const uint8_t& p2,
                             uint8_t& q0, uint8_t& q1, const uint8_t& q2,
@@ -148,7 +150,9 @@ inline void filterLumaWeak(uint8_t& p0, uint8_t& p1, const uint8_t& p2,
     }
 }
 
-/** Apply strong luma filter (BS=4) to one pixel crossing. */
+/** Apply strong luma filter (BS=4) to one pixel crossing.
+ *  Reference: ITU-T H.264 §8.7.2.4 (filtering for BS = 4).
+ */
 inline void filterLumaStrong(uint8_t& p0, uint8_t& p1, uint8_t& p2,
                               uint8_t& q0, uint8_t& q1, uint8_t& q2,
                               const uint8_t& p3, const uint8_t& q3,
@@ -161,6 +165,7 @@ inline void filterLumaStrong(uint8_t& p0, uint8_t& p1, uint8_t& p2,
     if (std::abs(iq1 - iq0) >= beta) return;
     if (std::abs(ip1 - ip0) >= beta) return;
 
+    // §8.7.2.4: strong filter condition — |p0 - q0| < (alpha >> 2) + 2
     bool strongThresh = (std::abs(ip0 - iq0) < ((alpha >> 2) + 2));
     int32_t ap = std::abs(ip2 - ip0);
     int32_t aq = std::abs(iq2 - iq0);
@@ -198,7 +203,9 @@ inline void filterLumaStrong(uint8_t& p0, uint8_t& p1, uint8_t& p2,
     }
 }
 
-/** Apply chroma filter (BS=1-3, weak) to one pixel crossing. */
+/** Apply chroma filter (BS=1-3, weak) to one pixel crossing.
+ *  Reference: ITU-T H.264 §8.7.2.3 (chroma variant).
+ */
 inline void filterChromaWeak(uint8_t& p0, const uint8_t& p1,
                               uint8_t& q0, const uint8_t& q1,
                               int32_t alpha, int32_t beta, int32_t tc0) noexcept
@@ -218,7 +225,9 @@ inline void filterChromaWeak(uint8_t& p0, const uint8_t& p1,
     q0 = static_cast<uint8_t>(clipU8(iq0 - delta));
 }
 
-/** Apply chroma filter (BS=4, strong) to one pixel crossing. */
+/** Apply chroma filter (BS=4, strong) to one pixel crossing.
+ *  Reference: ITU-T H.264 §8.7.2.4 (chroma variant).
+ */
 inline void filterChromaStrong(uint8_t& p0, const uint8_t& p1,
                                 uint8_t& q0, const uint8_t& q1,
                                 int32_t alpha, int32_t beta) noexcept

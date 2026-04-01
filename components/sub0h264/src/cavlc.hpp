@@ -474,7 +474,7 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
             run = zerosLeft;
         }
 
-        // Map scan position to raster position via zigzag.
+        // Map scan position to raster position via zigzag — ITU-T H.264 §8.5.6.
         // Scan range: [startIdx .. startIdx + maxCoeff - 1].
         if (coeffIdx < 16U)
         {
