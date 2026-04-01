@@ -238,10 +238,19 @@ inline void inverseQuantize4x4(int16_t* coeffs, int32_t qp, bool isDc = false) n
         }
         else
         {
-            // 4x4 residual blocks: ITU-T H.264 §8.5.12.1 eq 8-315.
-            // d[i][j] = c[i][j] * LevelScale(qP%6, i, j) << floor(qP/6)
-            // The IDCT includes the >> 6 normalization (§8.5.12.2).
-            val <<= qpDiv6;
+            // 4x4 residual blocks: ITU-T H.264 §8.5.12.1.
+            // The combined dequant + IDCT normalization requires
+            // (qpDiv6 - 2) left-shift, with the IDCT applying >> 6.
+            // For qpDiv6 < 2, use right-shift with rounding.
+            if (qpDiv6 >= 2)
+            {
+                val <<= (qpDiv6 - 2);
+            }
+            else
+            {
+                int32_t roundOff = 1 << (1 - qpDiv6);
+                val = (val + roundOff) >> (2 - qpDiv6);
+            }
         }
 
         coeffs[i] = static_cast<int16_t>(val);

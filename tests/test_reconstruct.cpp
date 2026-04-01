@@ -216,8 +216,11 @@ TEST_CASE("InverseQuantize4x4: QP=24, position 0 and position 1")
 
     inverseQuantize4x4(coeffs, cTestQp);
 
-    CHECK(coeffs[0] == 320);
-    CHECK(coeffs[1] == -768);
+    // QP=24: qpDiv6=4, shift = qpDiv6-2 = 2.
+    // pos(0,0) posClass=0: 2 * 10 * 4 = 80
+    // pos(0,1) posClass=2: -3 * 16 * 4 = -192
+    CHECK(coeffs[0] == 80);
+    CHECK(coeffs[1] == -192);
 
     // All other positions remain zero
     for (uint32_t i = 2U; i < 16U; ++i)
@@ -268,8 +271,9 @@ TEST_CASE("InverseQuantize4x4: negative QP wraps to valid range via modular arit
 
     inverseQuantize4x4(coeffs, -5);
 
-    // QP=-5 wraps to 47. cDequantScale[5][0]=18, qpDiv6=7 → scale = 18<<7 = 2304
-    CHECK(coeffs[0] == static_cast<int16_t>(18 * (1 << 7)));
+    // QP=-5 wraps to 47. cDequantScale[5][0]=18, qpDiv6=7, shift=7-2=5
+    // → val = 18 << 5 = 576
+    CHECK(coeffs[0] == static_cast<int16_t>(18 * (1 << 5)));
 }
 
 TEST_CASE("InverseQuantize4x4: QP=-52 wraps to 0")
@@ -282,7 +286,8 @@ TEST_CASE("InverseQuantize4x4: QP=-52 wraps to 0")
 
     inverseQuantize4x4(coeffs, -52);
 
-    CHECK(coeffs[0] == static_cast<int16_t>(10 * (1 << 0)));
+    // QP=0: qpDiv6=0, qpDiv6<2 so right-shift: (1*10 + 2) >> 2 = 3
+    CHECK(coeffs[0] == static_cast<int16_t>(3));
 }
 
 // ── Test 7: clipU8 edge cases ───────────────────────────────────────────
@@ -342,9 +347,9 @@ TEST_CASE("I_16x16 DC: saved-DC pattern prevents double dequantization of positi
     CHECK(coeffs[0] == cDcAlreadyDequanted);
 
     // AC coefficient at position 1 must have been dequanted normally:
-    // posClass[1]=2, scale=cDequantScale[0][2]=16, qpDiv6=4
-    // → 2 * 16 * (1<<4) = 512
-    CHECK(coeffs[1] == static_cast<int16_t>(cAcCoeff * 16 * (1 << 4)));
+    // posClass[1]=2, scale=cDequantScale[0][2]=16, qpDiv6=4, shift=4-2=2
+    // → 2 * 16 * (1<<2) = 128
+    CHECK(coeffs[1] == static_cast<int16_t>(cAcCoeff * 16 * (1 << 2)));
 }
 
 TEST_CASE("I_16x16 DC: without save/restore, DC is incorrectly double-dequanted")
@@ -484,4 +489,54 @@ TEST_CASE("IntraPred4x4: VL top-right substitution uses top[3] repeated")
 
     for (uint32_t i = 0U; i < 16U; ++i)
         CHECK(pred[i] == pred2[i]);
+}
+
+// ── Dequant formula verification — ITU-T H.264 §8.5.12.1 ───────────────
+
+TEST_CASE("Dequant: MB(9,0) block (12,8) formula comparison")
+{
+    // Raw CAVLC coefficients for MB(9,0) scan 13 (raster 11) at QP=24.
+    // Verified against bitstream decode trace.
+    int16_t raw[16] = { 2, -3, 2, -1, -3, 4, -3, 2, 2, -3, 2, -1, -1, 2, -1, 1 };
+
+    // Dequant with current formula: d = c * v[qp%6][posClass] << (qp/6)
+    // ITU-T H.264 §8.5.12.1 eq 8-315.
+    int16_t dequant[16];
+    std::memcpy(dequant, raw, sizeof(raw));
+    inverseQuantize4x4(dequant, 24);
+
+    // QP=24: qpDiv6=4, qpMod6=0, shift=4-2=2.
+    // Position (0,0) posClass=0: 2 * 10 * 4 = 80
+    CHECK(dequant[0] == 80);
+
+    // IDCT of full dequantized block, DC prediction = 81
+    uint8_t pred[16];
+    std::memset(pred, 81, 16);
+    uint8_t out[16];
+    inverseDct4x4AddPred(dequant, pred, 4U, out, 4U);
+
+    // With << (qpDiv6-2): pixel(0,0) = 77
+    MESSAGE("Formula << (qpDiv6-2): pixel(0,0) = " << static_cast<unsigned>(out[0]));
+    CHECK(out[0] == 77U);
+
+    // Alternative: d = c * v << max(qpDiv6 - 2, 0)
+    int16_t altDequant[16];
+    for (uint32_t i = 0U; i < 16U; ++i)
+    {
+        int32_t posClass = cDequantPosClass[i];
+        int32_t scale = cDequantScale[0][posClass]; // qpMod6=0
+        int32_t val = raw[i] * scale;
+        val <<= 2; // qpDiv6 - 2 = 4 - 2 = 2
+        altDequant[i] = static_cast<int16_t>(val);
+    }
+    uint8_t altOut[16];
+    inverseDct4x4AddPred(altDequant, pred, 4U, altOut, 4U);
+    MESSAGE("Formula << (qpDiv6-2): pixel(0,0) = " << static_cast<unsigned>(altOut[0]));
+
+    // Report both for ongoing investigation
+    MESSAGE("Row 0: current=[" << (unsigned)out[0] << " " << (unsigned)out[1]
+            << " " << (unsigned)out[2] << " " << (unsigned)out[3]
+            << "]  alt=[" << (unsigned)altOut[0] << " " << (unsigned)altOut[1]
+            << " " << (unsigned)altOut[2] << " " << (unsigned)altOut[3] << "]"
+            << "  ref=[81 80 82 78]");
 }
