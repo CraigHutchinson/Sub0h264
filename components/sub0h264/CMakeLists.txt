@@ -33,7 +33,7 @@ else()
     # -- Desktop / standalone path -------------------------------------------------
     add_library(sub0h264 STATIC ${_unity_sources})
 
-    target_compile_features(sub0h264 PUBLIC cxx_std_17)
+    target_compile_features(sub0h264 PUBLIC cxx_std_23)
 
     target_compile_options(sub0h264 PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/W4 /Zc:preprocessor>
