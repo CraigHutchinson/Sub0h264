@@ -180,3 +180,84 @@ TEST_CASE("Deblock: strong filter threshold condition §8.7.2.4")
     CHECK(p0 == 103U);
     CHECK(q0 == 108U);
 }
+
+// ── Spec table spot-checks — ITU-T H.264 Table 8-16 ─────────────────────
+
+TEST_CASE("Deblock: alpha/beta table spec values at QP=24 per Table 8-16")
+{
+    // ITU-T H.264 Table 8-16: indexA/indexB → alpha/beta thresholds.
+    // Spot-check at QP=24 (no offset), which is the QP of the baseline IDR.
+    // cAlphaTable[24]=12, cBetaTable[24]=4 per spec.
+    static constexpr int32_t cQp = 24;
+    CHECK(cAlphaTable[cQp] == 12U);  // Table 8-16: alpha at QP=24
+    CHECK(cBetaTable[cQp]  ==  4U);  // Table 8-16: beta at QP=24
+
+    // tc0 at QP=24: cTc0Table[24] = {0, 1, 1, 1} per Table 8-16
+    CHECK(cTc0Table[cQp][1] == 1U);  // BS=1
+    CHECK(cTc0Table[cQp][2] == 1U);  // BS=2
+    CHECK(cTc0Table[cQp][3] == 1U);  // BS=3
+}
+
+TEST_CASE("Deblock: tc calculation for BS=3 QP=24 with smooth neighbors §8.7.2.3")
+{
+    // ITU-T H.264 §8.7.2.3: tc = tc0 + (ap < beta ? 1 : 0) + (aq < beta ? 1 : 0).
+    // QP=24: alpha=12, beta=4, tc0=cTc0Table[24][3]=1.
+    // With smooth neighbors (ap=aq=0 < beta=4): tc = 1 + 1 + 1 = 3.
+    // Inputs: p0=80, p1=81, p2=81; q0=84, q1=81, q2=81.
+    // |p0-q0|=4 < alpha=12 → filter applies.
+    // delta = (4*(84-80) + (81-81) + 4) >> 3 = (16+0+4)>>3 = 20>>3 = 2.
+    // delta clamped to ±3: delta=2 (no clamp needed).
+    // p0_new = 80+2=82; q0_new = 84-2=82.
+    uint8_t p0 = 80U, p1 = 81U, p2 = 81U;
+    uint8_t q0 = 84U, q1 = 81U, q2 = 81U;
+    static constexpr int32_t cAlpha = 12;
+    static constexpr int32_t cBeta  =  4;
+    static constexpr int32_t cTc0   =  1;  // BS=3
+    CHECK(cAlphaTable[24] == static_cast<uint8_t>(cAlpha));
+    CHECK(cBetaTable[24]  == static_cast<uint8_t>(cBeta));
+    CHECK(cTc0Table[24][3] == static_cast<uint8_t>(cTc0));
+    filterLumaWeak(p0, p1, p2, q0, q1, q2, cAlpha, cBeta, cTc0);
+    CHECK(p0 == 82U);
+    CHECK(q0 == 82U);
+}
+
+TEST_CASE("Deblock: weak filter skips when |p0-q0| >= alpha §8.7.2.3")
+{
+    // §8.7.2.3 decision: if |p0-q0| >= alpha, no filtering.
+    // QP=24: alpha=12. Set |p0-q0|=12 (exactly at boundary → no filter).
+    uint8_t p0 = 80U, p1 = 81U, p2 = 81U;
+    uint8_t q0 = 92U, q1 = 91U, q2 = 91U;  // |p0-q0|=12 = alpha
+    filterLumaWeak(p0, p1, p2, q0, q1, q2, 12, 4, 1);
+    CHECK(p0 == 80U);  // unchanged: |p0-q0|=12 is NOT < alpha=12
+    CHECK(q0 == 92U);
+}
+
+TEST_CASE("Deblock: weak filter skips when |p1-p0| >= beta §8.7.2.3")
+{
+    // §8.7.2.3: if |p1-p0| >= beta, no filtering.
+    // QP=24: beta=4. Set |p1-p0|=4 (at boundary → no filter).
+    uint8_t p0 = 80U, p1 = 76U, p2 = 76U;  // |p1-p0|=4 = beta
+    uint8_t q0 = 82U, q1 = 82U, q2 = 82U;  // |p0-q0|=2 < alpha=12
+    filterLumaWeak(p0, p1, p2, q0, q1, q2, 12, 4, 1);
+    CHECK(p0 == 80U);  // unchanged: |p1-p0|=4 is NOT < beta=4
+    CHECK(q0 == 82U);
+}
+
+TEST_CASE("Deblock: intra MB boundary uses BS=4 strong filter §8.7.2.4")
+{
+    // §8.7.2.4: BS=4 uses strong filter (p0/q0 averaged with 3 neighbors).
+    // With alpha=12, beta=4, |p0-q0|=4 < (alpha>>2)+2=5 → strongThresh=true.
+    // Strong filter: p0 = (p2+2*p1+2*p0+2*q0+q1+4)>>3
+    //                   = (81+162+160+168+81+4)>>3 = 656>>3 = 82
+    //              q0 = (p1+2*p0+2*q0+2*q1+q2+4)>>3
+    //                   = (81+160+168+166+83+4)>>3 = 662>>3 = 82 (integer)
+    uint8_t p0 = 80U, p1 = 81U, p2 = 81U, p3 = 81U;
+    uint8_t q0 = 84U, q1 = 83U, q2 = 83U, q3 = 83U;
+    static constexpr int32_t cAlpha = 12;
+    static constexpr int32_t cBeta  =  4;
+    // |p0-q0|=4 < (12>>2)+2=5 → strong path (ap/aq determine p1/q1 update)
+    filterLumaStrong(p0, p1, p2, q0, q1, q2, p3, q3, cAlpha, cBeta);
+    // Verify filter applied (values changed from initial)
+    CHECK(p0 != 80U);
+    CHECK(q0 != 84U);
+}

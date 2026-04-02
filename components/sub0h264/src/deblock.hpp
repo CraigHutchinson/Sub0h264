@@ -328,21 +328,21 @@ inline void deblockMb(Frame& frame, uint32_t mbX, uint32_t mbY,
             uint32_t mbIdxP = (edge == 0U) ? (mbY * widthInMbs + mbX - 1U) : mbIdx;
 
             bool isIntraP = (edge == 0U)
-                ? (mbMotion[mbIdxP].refIdx == -1)
+                ? (mbMotion[mbIdxP * 16U + blkP].refIdx == -1)
                 : isIntra;
             bool hasCoeffP = (nnzLuma[mbIdxP * 16U + blkP] > 0U);
             bool hasCoeffQ = (nnzLuma[mbIdx * 16U + blkQ] > 0U);
 
-            int16_t mvPx = mbMotion[mbIdxP].mv.x;
-            int16_t mvPy = mbMotion[mbIdxP].mv.y;
-            int16_t mvQx = mbMotion[mbIdx].mv.x;
-            int16_t mvQy = mbMotion[mbIdx].mv.y;
+            int16_t mvPx = mbMotion[mbIdxP * 16U + blkP].mv.x;
+            int16_t mvPy = mbMotion[mbIdxP * 16U + blkP].mv.y;
+            int16_t mvQx = mbMotion[mbIdx * 16U + blkQ].mv.x;
+            int16_t mvQy = mbMotion[mbIdx * 16U + blkQ].mv.y;
 
             uint8_t bs = computeBs(isIntraP, isIntra, edge == 0U,
                                     hasCoeffP, hasCoeffQ,
                                     mvPx, mvPy, mvQx, mvQy,
-                                    mbMotion[mbIdxP].refIdx,
-                                    mbMotion[mbIdx].refIdx);
+                                    mbMotion[mbIdxP * 16U + blkP].refIdx,
+                                    mbMotion[mbIdx * 16U + blkQ].refIdx);
 
             if (bs == 0U) continue;
 
@@ -367,7 +367,9 @@ inline void deblockMb(Frame& frame, uint32_t mbX, uint32_t mbY,
             }
         }
 
-        // Chroma vertical edges (only at MB boundary and 8-px internal)
+        // Chroma vertical edges — ITU-T H.264 §8.7.2.
+        // Chroma edges at MB boundary (edge=0) and 8-pixel internal (edge=2).
+        // BS is derived from the corresponding luma edge per §8.7.2.1.
         if (edge == 0U || edge == 2U)
         {
             uint32_t cEdgeX = pixX / 2U + (edge / 2U) * 4U;
@@ -376,7 +378,34 @@ inline void deblockMb(Frame& frame, uint32_t mbX, uint32_t mbY,
             for (uint32_t cRow = 0U; cRow < 8U; ++cRow)
             {
                 uint32_t cY = pixY / 2U + cRow;
-                uint8_t bs = (edge == 0U && isIntra) ? 4U : (isIntra ? 3U : 1U);
+
+                // Chroma BS = max of the two corresponding luma rows' BS.
+                // Each chroma row maps to 2 luma rows: cRow*2 and cRow*2+1.
+                // Luma BS was computed per-row above using computeBs().
+                // Recompute for the two luma rows.
+                uint8_t maxBs = 0U;
+                for (uint32_t lr = 0U; lr < 2U; ++lr)
+                {
+                    uint32_t lumaRow = cRow * 2U + lr;
+                    uint32_t blkQ = edge + (lumaRow / 4U) * 4U;
+                    uint32_t blkP = (edge == 0U) ? 3U + (lumaRow / 4U) * 4U : blkQ - 1U;
+                    uint32_t mbIdxP = (edge == 0U) ? (mbY * widthInMbs + mbX - 1U) : mbIdx;
+
+                    bool isIntraP = (edge == 0U)
+                        ? (mbMotion[mbIdxP * 16U + blkP].refIdx == -1)
+                        : isIntra;
+                    bool hasCoeffP = (nnzLuma[mbIdxP * 16U + blkP] > 0U);
+                    bool hasCoeffQ = (nnzLuma[mbIdx * 16U + blkQ] > 0U);
+
+                    uint8_t bs = computeBs(isIntraP, isIntra, edge == 0U,
+                                            hasCoeffP, hasCoeffQ,
+                                            mbMotion[mbIdxP * 16U + blkP].mv.x, mbMotion[mbIdxP * 16U + blkP].mv.y,
+                                            mbMotion[mbIdx * 16U + blkQ].mv.x, mbMotion[mbIdx * 16U + blkQ].mv.y,
+                                            mbMotion[mbIdxP * 16U + blkP].refIdx, mbMotion[mbIdx * 16U + blkQ].refIdx);
+                    if (bs > maxBs) maxBs = bs;
+                }
+
+                if (maxBs == 0U) continue;
 
                 for (int plane = 0; plane < 2; ++plane)
                 {
@@ -384,13 +413,13 @@ inline void deblockMb(Frame& frame, uint32_t mbX, uint32_t mbY,
                         ? frame.uRow(cY) + cEdgeX
                         : frame.vRow(cY) + cEdgeX;
 
-                    if (bs == 4U)
+                    if (maxBs == 4U)
                         filterChromaStrong(ptr[-1], (cEdgeX > 0U ? ptr[-2] : ptr[-1]),
                                            ptr[0], ptr[1], edgeCAlpha, edgeCBeta);
-                    else if (bs > 0U)
+                    else
                         filterChromaWeak(ptr[-1], (cEdgeX > 0U ? ptr[-2] : ptr[-1]),
                                          ptr[0], ptr[1], edgeCAlpha, edgeCBeta,
-                                         cTc0Table[edgeCIndexA][bs]);
+                                         cTc0Table[edgeCIndexA][maxBs]);
                 }
             }
         }
@@ -432,16 +461,16 @@ inline void deblockMb(Frame& frame, uint32_t mbX, uint32_t mbY,
                 : mbIdx;
 
             bool isIntraP = (edge == 0U)
-                ? (mbMotion[mbIdxP].refIdx == -1)
+                ? (mbMotion[mbIdxP * 16U + blkP].refIdx == -1)
                 : isIntra;
             bool hasCoeffP = (nnzLuma[mbIdxP * 16U + blkP] > 0U);
             bool hasCoeffQ = (nnzLuma[mbIdx * 16U + blkQ] > 0U);
 
             uint8_t bs = computeBs(isIntraP, isIntra, edge == 0U,
                                     hasCoeffP, hasCoeffQ,
-                                    mbMotion[mbIdxP].mv.x, mbMotion[mbIdxP].mv.y,
-                                    mbMotion[mbIdx].mv.x, mbMotion[mbIdx].mv.y,
-                                    mbMotion[mbIdxP].refIdx, mbMotion[mbIdx].refIdx);
+                                    mbMotion[mbIdxP * 16U + blkP].mv.x, mbMotion[mbIdxP * 16U + blkP].mv.y,
+                                    mbMotion[mbIdx * 16U + blkQ].mv.x, mbMotion[mbIdx * 16U + blkQ].mv.y,
+                                    mbMotion[mbIdxP * 16U + blkP].refIdx, mbMotion[mbIdx * 16U + blkQ].refIdx);
 
             if (bs == 0U) continue;
 
@@ -471,7 +500,8 @@ inline void deblockMb(Frame& frame, uint32_t mbX, uint32_t mbY,
             }
         }
 
-        // Chroma horizontal edges
+        // Chroma horizontal edges — ITU-T H.264 §8.7.2.
+        // BS from corresponding luma edge per §8.7.2.1.
         if (edge == 0U || edge == 2U)
         {
             uint32_t cEdgeY = pixY / 2U + (edge / 2U) * 4U;
@@ -480,7 +510,31 @@ inline void deblockMb(Frame& frame, uint32_t mbX, uint32_t mbY,
             for (uint32_t cCol = 0U; cCol < 8U; ++cCol)
             {
                 uint32_t cX = pixX / 2U + cCol;
-                uint8_t bs = (edge == 0U && isIntra) ? 4U : (isIntra ? 3U : 1U);
+
+                // Chroma BS = max of the two corresponding luma columns' BS.
+                uint8_t maxBs = 0U;
+                for (uint32_t lc = 0U; lc < 2U; ++lc)
+                {
+                    uint32_t lumaCol = cCol * 2U + lc;
+                    uint32_t blkQ = (lumaCol / 4U) + edge * 4U;
+                    uint32_t blkP = (edge == 0U) ? (lumaCol / 4U) + 12U : blkQ - 4U;
+                    uint32_t mbIdxP = (edge == 0U)
+                        ? ((mbY - 1U) * widthInMbs + mbX) : mbIdx;
+
+                    bool isIntraP = (edge == 0U)
+                        ? (mbMotion[mbIdxP * 16U + blkP].refIdx == -1) : isIntra;
+                    bool hasCoeffP = (nnzLuma[mbIdxP * 16U + blkP] > 0U);
+                    bool hasCoeffQ = (nnzLuma[mbIdx * 16U + blkQ] > 0U);
+
+                    uint8_t bs = computeBs(isIntraP, isIntra, edge == 0U,
+                                            hasCoeffP, hasCoeffQ,
+                                            mbMotion[mbIdxP * 16U + blkP].mv.x, mbMotion[mbIdxP * 16U + blkP].mv.y,
+                                            mbMotion[mbIdx * 16U + blkQ].mv.x, mbMotion[mbIdx * 16U + blkQ].mv.y,
+                                            mbMotion[mbIdxP * 16U + blkP].refIdx, mbMotion[mbIdx * 16U + blkQ].refIdx);
+                    if (bs > maxBs) maxBs = bs;
+                }
+
+                if (maxBs == 0U) continue;
 
                 for (int plane = 0; plane < 2; ++plane)
                 {
@@ -493,11 +547,11 @@ inline void deblockMb(Frame& frame, uint32_t mbX, uint32_t mbY,
                     uint8_t p1val = (cEdgeY >= 2U) ? *(getRow(cEdgeY - 2U) + cX) : *pPtr;
                     uint8_t q1val = (cEdgeY + 1U < frame.height() / 2U) ? *(getRow(cEdgeY + 1U) + cX) : *qPtr;
 
-                    if (bs == 4U)
+                    if (maxBs == 4U)
                         filterChromaStrong(*pPtr, p1val, *qPtr, q1val, edgeCAlpha, edgeCBeta);
-                    else if (bs > 0U)
+                    else
                         filterChromaWeak(*pPtr, p1val, *qPtr, q1val,
-                                         edgeCAlpha, edgeCBeta, cTc0Table[edgeCIndexA][bs]);
+                                         edgeCAlpha, edgeCBeta, cTc0Table[edgeCIndexA][maxBs]);
                 }
             }
         }

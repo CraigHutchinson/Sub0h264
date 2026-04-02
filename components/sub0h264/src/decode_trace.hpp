@@ -1,16 +1,22 @@
 /** Sub0h264 — Structured decode trace system
  *
- *  Compile-time + runtime filtered tracing for decoder debugging.
- *  Zero cost when SUB0H264_TRACE is not defined (all calls compile away).
- *  When enabled, supports runtime MB/block filtering so only the
- *  macroblocks of interest produce output.
+ *  Provides per-MB and per-block trace events for decoder debugging.
+ *  Two modes:
  *
- *  Build with trace: cmake --preset debug-trace
- *  Or: -DSUB0H264_TRACE=1
+ *  1. Printf trace (SUB0H264_TRACE=1): compile-time enabled, zero cost otherwise.
+ *     Logs to stdout with runtime MB/block filtering.
+ *
+ *  2. Callback trace: always available. Set a callback to capture trace events
+ *     programmatically (e.g., in unit tests). The callback is checked per-MB
+ *     so the cost is one pointer test per MB when no callback is set.
  *
  *  Usage in decoder:
- *    if (trace_.shouldTrace(mbX, mbY))
- *        trace_.log("MB(%u,%u) mbType=%u bitOff=%u", mbX, mbY, ...);
+ *    trace_.onMbStart(mbX, mbY, mbType, bitOffset);
+ *    trace_.onChromaDc(mbX, mbY, dcCb, dcCr, 4);  // after dequant
+ *    trace_.onBlockResidual(mbX, mbY, blkIdx, nC, tc, bits);
+ *
+ *  Usage in tests:
+ *    decoder.trace().setCallback([](const TraceEvent& e) { ... });
  *
  *  SPDX-License-Identifier: MIT
  */
@@ -20,58 +26,47 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdarg>
+#include <functional>
 
 namespace sub0h264 {
 
 /// Sentinel value: trace all MBs/blocks (no filter).
 inline constexpr uint32_t cTraceAll = UINT32_MAX;
 
-#if SUB0H264_TRACE
-
-/** Runtime trace filter + logger.
- *  Set mbX/mbY to filter specific macroblocks.
- *  Set blkIdx to filter specific 4x4 blocks within a MB.
- *  Leave as cTraceAll to trace everything.
- */
-struct DecodeTrace
+/// Trace event types for structured callback tracing.
+enum class TraceEventType : uint8_t
 {
-    uint32_t filterMbX = cTraceAll;   ///< Only trace this MB X (cTraceAll = all)
-    uint32_t filterMbY = cTraceAll;   ///< Only trace this MB Y (cTraceAll = all)
-    uint32_t filterBlk = cTraceAll;   ///< Only trace this block index (cTraceAll = all)
-    bool enabled = true;              ///< Master enable
-
-    /** Should we trace this macroblock? */
-    bool shouldTrace(uint32_t mbX, uint32_t mbY) const noexcept
-    {
-        if (!enabled) return false;
-        if (filterMbX != cTraceAll && filterMbX != mbX) return false;
-        if (filterMbY != cTraceAll && filterMbY != mbY) return false;
-        return true;
-    }
-
-    /** Should we trace this specific block within an MB? */
-    bool shouldTraceBlock(uint32_t mbX, uint32_t mbY, uint32_t blk) const noexcept
-    {
-        if (!shouldTrace(mbX, mbY)) return false;
-        if (filterBlk != cTraceAll && filterBlk != blk) return false;
-        return true;
-    }
-
-    /** Log a formatted trace message (printf-style). */
-    void log(const char* fmt, ...) const noexcept
-    {
-        std::va_list args;
-        va_start(args, fmt);
-        std::printf("[TRACE] ");
-        std::vprintf(fmt, args);
-        std::printf("\n");
-        va_end(args);
-    }
+    MbStart,          ///< MB decode started: mbX, mbY, mbType, bitOffset
+    MbEnd,            ///< MB decode ended: mbX, mbY, bitOffset
+    ChromaDcRaw,      ///< Chroma DC raw CAVLC coefficients: a=0 Cb, a=1 Cr
+    ChromaDcDequant,  ///< Chroma DC after Hadamard + dequant: a=0 Cb, a=1 Cr
+    BlockResidual,    ///< CAVLC block: blkIdx, nC, totalCoeff, bits
+    LumaDcDequant,    ///< Luma I_16x16 DC after dequant: values in data[]
 };
 
-#else // SUB0H264_TRACE not defined
+/// Structured trace event — passed to callbacks.
+struct TraceEvent
+{
+    TraceEventType type;
+    uint16_t mbX;
+    uint16_t mbY;
+    uint32_t a;            ///< Context-dependent: mbType, blkIdx, etc.
+    uint32_t b;            ///< Context-dependent: bitOffset, nC, etc.
+    uint32_t c;            ///< Context-dependent: totalCoeff, etc.
+    uint32_t d;            ///< Context-dependent: bits consumed, etc.
+    const int16_t* data;   ///< Optional pointer to coefficient array
+    uint32_t dataLen;      ///< Length of data array
+};
 
-/** No-op trace — compiles away completely. */
+/// Trace callback type.
+using TraceCallback = std::function<void(const TraceEvent&)>;
+
+/** Runtime trace filter + structured event logger.
+ *
+ *  Always compiled in (not gated by SUB0H264_TRACE).
+ *  Printf output is only available with SUB0H264_TRACE=1.
+ *  Callback is always available.
+ */
 struct DecodeTrace
 {
     uint32_t filterMbX = cTraceAll;
@@ -79,14 +74,112 @@ struct DecodeTrace
     uint32_t filterBlk = cTraceAll;
     bool enabled = false;
 
-    constexpr bool shouldTrace(uint32_t, uint32_t) const noexcept { return false; }
-    constexpr bool shouldTraceBlock(uint32_t, uint32_t, uint32_t) const noexcept { return false; }
+    /** Should we trace this macroblock? */
+    bool shouldTrace(uint32_t mbX, uint32_t mbY) const noexcept
+    {
+        if (filterMbX != cTraceAll && filterMbX != mbX) return false;
+        if (filterMbY != cTraceAll && filterMbY != mbY) return false;
+        return enabled || callback_;
+    }
 
-    // No-op log — optimizer removes entirely since shouldTrace returns false
-    void log(const char*, ...) const noexcept {}
+    /** Should we trace this specific block? */
+    bool shouldTraceBlock(uint32_t mbX, uint32_t mbY, uint32_t blk) const noexcept
+    {
+        if (!shouldTrace(mbX, mbY)) return false;
+        if (filterBlk != cTraceAll && filterBlk != blk) return false;
+        return true;
+    }
+
+    /** Set a callback to receive structured trace events. */
+    void setCallback(TraceCallback cb) noexcept { callback_ = std::move(cb); }
+
+    /** Clear the trace callback. */
+    void clearCallback() noexcept { callback_ = nullptr; }
+
+    /** Has a callback been set? */
+    bool hasCallback() const noexcept { return callback_ != nullptr; }
+
+    // ── Structured trace events ─────────────────────────────────────
+
+    void onMbStart(uint32_t mbX, uint32_t mbY, uint32_t mbType, uint32_t bitOff) const noexcept
+    {
+        emit({TraceEventType::MbStart, static_cast<uint16_t>(mbX),
+              static_cast<uint16_t>(mbY), mbType, bitOff, 0, 0, nullptr, 0});
+#if SUB0H264_TRACE
+        if (enabled && shouldTrace(mbX, mbY))
+            std::printf("[TRACE] MB(%u,%u) type=%u bit=%u\n", mbX, mbY, mbType, bitOff);
+#endif
+    }
+
+    void onMbEnd(uint32_t mbX, uint32_t mbY, uint32_t bitOff) const noexcept
+    {
+        emit({TraceEventType::MbEnd, static_cast<uint16_t>(mbX),
+              static_cast<uint16_t>(mbY), 0, bitOff, 0, 0, nullptr, 0});
+#if SUB0H264_TRACE
+        if (enabled && shouldTrace(mbX, mbY))
+            std::printf("[TRACE] MB(%u,%u) END bit=%u\n", mbX, mbY, bitOff);
+#endif
+    }
+
+    void onChromaDcRaw(uint32_t mbX, uint32_t mbY,
+                       const int16_t* rawCb, const int16_t* rawCr) const noexcept
+    {
+        emit({TraceEventType::ChromaDcRaw, static_cast<uint16_t>(mbX),
+              static_cast<uint16_t>(mbY), 0, 0, 0, 0, rawCb, 4});
+        emit({TraceEventType::ChromaDcRaw, static_cast<uint16_t>(mbX),
+              static_cast<uint16_t>(mbY), 1, 0, 0, 0, rawCr, 4});
+    }
+
+    void onChromaDcDequant(uint32_t mbX, uint32_t mbY,
+                           const int16_t* dcCb, const int16_t* dcCr) const noexcept
+    {
+        // Pack Cb in first call, Cr in second
+        emit({TraceEventType::ChromaDcDequant, static_cast<uint16_t>(mbX),
+              static_cast<uint16_t>(mbY), 0, 0, 0, 0, dcCb, 4});
+        emit({TraceEventType::ChromaDcDequant, static_cast<uint16_t>(mbX),
+              static_cast<uint16_t>(mbY), 1, 0, 0, 0, dcCr, 4});
+#if SUB0H264_TRACE
+        if (enabled && shouldTrace(mbX, mbY))
+            std::printf("[TRACE] MB(%u,%u) chromaDC Cb=[%d,%d,%d,%d] Cr=[%d,%d,%d,%d]\n",
+                mbX, mbY, dcCb[0], dcCb[1], dcCb[2], dcCb[3],
+                dcCr[0], dcCr[1], dcCr[2], dcCr[3]);
+#endif
+    }
+
+    void onBlockResidual(uint32_t mbX, uint32_t mbY, uint32_t blkIdx,
+                         int32_t nC, uint32_t tc, uint32_t bits) const noexcept
+    {
+        emit({TraceEventType::BlockResidual, static_cast<uint16_t>(mbX),
+              static_cast<uint16_t>(mbY), blkIdx, static_cast<uint32_t>(nC), tc, bits, nullptr, 0});
+#if SUB0H264_TRACE
+        if (enabled && shouldTraceBlock(mbX, mbY, blkIdx))
+            std::printf("[TRACE] MB(%u,%u) blk%u nC=%d tc=%u %ub\n",
+                mbX, mbY, blkIdx, nC, tc, bits);
+#endif
+    }
+
+    /** Printf-style log (only with SUB0H264_TRACE). */
+    void log([[maybe_unused]] const char* fmt, ...) const noexcept
+    {
+#if SUB0H264_TRACE
+        if (!enabled) return;
+        std::va_list args;
+        va_start(args, fmt);
+        std::printf("[TRACE] ");
+        std::vprintf(fmt, args);
+        std::printf("\n");
+        va_end(args);
+#endif
+    }
+
+private:
+    TraceCallback callback_;
+
+    void emit(const TraceEvent& e) const noexcept
+    {
+        if (callback_) callback_(e);
+    }
 };
-
-#endif // SUB0H264_TRACE
 
 } // namespace sub0h264
 

@@ -34,4 +34,8 @@ set(SUB0H264_TEST_SOURCES
     test_debug_flatblack.cpp
     test_bench.cpp
     test_reconstruct.cpp
+    test_mb9_bitcount.cpp
+    test_bitstream_trace.cpp
+    test_cavlc_regression.cpp
+    test_synthetic_quality.cpp
 )

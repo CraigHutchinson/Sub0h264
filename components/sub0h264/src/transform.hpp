@@ -30,16 +30,20 @@ inline constexpr int32_t clampQpIdx(int32_t val) noexcept
 
 // ── Default dequantization scaling — ITU-T H.264 §8.5.12.1 ─────────────
 
-/// Dequantization scale factors for 4x4 blocks, indexed by QP%6 and position.
-/// v[qp%6][position_class] where position_class is 0 (DC/AC0), 1, or 2.
-/// Reference: ITU-T H.264 Table 8-14.
+/// Dequantization scale factors for 4x4 blocks, indexed by QP%6 and position class.
+/// v[qp%6][position_class] where:
+///   class 0 = both-even (e.g., (0,0),(0,2),(2,0),(2,2))
+///   class 1 = both-odd  (e.g., (1,1),(1,3),(3,1),(3,3))
+///   class 2 = mixed     (all other positions)
+/// Reference: ITU-T H.264 Table 8-15, LevelScale4x4[k][i][j].
+/// Column order: {class0, class1, class2} = {both-even, both-odd, mixed}.
 inline constexpr std::array<std::array<int32_t, 3>, 6> cDequantScale = {{
-    {{ 10, 13, 16 }},
-    {{ 11, 14, 18 }},
-    {{ 13, 16, 20 }},
-    {{ 14, 18, 23 }},
-    {{ 16, 20, 25 }},
-    {{ 18, 23, 29 }},
+    {{ 10, 16, 13 }},
+    {{ 11, 18, 14 }},
+    {{ 13, 20, 16 }},
+    {{ 14, 23, 18 }},
+    {{ 16, 25, 20 }},
+    {{ 18, 29, 23 }},
 }};
 
 /// Position class for each raster position in a 4x4 block — §8.5.12.1.
@@ -65,11 +69,17 @@ inline constexpr std::array<uint8_t, 16> cDequantPosClass = []() constexpr
     return t;
 }();
 
-// Compile-time spot-checks — ITU-T H.264 §8.5.12.1 Table 8-14.
+// Compile-time spot-checks — ITU-T H.264 §8.5.12.1 Table 8-15.
 static_assert(cDequantPosClass[0]  == 0U, "pos(0,0) → class 0");
 static_assert(cDequantPosClass[5]  == 1U, "pos(1,1) → class 1");
 static_assert(cDequantPosClass[1]  == 2U, "pos(0,1) → class 2");
 static_assert(cDequantPosClass[15] == 1U, "pos(3,3) → class 1");
+// Scale value checks: both-odd (class 1) must be larger than both-even (class 0)
+// per Table 8-15, e.g., qp%6=0 → class0=10, class1=16, class2=13.
+static_assert(cDequantScale[0][0] == 10, "qp%6=0, class0 = 10 per Table 8-15");
+static_assert(cDequantScale[0][1] == 16, "qp%6=0, class1 = 16 per Table 8-15");
+static_assert(cDequantScale[0][2] == 13, "qp%6=0, class2 = 13 per Table 8-15");
+static_assert(cDequantScale[3][1] == 23, "qp%6=3, class1 = 23 per Table 8-15");
 
 // ── 4x4 Inverse Integer DCT — ITU-T H.264 §8.5.12 ─────────────────────
 
@@ -214,15 +224,20 @@ inline void inverseHadamard4x4(int16_t* dc) noexcept
  */
 inline void inverseHadamard2x2(int16_t* dc) noexcept
 {
-    int32_t a = dc[0] + dc[1];
-    int32_t b = dc[0] - dc[1];
-    int32_t c = dc[2] + dc[3];
-    int32_t d = dc[2] - dc[3];
+    // ITU-T H.264 §8.5.12.2: 2x2 Hadamard for chroma DC (4:2:0).
+    // Reference: libavc ih264d_cavlc_parse_chroma_dc, lines 1385-1400.
+    // The butterfly matches libavc's column-first ordering:
+    //   z0=dc[0]+dc[2], z1=dc[0]-dc[2], z2=dc[1]-dc[3], z3=dc[1]+dc[3]
+    //   out[0]=z0+z3, out[1]=z0-z3, out[2]=z1+z2, out[3]=z1-z2
+    int32_t z0 = dc[0] + dc[2];
+    int32_t z1 = dc[0] - dc[2];
+    int32_t z2 = dc[1] - dc[3];
+    int32_t z3 = dc[1] + dc[3];
 
-    dc[0] = static_cast<int16_t>(a + c);
-    dc[1] = static_cast<int16_t>(b + d);
-    dc[2] = static_cast<int16_t>(a - c);
-    dc[3] = static_cast<int16_t>(b - d);
+    dc[0] = static_cast<int16_t>(z0 + z3);
+    dc[1] = static_cast<int16_t>(z0 - z3);
+    dc[2] = static_cast<int16_t>(z1 + z2);
+    dc[3] = static_cast<int16_t>(z1 - z2);
 }
 
 // ── Inverse Quantization — ITU-T H.264 §8.5.12.1 ───────────────────────
@@ -258,18 +273,16 @@ inline void inverseQuantize4x4(int16_t* coeffs, int32_t qp, bool isDc = false) n
         else
         {
             // 4x4 residual blocks: ITU-T H.264 §8.5.12.1.
-            // The combined dequant + IDCT normalization requires
-            // (qpDiv6 - 2) left-shift, with the IDCT applying >> 6.
-            // For qpDiv6 < 2, use right-shift with rounding.
-            if (qpDiv6 >= 2)
-            {
-                val <<= (qpDiv6 - 2);
-            }
-            else
-            {
-                int32_t roundOff = 1 << (1 - qpDiv6);
-                val = (val + roundOff) >> (2 - qpDiv6);
-            }
+            // The dequant formula is: d = c * LevelScale << (qP/6).
+            // The IDCT then applies >> 6 normalization at the output.
+            // Combined: pixel = pred + (IDCT(c * scale << qpDiv6) + 32) >> 6.
+            //
+            // Note: the spec states << (qP/6 - 2) which assumes a DIFFERENT
+            // IDCT normalization (>> 4 built into the scaling factors).
+            // Our butterfly IDCT uses >> 6, matching libavc's implementation.
+            // Reference: libavc INV_QUANT macro (ih264_trans_macros.h):
+            //   val = coeff * scale * 16 << qpDiv6 >> 4 = coeff * scale << qpDiv6
+            val <<= qpDiv6;
         }
 
         coeffs[i] = static_cast<int16_t>(val);

@@ -200,11 +200,12 @@ TEST_CASE("IntraPred4x4 MPM: rem→mode remapping, rem=2 mpm=2 → mode=3")
 TEST_CASE("InverseQuantize4x4: QP=24, position 0 and position 1")
 {
     // QP=24: qpDiv6=4, qpMod6=0
-    // cDequantScale[0] = {10, 13, 16}
-    // pos 0: posClass=cDequantPosClass[0]=0, scale=10, raw=2
-    //   → val = 2 * 10 * (1<<4) = 320
-    // pos 1: posClass=cDequantPosClass[1]=2, scale=16, raw=-3
-    //   → val = -3 * 16 * (1<<4) = -768
+    // cDequantScale[0] = {10, 16, 13}  (class0=both-even, class1=both-odd, class2=mixed)
+    // per ITU-T H.264 Table 8-15.
+    // Dequant: val = raw * scale << qpDiv6.
+    // Reference: libavc INV_QUANT = coeff * scale * 16 << qpDiv6 >> 4 = coeff * scale << qpDiv6
+    // pos 0: 2 * 10 << 4 = 320
+    // pos 1: -3 * 13 << 4 = -624
 
     constexpr int32_t cTestQp = 24;
     static_assert(cTestQp / 6 == 4, "qpDiv6 must be 4 for QP=24");
@@ -216,11 +217,11 @@ TEST_CASE("InverseQuantize4x4: QP=24, position 0 and position 1")
 
     inverseQuantize4x4(coeffs, cTestQp);
 
-    // QP=24: qpDiv6=4, shift = qpDiv6-2 = 2.
-    // pos(0,0) posClass=0: 2 * 10 * 4 = 80
-    // pos(0,1) posClass=2: -3 * 16 * 4 = -192
-    CHECK(coeffs[0] == 80);
-    CHECK(coeffs[1] == -192);
+    // QP=24: qpDiv6=4, shift = qpDiv6 = 4.
+    // pos(0,0) posClass=0 (both-even): 2 * 10 << 4 = 320
+    // pos(0,1) posClass=2 (mixed):    -3 * 13 << 4 = -624
+    CHECK(coeffs[0] == 320);
+    CHECK(coeffs[1] == -624);
 
     // All other positions remain zero
     for (uint32_t i = 2U; i < 16U; ++i)
@@ -271,9 +272,9 @@ TEST_CASE("InverseQuantize4x4: negative QP wraps to valid range via modular arit
 
     inverseQuantize4x4(coeffs, -5);
 
-    // QP=-5 wraps to 47. cDequantScale[5][0]=18, qpDiv6=7, shift=7-2=5
-    // → val = 18 << 5 = 576
-    CHECK(coeffs[0] == static_cast<int16_t>(18 * (1 << 5)));
+    // QP=-5 wraps to 47. cDequantScale[5][0]=18, qpDiv6=7, shift=7
+    // → val = 18 << 7 = 2304
+    CHECK(coeffs[0] == static_cast<int16_t>(18 * (1 << 7)));
 }
 
 TEST_CASE("InverseQuantize4x4: QP=-52 wraps to 0")
@@ -286,8 +287,8 @@ TEST_CASE("InverseQuantize4x4: QP=-52 wraps to 0")
 
     inverseQuantize4x4(coeffs, -52);
 
-    // QP=0: qpDiv6=0, qpDiv6<2 so right-shift: (1*10 + 2) >> 2 = 3
-    CHECK(coeffs[0] == static_cast<int16_t>(3));
+    // QP=0: qpDiv6=0, shift=0. val = 1 * 10 << 0 = 10
+    CHECK(coeffs[0] == static_cast<int16_t>(10));
 }
 
 // ── Test 7: clipU8 edge cases ───────────────────────────────────────────
@@ -347,9 +348,9 @@ TEST_CASE("I_16x16 DC: saved-DC pattern prevents double dequantization of positi
     CHECK(coeffs[0] == cDcAlreadyDequanted);
 
     // AC coefficient at position 1 must have been dequanted normally:
-    // posClass[1]=2, scale=cDequantScale[0][2]=16, qpDiv6=4, shift=4-2=2
-    // → 2 * 16 * (1<<2) = 128
-    CHECK(coeffs[1] == static_cast<int16_t>(cAcCoeff * 16 * (1 << 2)));
+    // posClass[1]=2 (mixed), scale=cDequantScale[0][2]=13 per Table 8-15,
+    // qpDiv6=4, shift=qpDiv6=4 → 2 * 13 * (1<<4) = 416
+    CHECK(coeffs[1] == static_cast<int16_t>(cAcCoeff * 13 * (1 << 4)));
 }
 
 TEST_CASE("I_16x16 DC: without save/restore, DC is incorrectly double-dequanted")
@@ -551,21 +552,22 @@ TEST_CASE("DequantPosClass: derived from row/col parity per §8.5.12.1")
 
 // ── Dequant formula verification — ITU-T H.264 §8.5.12.1 ───────────────
 
-TEST_CASE("Dequant: MB(9,0) block (12,8) formula comparison")
+TEST_CASE("Dequant: MB(9,0) block (12,8) with QP=24")
 {
     // Raw CAVLC coefficients for MB(9,0) scan 13 (raster 11) at QP=24.
-    // Verified against bitstream decode trace.
     int16_t raw[16] = { 2, -3, 2, -1, -3, 4, -3, 2, 2, -3, 2, -1, -1, 2, -1, 1 };
 
-    // Dequant with current formula: d = c * v[qp%6][posClass] << (qp/6)
-    // ITU-T H.264 §8.5.12.1 eq 8-315.
+    // Dequant formula: d = c * scale << qpDiv6.
+    // QP=24: qpDiv6=4, qpMod6=0, shift=4.
+    // Reference: libavc INV_QUANT = coeff * scale * 16 << qpDiv6 >> 4.
     int16_t dequant[16];
     std::memcpy(dequant, raw, sizeof(raw));
     inverseQuantize4x4(dequant, 24);
 
-    // QP=24: qpDiv6=4, qpMod6=0, shift=4-2=2.
-    // Position (0,0) posClass=0: 2 * 10 * 4 = 80
-    CHECK(dequant[0] == 80);
+    // Position (0,0) posClass=0: 2 * 10 << 4 = 320
+    CHECK(dequant[0] == 320);
+    // Position (3,3) posClass=1(both-odd): 1 * 16 << 4 = 256
+    CHECK(dequant[15] == 256);
 
     // IDCT of full dequantized block, DC prediction = 81
     uint8_t pred[16];
@@ -573,28 +575,252 @@ TEST_CASE("Dequant: MB(9,0) block (12,8) formula comparison")
     uint8_t out[16];
     inverseDct4x4AddPred(dequant, pred, 4U, out, 4U);
 
-    // With << (qpDiv6-2): pixel(0,0) = 77
-    MESSAGE("Formula << (qpDiv6-2): pixel(0,0) = " << static_cast<unsigned>(out[0]));
-    CHECK(out[0] == 77U);
-
-    // Alternative: d = c * v << max(qpDiv6 - 2, 0)
-    int16_t altDequant[16];
-    for (uint32_t i = 0U; i < 16U; ++i)
-    {
-        int32_t posClass = cDequantPosClass[i];
-        int32_t scale = cDequantScale[0][posClass]; // qpMod6=0
-        int32_t val = raw[i] * scale;
-        val <<= 2; // qpDiv6 - 2 = 4 - 2 = 2
-        altDequant[i] = static_cast<int16_t>(val);
-    }
-    uint8_t altOut[16];
-    inverseDct4x4AddPred(altDequant, pred, 4U, altOut, 4U);
-    MESSAGE("Formula << (qpDiv6-2): pixel(0,0) = " << static_cast<unsigned>(altOut[0]));
-
-    // Report both for ongoing investigation
-    MESSAGE("Row 0: current=[" << (unsigned)out[0] << " " << (unsigned)out[1]
+    // With corrected dequant (<<qpDiv6), pixel values should be closer to
+    // the ffmpeg reference (post-deblocking): row0=[81,80,82,78], row3=[78,78,84,172].
+    // Pre-deblocking values may differ slightly at block edges.
+    MESSAGE("Row 0: [" << (unsigned)out[0] << " " << (unsigned)out[1]
             << " " << (unsigned)out[2] << " " << (unsigned)out[3]
-            << "]  alt=[" << (unsigned)altOut[0] << " " << (unsigned)altOut[1]
-            << " " << (unsigned)altOut[2] << " " << (unsigned)altOut[3] << "]"
-            << "  ref=[81 80 82 78]");
+            << "]  ref=[81 80 82 78]");
+    MESSAGE("Row 3: [" << (unsigned)out[12] << " " << (unsigned)out[13]
+            << " " << (unsigned)out[14] << " " << (unsigned)out[15]
+            << "]  ref=[78 78 84 172]");
 }
+
+// ── Dequant: non-DC blocks use << qpDiv6 ─────────────────────────────────
+
+TEST_CASE("Dequant: QP=0 (qpDiv6=0, shift=0)")
+{
+    // Dequant formula: val = raw * scale << qpDiv6.
+    // QP=0: qpDiv6=0 → val = raw * scale << 0 = raw * scale.
+    // Reference: libavc INV_QUANT with qpDiv6=0.
+    int16_t coeffs[16] = {};
+    coeffs[0] = 1;  // class0, scale=10
+    coeffs[5] = 1;  // class1, scale=16
+    coeffs[1] = 1;  // class2, scale=13
+    inverseQuantize4x4(coeffs, 0);
+
+    CHECK(coeffs[0] == static_cast<int16_t>(10));
+    CHECK(coeffs[5] == static_cast<int16_t>(16));
+    CHECK(coeffs[1] == static_cast<int16_t>(13));
+}
+
+TEST_CASE("Dequant: QP=6 (qpDiv6=1, shift=1)")
+{
+    // QP=6: qpDiv6=1 → val = raw * scale << 1.
+    int16_t coeffs[16] = {};
+    coeffs[0] = 1;  coeffs[5] = 1;  coeffs[1] = 1;
+    inverseQuantize4x4(coeffs, 6);
+
+    CHECK(coeffs[0] == static_cast<int16_t>(20));  // 10 << 1
+    CHECK(coeffs[5] == static_cast<int16_t>(32));   // 16 << 1
+    CHECK(coeffs[1] == static_cast<int16_t>(26));   // 13 << 1
+}
+
+TEST_CASE("Dequant: QP=12 (qpDiv6=2, shift=2)")
+{
+    // QP=12: qpDiv6=2 → val = raw * scale << 2.
+    int16_t coeffs[16] = {};
+    coeffs[0] = 1;  coeffs[5] = 1;  coeffs[1] = 1;
+    inverseQuantize4x4(coeffs, 12);
+
+    CHECK(coeffs[0] == static_cast<int16_t>(40));   // 10 << 2
+    CHECK(coeffs[5] == static_cast<int16_t>(64));   // 16 << 2
+    CHECK(coeffs[1] == static_cast<int16_t>(52));   // 13 << 2
+}
+
+TEST_CASE("Dequant: scale doubles every 6 QP steps per §8.5.12.1")
+{
+    // Dequant doubles for each +6 QP because qpDiv6 increases by 1 → shift +1.
+    // QP=24: val = 1 * 10 << 4 = 160; QP=30: val = 1 * 10 << 5 = 320.
+    int16_t c24[16] = {};
+    int16_t c30[16] = {};
+    c24[0] = 1;  c30[0] = 1;
+
+    inverseQuantize4x4(c24, 24);
+    inverseQuantize4x4(c30, 30);
+
+    CHECK(c24[0] == static_cast<int16_t>(160));  // 10 << 4
+    CHECK(c30[0] == static_cast<int16_t>(320));  // 10 << 5
+    CHECK(static_cast<int32_t>(c30[0]) == 2 * static_cast<int32_t>(c24[0]));
+}
+
+// ── IDCT normalization — ITU-T H.264 §8.5.12.2 ──────────────────────────
+
+TEST_CASE("IDCT: all-zero coefficients produce flat prediction output")
+{
+    // §8.5.12.2: with all-zero residuals, output must equal prediction exactly.
+    int16_t coeffs[16] = {};
+    uint8_t pred[16];
+    uint8_t out[16];
+    std::memset(pred, 127, 16);
+    inverseDct4x4AddPred(coeffs, pred, 4U, out, 4U);
+    for (uint32_t i = 0U; i < 16U; ++i)
+        CHECK(out[i] == 127U);
+}
+
+TEST_CASE("IDCT: DC-only block adds constant to all prediction pixels")
+{
+    // §8.5.12.2: a DC-only coefficient at position (0,0) after dequant=64
+    // produces residual = (64 + 32) >> 6 = 1 for every pixel.
+    // The >>6 normalization cancels the 2D IDCT scale factor.
+    int16_t coeffs[16] = {};
+    coeffs[0] = 64;  // DC = 64 dequantized
+    uint8_t pred[16];
+    uint8_t out[16];
+    std::memset(pred, 100, 16);
+    inverseDct4x4AddPred(coeffs, pred, 4U, out, 4U);
+    for (uint32_t i = 0U; i < 16U; ++i)
+        CHECK(out[i] == 101U);  // 100 + 1
+}
+
+TEST_CASE("IDCT: clipping prevents overflow below 0 and above 255 (§8.5.12.2)")
+{
+    // §8.5.12.2: output r = clip1Y(pred + residual).
+    // Large negative residual with pred=0 must clip to 0.
+    int16_t coeffsLow[16] = {};
+    coeffsLow[0] = -8192;  // large negative DC
+    uint8_t predLow[16] = {};
+    uint8_t outLow[16];
+    inverseDct4x4AddPred(coeffsLow, predLow, 4U, outLow, 4U);
+    for (uint32_t i = 0U; i < 16U; ++i)
+        CHECK(outLow[i] == 0U);
+
+    // Large positive residual with pred=255 must clip to 255.
+    int16_t coeffsHigh[16] = {};
+    coeffsHigh[0] = 8192;
+    uint8_t predHigh[16];
+    std::memset(predHigh, 255, 16);
+    uint8_t outHigh[16];
+    inverseDct4x4AddPred(coeffsHigh, predHigh, 4U, outHigh, 4U);
+    for (uint32_t i = 0U; i < 16U; ++i)
+        CHECK(outHigh[i] == 255U);
+}
+
+// ── Hadamard inverse transform — ITU-T H.264 §8.5.12.2 ──────────────────
+
+TEST_CASE("Hadamard 2x2: known input/output per §8.5.12.2")
+{
+    // §8.5.12.2, 2x2 Hadamard for chroma DC:
+    // H = [[1,1],[1,-1]], applied twice (rows then cols).
+    // Input: [a, b, c, d] → after row pass: [a+b, a-b, c+d, c-d]
+    // → after col pass: [a+b+c+d, a-b+c-d, a+b-c-d, a-b-c+d]
+    int16_t dc[4] = { 4, 2, -2, 0 };
+    inverseHadamard2x2(dc);
+    // a=4,b=2,c=-2,d=0:
+    // row pass: a+b=6, a-b=2, c+d=-2, c-d=-2
+    // col pass: 6+(-2)=4, 2+(-2)=0, 6-(-2)=8, 2-(-2)=4
+    CHECK(dc[0] == static_cast<int16_t>(4));
+    CHECK(dc[1] == static_cast<int16_t>(0));
+    CHECK(dc[2] == static_cast<int16_t>(8));
+    CHECK(dc[3] == static_cast<int16_t>(4));
+}
+
+TEST_CASE("Hadamard 2x2: all-same input produces scaled DC in [0] only")
+{
+    // Input [v,v,v,v]: all rows/cols cancel except DC → output [4v, 0, 0, 0]
+    int16_t dc[4] = { 3, 3, 3, 3 };
+    inverseHadamard2x2(dc);
+    CHECK(dc[0] == static_cast<int16_t>(12));
+    CHECK(dc[1] == static_cast<int16_t>(0));
+    CHECK(dc[2] == static_cast<int16_t>(0));
+    CHECK(dc[3] == static_cast<int16_t>(0));
+}
+
+// ── REGRESSION: Chroma DC prediction §8.3.4.1 quadrant neighbors ────────
+
+TEST_CASE("REGRESSION: chroma DC prediction uses per-quadrant neighbors §8.3.4.1")
+{
+    // ITU-T H.264 §8.3.4.1: chroma DC prediction for 4:2:0.
+    // Each 4x4 quadrant uses DIFFERENT neighbor combinations:
+    //   (0,0) top-left:     top[0..3] + left[0..3]
+    //   (1,0) top-right:    top[4..7] only
+    //   (0,1) bottom-left:  left[4..7] only
+    //   (1,1) bottom-right: top[4..7] + left[4..7]
+    //
+    // Bug: code was using both top + left for ALL quadrants, causing
+    // wrong DC prediction values that cascaded through the frame.
+    // The "red trails" artifact at color bar transitions was caused by
+    // this bug mixing neighbor values across quadrant boundaries.
+
+    Frame frame;
+    frame.allocate(32, 16); // 2x1 MBs → 16x8 chroma
+
+    // Set up known neighbor pixels for MB(1,0) chroma U
+    // Left MB chroma column (MB(0,0) right edge): all 100
+    // Top row: left half=200, right half=50
+    for (uint32_t r = 0; r < 8; ++r)
+        frame.uRow(r)[7] = 100U; // left column at x=7 for MB(1,0) chroma starting at x=8
+
+    // Top row above MB(1,0) chroma: not available (mbY=0)
+    // So only left is available. Let's test with mbY=1 instead.
+    // Actually for mbY=0, only left is available. All quadrants use left.
+    // The bug was visible when BOTH top and left are available.
+    // Let's use a 2x2 MB grid.
+    frame.allocate(32, 32); // 2x2 MBs → 16x16 chroma
+
+    // Set up MB(1,1) neighbors (both top and left available)
+    // MB(1,1) chroma starts at pixel (8, 8)
+    // Left column: x=7, rows 8-15
+    for (uint32_t r = 0; r < 8; ++r)
+        frame.uRow(8 + r)[7] = static_cast<uint8_t>(100 + r * 5); // 100,105,110,...,135
+    // Top row: y=7, cols 8-15
+    for (uint32_t c = 0; c < 8; ++c)
+        frame.uRow(7)[8 + c] = static_cast<uint8_t>(200 - c * 10); // 200,190,...,130
+
+    uint8_t pred[64];
+    intraPredChroma8x8(IntraChromaMode::Dc, frame, 1U, 1U, true, pred);
+
+    // Block (0,0): uses top[0..3]={200,190,180,170} + left[0..3]={100,105,110,115}
+    // sum = 200+190+180+170 + 100+105+110+115 = 1170, avg = (1170+4)/8 = 146
+    uint8_t blk00 = pred[0];
+    CHECK(blk00 == 146U);
+
+    // Block (1,0): uses top[4..7]={160,150,140,130} ONLY (not left)
+    // sum = 160+150+140+130 = 580, avg = (580+2)/4 = 145
+    uint8_t blk10 = pred[4]; // col 4 of row 0
+    CHECK(blk10 == 145U);
+
+    // Block (0,1): uses left[4..7]={120,125,130,135} ONLY (not top)
+    // sum = 120+125+130+135 = 510, avg = (510+2)/4 = 128
+    uint8_t blk01 = pred[4 * 8]; // row 4, col 0
+    CHECK(blk01 == 128U);
+
+    // Block (1,1): uses top[4..7] + left[4..7]
+    // sum = 580 + 510 = 1090, avg = (1090+4)/8 = 136
+    uint8_t blk11 = pred[4 * 8 + 4]; // row 4, col 4
+    CHECK(blk11 == 136U);
+
+    // With the old bug (all quadrants use both): block (1,0) would get
+    // avg of top[4..7]+left[0..3] = (580+430)/8 = 126, NOT 145.
+    // This 19-pixel error cascaded through prediction.
+}
+
+// ── REGRESSION: Dequant << qpDiv6 for non-DC blocks ─────────────────────
+
+TEST_CASE("REGRESSION: dequant uses << qpDiv6 (not << (qpDiv6-2)) for 4x4 AC")
+{
+    // Bug: dequant used << (qpDiv6 - 2) which is 4x too small.
+    // The IDCT applies >> 6, so the combined pipeline needs << qpDiv6.
+    // Reference: libavc INV_QUANT = coeff * scale * 16 << qpDiv6 >> 4
+    //          = coeff * scale << qpDiv6.
+    //
+    // This caused a systematic -21 luma offset on all pixels downstream
+    // of the first I_4x4 MB.
+
+    // QP=24: qpDiv6=4. Coefficient 1 at class0 (scale=10).
+    // Correct: 1 * 10 << 4 = 160
+    // Old bug: 1 * 10 << 2 = 40 (4x too small)
+    int16_t coeffs[16] = {};
+    coeffs[0] = 1;
+    inverseQuantize4x4(coeffs, 24);
+    CHECK(coeffs[0] == static_cast<int16_t>(160));
+
+    // QP=0: qpDiv6=0, shift=0. No amplification.
+    int16_t c0[16] = {};
+    c0[0] = 1;
+    inverseQuantize4x4(c0, 0);
+    CHECK(c0[0] == static_cast<int16_t>(10)); // 1 * 10 << 0
+}
+
+// Chroma DC zigzag regression test is in test_cavlc_regression.cpp
+// (requires cavlc.hpp includes not available here).

@@ -11,6 +11,7 @@
  */
 #include "doctest.h"
 #include "../components/sub0h264/src/cavlc.hpp"
+#include "../components/sub0h264/src/transform.hpp"
 
 using namespace sub0h264;
 
@@ -284,86 +285,44 @@ TEST_CASE("suffixLength adaptation: suffixLen=0->1 unconditional, no threshold f
         CHECK(block.coeffs[i] == 0);
 }
 
-TEST_CASE("suffixLength adaptation: suffixLen=1->2 when |level|>threshold[1]=3")
+TEST_CASE("suffixLength adaptation: 0->1->2 when first |level|>3 per §9.2.2")
 {
-    // After the first non-trailing level sets suffixLen to 1 (0→1), the
-    // second level uses suffixLen=1.  If |level|>3 (threshold[1]=3), then
-    // suffixLen increments to 2.
+    // ITU-T H.264 §9.2.2: suffixLength adaptation is TWO INDEPENDENT steps:
+    //   1. if (suffixLen == 0) suffixLen = 1
+    //   2. if (|level| > threshold[suffixLen]) suffixLen++
+    //
+    // For the FIRST non-trailing level with |adjusted level|=4:
+    //   Step 1: suffixLen 0→1
+    //   Step 2: 4 > threshold[1]=3 → suffixLen 1→2
+    //
+    // Reference: libavc ih264d_rest_of_residual_cav_chroma_dc_block line 1105:
+    //   u4_suffix_len = (u2_abs_value > 3) ? 2 : 1;
     //
     // Setup: TC=2, TO=0, nC=0
-    //   coeff_token: nC=0 TC=2 TO=0 → code=7, size=8 → binary '00000111'
-    //   level[0]: suffixLen=0 (initial: TC=2 TO=0 → no initial bump, TC<=10)
-    //     ±1 adjustment applies (i==TO=0, TO<3)
-    //     We want |adjusted level|>3 to trigger the threshold later.
-    //     Use prefix=3, suffixLen=0 → levelCode=3 → absLevel=2 → level=+2
-    //     Adjustment: +2+1=+3  (still not >3, threshold won't fire on this one)
-    //     Hmm — need |level| after adjustment > 3.
-    //     Use prefix=4, suffixLen=0 → levelCode=4 → absLevel=3 → level=+3
-    //     Adjustment: +3+1=+4.  Now |level|=4 > threshold[0] doesn't matter
-    //     because suffixLen was 0 → branch fires (set to 1), not threshold.
+    //   coeff_token: nC=0 TC=2 TO=0 → code=7, size=8 → '00000111'
+    //   level[0]: prefix=4, suffixLen=0→no suffix. levelCode=4, absLevel=3.
+    //     ±1 adjustment: +3+1=+4. suffixLen: 0→1→2 (|4| > threshold[1]=3).
+    //   level[1]: suffixLen=2. prefix=1, suffix=2 bits.
+    //     Bits: '01' (prefix=1) + '11' (suffix=3). levelCode=(1<<2)+3=7.
+    //     absLevel=(7+2)/2=4. sign=1→-4.
+    //     suffixLen: 4 > threshold[2]=6? No → stays at 2.
+    //   total_zeros TC=2 tz=0: code=7 size=3 → '111'
     //
-    //   After level[0]: suffixLen=1 (set by 0→1 branch).
-    //   level[1]: suffixLen=1, threshold[1]=3.
-    //     Decode a level with |level|>3 so the threshold branch fires.
-    //     Use prefix=3, suffixLen=1, suffix=1:
-    //       levelCode=(3<<1)+1=7, absLevel=(7+2)>>1=4, sign=1→-1, level=-4
-    //       |level|=4 > 3=threshold[1] → suffixLen increments to 2.
-    //
-    // We verify: TC=2, both coefficients have correct values, and the block
-    // parses without error (suffixLen adaptation proceeding to 2 would cause
-    // incorrect decode of further levels — but with only 2 levels here we
-    // just check the coefficient values are as expected).
-    //
-    // Bitstream construction:
-    //   coeff_token TC=2 TO=0: '00000111' (8 bits)
-    //   level[0] prefix=4: 4 zeros + '1' → '00001' (5 bits), suffixLen=0→no suffix
-    //     levelCode=4, absLevel=3, sign=even→+3, adjustment→+4
-    //   level[1] prefix=3, suffix=1 (1 bit): '0001' + '1' (5 bits), suffixLen=1
-    //     levelCode=(3<<1)+1=7, absLevel=4, sign=-1→level=-4
-    //   total_zeros TC=2, tz=0: code=7, size=3 → '111'
-    //   (run_before: both coeffs have no zeros before them since tz=0)
-    //     zerosLeft=0: no run_before bits for any coeff.
-    //
-    // Placement (zerosLeft=0, TC=2):
-    //   coeffIdx = 2+0-1+0 = 1
-    //   i=0: run=0 (zerosLeft=0, last check: i < TC-1 = true, zerosLeft=0 → run=0)
-    //     Wait: zerosLeft=0 → the decodeRunBefore returns 0 immediately.
-    //     Actually: the condition is `if (zerosLeft > 0 && i < tc-1)` → false
-    //     and `else if (i == tc-1)` → only for last coeff. i=0 is not last.
-    //     So run=0, place levels[0]=+4 at zigzag[1]=1. coeffIdx=1-(0+1)=0.
-    //   i=1 (last): run=zerosLeft=0. Place levels[1]=-4 at zigzag[0]=0.
-    //
-    // Expected: coeffs[0]=-4, coeffs[1]=+4
-    //
-    // Bitstream bits: 00000111 00001 0001 1 111
-    //   = 00000111 000010001 111
-    //   = 00000111 00001000 1111 xxxx
-    //   = 0x07, 0x08, 0xF0
-    //
-    // Verify alignment:
-    //   bits 0-7:  '00000111' = 0x07
-    //   bits 8-12: '00001' (level[0] prefix=4)
-    //   bits 13-16:'0001' (level[1] prefix=3)  — bit13=0,14=0,15=0,16=1
-    //   bit  17:   '1' (level[1] suffix=1)
-    //   bits 18-20:'111' (total_zeros code=7 size=3)
-    //   bits 21-23: padding
-    //
-    //   byte 1 (bits 8-15):  00001 000 = 0x08
-    //   byte 2 (bits 16-23): 1 1 111 xxx = 1111 1xxx = 0xF8? let me redo:
-    //     bit16=1 (stop bit of level[1] prefix)
-    //     bit17=1 (suffix=1)
-    //     bit18=1, bit19=1, bit20=1 (total_zeros '111')
-    //     bits 21-23 = padding
-    //     byte2 = 1 1 1 1 1 xxx = 1111 1000 = 0xF8
-    const uint8_t data[] = { 0x07U, 0x08U, 0xF8U };
+    // Bitstream: '00000111' + '00001' + '0111' + '111' = 20 bits
+    //   byte0: 00000111 = 0x07
+    //   byte1: 00001011 = 0x0B
+    //   byte2: 1111xxxx = 0xF0
+    const uint8_t data[] = { 0x07U, 0x0BU, 0xF0U };
     BitReader br(data, sizeof(data));
     ResidualBlock4x4 block;
     REQUIRE(decodeResidualBlock4x4(br, 0, cMaxCoeff4x4, 0U, block) == Result::Ok);
     CHECK(block.totalCoeff == 2U);
+    // levels[0]=+4 at zigzag[1]=raster1, levels[1]=-4 at zigzag[0]=raster0
     CHECK(block.coeffs[0] == static_cast<int16_t>(-4));
     CHECK(block.coeffs[1] == static_cast<int16_t>(4));
     for (uint32_t i = 2U; i < 16U; ++i)
         CHECK(block.coeffs[i] == 0);
+    CHECK(br.bitOffset() == 20U);
 }
 
 // ── Test 6: full residual block decode with known placement ─────────────────
@@ -574,12 +533,12 @@ TEST_CASE("decodeResidualBlock4x4: chroma DC maxCoeff=4 uses chroma total_zeros 
     ResidualBlock4x4 block;
     REQUIRE(decodeResidualBlock4x4(br, -1, 4U, 0U, block) == Result::Ok);
     CHECK(block.totalCoeff == 2U);
-    // Scan pos 2 (zigzag[2]=raster 4): trailing one sign='0' → +1
-    CHECK(block.coeffs[4] == static_cast<int16_t>(1));
-    // Scan pos 1 (zigzag[1]=raster 1): trailing one sign='0' → +1, 1 zero at pos 0
+    // Chroma DC uses identity scan (no zigzag) — ITU-T H.264 §8.5.6.
+    // Scan pos 2 → raster 2 (not zigzag[2]=4): trailing one sign='0' → +1
+    CHECK(block.coeffs[2] == static_cast<int16_t>(1));
+    // Scan pos 1 → raster 1: trailing one sign='0' → +1, 1 zero at pos 0
     CHECK(block.coeffs[1] == static_cast<int16_t>(1));
     CHECK(block.coeffs[0] == static_cast<int16_t>(0));
-    CHECK(block.coeffs[2] == static_cast<int16_t>(0));
     CHECK(block.coeffs[3] == static_cast<int16_t>(0));
     CHECK(br.bitOffset() == 8U);
 }
@@ -627,12 +586,133 @@ TEST_CASE("decodeResidualBlock4x4: chroma DC TC=1 totalZeros=2 from chroma table
     ResidualBlock4x4 block;
     REQUIRE(decodeResidualBlock4x4(br, -1, 4U, 0U, block) == Result::Ok);
     CHECK(block.totalCoeff == 1U);
-    // Scan pos 2 (zigzag[2]=raster 4), zeros at scan pos 1 and 0
-    CHECK(block.coeffs[4] == static_cast<int16_t>(1));
+    // Chroma DC identity scan: pos 2 → raster 2 (not zigzag[2]=4)
+    CHECK(block.coeffs[2] == static_cast<int16_t>(1));
     for (uint32_t i = 0U; i < 16U; ++i)
     {
-        if (i == 4U) continue;
+        if (i == 2U) continue;
         CHECK(block.coeffs[i] == 0);
     }
     CHECK(br.bitOffset() == 5U);
+}
+
+// ── Chroma AC residual block (maxCoeff=15, startIdx=1) — ITU-T §7.3.5.3 ─
+
+TEST_CASE("decodeResidualBlock4x4: chroma AC maxCoeff=15 startIdx=1 TC=1 TO=1")
+{
+    // ITU-T H.264 §7.3.5.3: chroma AC blocks use maxCoeff=15 and startIdx=1
+    // (the DC coefficient is not decoded here — it comes from the Hadamard DC block).
+    // The coeff_token VLC table selection uses nC (context from neighbors).
+    //
+    // Block: TC=1, TO=1, nC=0.
+    //   coeff_token: nC<2, TC=1, TO=1 → code=1, size=2 → bits '01'
+    //   trailing sign: '0' → +1
+    //   total_zeros (TC=1 < maxCoeff=15): uses Table 9-7 (luma/4x4 table).
+    //     tz=0 for TC=1: size=1, code=1 → bit '1'
+    //   (last coefficient: no run_before consumed)
+    //
+    // Placement: coeffIdx = 1+0-1+1 = 1 (startIdx=1).
+    //   i=0 (last): run=0, place at zigzag[1]=1 → coeffs[1]=+1
+    //
+    // Bitstream: '01' + '0' + '1' = 4 bits
+    //   bits: 0, 1, 0, 1, xxxx = 0101 xxxx = 0x50
+    const uint8_t data[] = { 0x50U };
+    BitReader br(data, sizeof(data));
+    ResidualBlock4x4 block;
+    // maxCoeff=15 (chroma AC), startIdx=1 (skip DC position)
+    REQUIRE(decodeResidualBlock4x4(br, 0, 15U, 1U, block) == Result::Ok);
+    CHECK(block.totalCoeff == 1U);
+    // Scan pos 1 (zigzag[1]=raster 1): coefficient = +1
+    CHECK(block.coeffs[1] == static_cast<int16_t>(1));
+    // DC position (raster 0, zigzag[0]) must be zero — startIdx=1 skips it
+    CHECK(block.coeffs[0] == static_cast<int16_t>(0));
+    CHECK(br.bitOffset() == 4U);
+}
+
+TEST_CASE("decodeResidualBlock4x4: chroma AC TC=0 produces all-zero block")
+{
+    // ITU-T H.264 §7.3.5.3: when TC=0 for a chroma AC block, no coefficients
+    // are coded — the block is all zero (DC may still be non-zero from DC block).
+    // coeff_token: nC<2, TC=0, TO=0 → code=1, size=1 → bit '1'
+    const uint8_t data[] = { 0x80U };
+    BitReader br(data, sizeof(data));
+    ResidualBlock4x4 block;
+    // Populate with sentinel to ensure zeroing
+    for (uint32_t i = 0U; i < 16U; ++i)
+        block.coeffs[i] = static_cast<int16_t>(99);
+    REQUIRE(decodeResidualBlock4x4(br, 0, 15U, 1U, block) == Result::Ok);
+    CHECK(block.totalCoeff == 0U);
+    // All raster positions (including DC at raster 0) must be zeroed
+    for (uint32_t i = 0U; i < 16U; ++i)
+        CHECK(block.coeffs[i] == static_cast<int16_t>(0));
+}
+
+// ── Dequant DC path — ITU-T H.264 §8.5.12.1 ────────────────────────────
+
+TEST_CASE("Dequant isDc=true: full left-shift without qpDiv6-2 reduction")
+{
+    // ITU-T H.264 §8.5.12.1: for Hadamard DC blocks (isDc=true), the dequant
+    // formula uses <<qpDiv6 (not <<(qpDiv6-2)), because the Hadamard transform
+    // has its own normalization that doesn't include the IDCT factor of 4.
+    //
+    // QP=12: qpDiv6=2, qpMod6=0, scale=10.
+    // isDc=true:  val = 1 * 10 << 2 = 40
+    // isDc=false: val = 1 * 10 << 0 = 10  (<<(qpDiv6-2) = <<0)
+    int16_t dcCoeffs[16] = {};
+    int16_t acCoeffs[16] = {};
+    dcCoeffs[0] = 1;  // class0
+    acCoeffs[0] = 1;  // class0
+
+    inverseQuantize4x4(dcCoeffs, 12, /*isDc=*/true);
+    inverseQuantize4x4(acCoeffs, 12, /*isDc=*/false);
+
+    // DC path: 1 * 10 << 2 = 40 (isDc uses << qpDiv6 for Hadamard normalization)
+    CHECK(dcCoeffs[0] == static_cast<int16_t>(40));
+    // AC path: 1 * 10 << 2 = 40 (non-DC also uses << qpDiv6 now)
+    CHECK(acCoeffs[0] == static_cast<int16_t>(40));
+    // DC and AC use the same shift (both << qpDiv6)
+    CHECK(dcCoeffs[0] == acCoeffs[0]);
+}
+
+TEST_CASE("Dequant isDc=true: QP=0 left-shift (no right-shift path for DC)")
+{
+    // ITU-T H.264 §8.5.12.1: isDc=true always left-shifts by qpDiv6,
+    // even when qpDiv6=0. The right-shift path only applies for isDc=false.
+    // QP=0: qpDiv6=0, qpMod6=0, scale=10.
+    // isDc=true: val = 1 * 10 << 0 = 10
+    int16_t coeffs[16] = {};
+    coeffs[0] = 1;  // class0
+    coeffs[5] = 1;  // class1 (both-odd), scale=16
+    inverseQuantize4x4(coeffs, 0, /*isDc=*/true);
+
+    CHECK(coeffs[0] == static_cast<int16_t>(10));
+    CHECK(coeffs[5] == static_cast<int16_t>(16));
+}
+
+// ── Hadamard 4x4 inverse — ITU-T H.264 §8.5.12.2 ────────────────────────
+
+TEST_CASE("Hadamard 4x4: all-same input produces 16× DC in [0] only")
+{
+    // §8.5.12.2: for I_16x16, the 4x4 Hadamard inverse transform applies to
+    // the 16 DC coefficients. If all DCs are equal to v, output[0]=16v, rest 0.
+    int16_t dc[16] = {};
+    for (uint32_t i = 0U; i < 16U; ++i)
+        dc[i] = 1;
+    inverseHadamard4x4(dc);
+    // Sum of all inputs is 16; only dc[0] should be non-zero
+    CHECK(dc[0] == static_cast<int16_t>(16));
+    for (uint32_t i = 1U; i < 16U; ++i)
+        CHECK(dc[i] == static_cast<int16_t>(0));
+}
+
+TEST_CASE("Hadamard 4x4: single non-zero input propagates to all outputs")
+{
+    // §8.5.12.2: Hadamard transform is its own inverse (up to scaling).
+    // A single DC = N at position [0] distributes N to all 16 outputs.
+    int16_t dc[16] = {};
+    dc[0] = 4;
+    inverseHadamard4x4(dc);
+    // Each output = 4 (DC distributes equally to all positions)
+    for (uint32_t i = 0U; i < 16U; ++i)
+        CHECK(dc[i] == static_cast<int16_t>(4));
 }

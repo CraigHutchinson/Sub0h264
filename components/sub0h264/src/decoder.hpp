@@ -132,8 +132,12 @@ public:
     /** @return Number of frames decoded so far. */
     uint32_t frameCount() const noexcept { return frameCount_; }
 
-    /** Set trace filter for debugging. Only effective with SUB0H264_TRACE=1 build. */
+    /** Set trace filter for debugging. Printf requires SUB0H264_TRACE=1 build.
+     *  Callback tracing is always available. */
     void setTrace(const DecodeTrace& t) noexcept { trace_ = t; }
+
+    /** Access trace for setting callbacks from tests. */
+    DecodeTrace& trace() noexcept { return trace_; }
 
 private:
     DecodeTrace trace_;
@@ -333,7 +337,7 @@ private:
         nnzCb_.resize(totalMbs * 4U, 0U);
         nnzCr_.resize(totalMbs * 4U, 0U);
         mbQps_.resize(totalMbs, 0);
-        mbMotion_.resize(totalMbs);
+        mbMotion_.resize(totalMbs * 16U); // 16 MVs per MB (per-4x4-block)
         mbIntra4x4Modes_.resize(totalMbs * 16U, 2U); // Default DC(2)
 
         // Clear context for new frame
@@ -413,6 +417,7 @@ private:
             if (!refFrame)
                 return DecodeStatus::Error;
 
+
             // QPY accumulates across MBs — ITU-T H.264 §7.4.5.
             int32_t mbQp = sliceQp;
 
@@ -482,7 +487,6 @@ private:
                         --mbSkipRun;
                         if (mbSkipRun == 0U)
                             needSkipRun = true;
-                        // Skip MBs inherit QP — no mb_qp_delta per §7.4.5.
                     }
                     else
                     {
@@ -499,7 +503,8 @@ private:
                         else
                         {
                             decodePInterMb(br, *sps, *pps, mbQp,
-                                           mbTypeRaw, *decodeTarget, *refFrame, mbX, mbY);
+                                           mbTypeRaw, *decodeTarget, *refFrame, mbX, mbY,
+                                           sh.numRefIdxActiveL0_);
                         }
                     }
                     // Store accumulated QP for deblocking pass — §8.7.2.2.
@@ -507,6 +512,7 @@ private:
                 }
             }
         }
+
 
         // Deblocking filter pass (entire frame, after all MBs decoded)
         // Per-MB QP is used; boundary edges use (qpP + qpQ + 1) >> 1 per §8.7.2.2.
@@ -522,7 +528,7 @@ private:
             {
                 for (uint32_t mx = 0U; mx < widthInMbs_; ++mx)
                 {
-                    bool mbIsIntra = (mbMotion_[my * widthInMbs_ + mx].refIdx == -1);
+                    bool mbIsIntra = (mbMotion_[(my * widthInMbs_ + mx) * 16U].refIdx == -1);
                     deblockMb(dbFrame, mx, my,
                               mbIsIntra, alphaOff, betaOff,
                               nnzLuma_.data(), mbMotion_.data(),
@@ -619,6 +625,15 @@ private:
         uint8_t predMode = i16x16PredMode(static_cast<uint8_t>(mbTypeRaw));
         uint8_t cbpLuma  = i16x16CbpLuma(static_cast<uint8_t>(mbTypeRaw));
         uint8_t cbpChroma = i16x16CbpChroma(static_cast<uint8_t>(mbTypeRaw));
+
+        // Zero NNZ for this MB — blocks not coded retain 0 for correct
+        // neighbor context in adjacent MBs' CAVLC decode (§9.2.1).
+        {
+            uint32_t mbIdx = mbY * widthInMbs_ + mbX;
+            std::fill_n(&nnzLuma_[mbIdx * 16U], 16U, static_cast<uint8_t>(0U));
+            std::fill_n(&nnzCb_[mbIdx * 4U], 4U, static_cast<uint8_t>(0U));
+            std::fill_n(&nnzCr_[mbIdx * 4U], 4U, static_cast<uint8_t>(0U));
+        }
 
         // Intra chroma prediction mode
 #if SUB0H264_TRACE
@@ -857,6 +872,7 @@ private:
                 predModes[rasterIdx] = (rem < mpm) ? rem : static_cast<uint8_t>(rem + 1U);
             }
 
+
 #if SUB0H264_TRACE
             if (mbX == 10U && mbY == 0U && i < 4U)
                 std::printf("[DBG]   blk%lu(raster%lu): prevFlag=%lu mpm=%u mode=%u\n",
@@ -900,6 +916,18 @@ private:
             std::printf("] cbp=0x%02x cbpL=%u cbpC=%u qp=%d\n", cbp, cbpLuma, cbpChroma, qp);
         }
 #endif
+
+        // Zero NNZ for this MB — blocks not coded will retain 0.
+        // ITU-T H.264 §9.2.1: nC context depends on neighboring NNZ.
+        // Without this, uncoded blocks in I_4x4 MBs (groups where cbpLuma bit=0)
+        // would use stale NNZ from the previous MB's decode, giving wrong nC
+        // and causing CAVLC coeff_token misparse.
+        {
+            uint32_t mbIdx = mbY * widthInMbs_ + mbX;
+            std::fill_n(&nnzLuma_[mbIdx * 16U], 16U, static_cast<uint8_t>(0U));
+            std::fill_n(&nnzCb_[mbIdx * 4U], 4U, static_cast<uint8_t>(0U));
+            std::fill_n(&nnzCr_[mbIdx * 4U], 4U, static_cast<uint8_t>(0U));
+        }
 
         // Decode and reconstruct each 4x4 luma block
         uint8_t* mbLuma = currentFrame_.yMb(mbX, mbY);
@@ -968,9 +996,6 @@ private:
             if (hasResidual)
             {
                 int32_t nc = getLumaNc(mbX, mbY, rasterIdx);
-#if SUB0H264_TRACE
-                uint32_t blkBitBefore = br.bitOffset();
-#endif
                 ResidualBlock4x4 resBlock;
                 decodeResidualBlock4x4(br, nc, cMaxCoeff4x4, 0U, resBlock);
 
@@ -1081,10 +1106,23 @@ private:
                 dcCr[i] = dcBlockCr.coeffs[i];
             }
 
+            // Trace raw CAVLC-decoded DC coefficients (before Hadamard)
+            if (trace_.shouldTrace(mbX, mbY))
+            {
+                trace_.onChromaDcRaw(mbX, mbY, dcCb, dcCr);
+            }
+
             inverseHadamard2x2(dcCb);
             inverseHadamard2x2(dcCr);
 
-            // Dequantize chroma DC
+            // Dequantize chroma DC — ITU-T H.264 §8.5.12.1.
+            // For 4:2:0 chroma DC (2x2 Hadamard), the combined formula is:
+            //   dcC = (f * LevelScale * 16 << qpDiv6) >> 5 = f * LevelScale << (qpDiv6 - 1)
+            // The factor of 16 comes from the flat scaling matrix (weight_scale=16).
+            // Reference: libavc ih264d_cavlc_parse_chroma_dc:
+            //   scale_u = quant_scale[0] << qp_div6;  (where quant_scale = LevelScale * 16)
+            //   dc = (f * scale_u) >> 5;
+            // Verified: for cqpDiv6=2, LevelScale=10: (f * 10 * 16 << 2) >> 5 = f * 10 << 1.
             int32_t cqpDiv6 = chromaQp / 6;
             int32_t cqpMod6 = chromaQp % 6;
             int32_t cScale = cDequantScale[cqpMod6][0];
@@ -1109,9 +1147,59 @@ private:
                     dcCr[i] = static_cast<int16_t>(val);
                 }
             }
+
+            if (trace_.shouldTrace(mbX, mbY))
+                trace_.onChromaDcDequant(mbX, mbY, dcCb, dcCr);
         }
 
-        // Reconstruct chroma 4x4 blocks
+        // ITU-T H.264 §7.3.5 residual_cavlc: all Cb AC blocks first, then all Cr AC blocks.
+        // The outer loop over iCbCr (0=Cb, 1=Cr) is separate from the reconstruction loop.
+        uint32_t mbIdx = mbY * widthInMbs_ + mbX;
+
+        // Stash per-block AC coefficients so we can separate decode from reconstruct.
+        int16_t cbCoeffsBuf[4][16] = {};
+        int16_t crCoeffsBuf[4][16] = {};
+
+        // DC-only init from Hadamard output
+        for (uint32_t blkIdx = 0U; blkIdx < 4U; ++blkIdx)
+        {
+            cbCoeffsBuf[blkIdx][0] = dcCb[blkIdx];
+            crCoeffsBuf[blkIdx][0] = dcCr[blkIdx];
+        }
+
+        // Decode all Cb AC blocks (iCbCr=0), then all Cr AC blocks (iCbCr=1).
+        // Reference: ITU-T H.264 §7.3.5 residual_cavlc() syntax table.
+        if (cbpChroma >= 2U)
+        {
+            for (uint32_t blkIdx = 0U; blkIdx < 4U; ++blkIdx)
+            {
+                int32_t ncCb = getChromaNc(mbX, mbY, blkIdx, true);
+                ResidualBlock4x4 acBlock;
+                decodeResidualBlock4x4(br, ncCb, 15U, 1U, acBlock);
+                for (uint32_t i = 1U; i < 16U; ++i)
+                    cbCoeffsBuf[blkIdx][i] = acBlock.coeffs[i];
+                nnzCb_[mbIdx * 4U + blkIdx] = acBlock.totalCoeff;
+                // Save DC (already dequanted by Hadamard path), dequant AC, restore DC.
+                // ITU-T H.264 §8.5.12.1: DC was scaled in the Hadamard dequant above.
+                int16_t savedDcCb = cbCoeffsBuf[blkIdx][0];
+                inverseQuantize4x4(cbCoeffsBuf[blkIdx], chromaQp);
+                cbCoeffsBuf[blkIdx][0] = savedDcCb;
+            }
+            for (uint32_t blkIdx = 0U; blkIdx < 4U; ++blkIdx)
+            {
+                int32_t ncCr = getChromaNc(mbX, mbY, blkIdx, false);
+                ResidualBlock4x4 acBlock;
+                decodeResidualBlock4x4(br, ncCr, 15U, 1U, acBlock);
+                for (uint32_t i = 1U; i < 16U; ++i)
+                    crCoeffsBuf[blkIdx][i] = acBlock.coeffs[i];
+                nnzCr_[mbIdx * 4U + blkIdx] = acBlock.totalCoeff;
+                int16_t savedDcCr = crCoeffsBuf[blkIdx][0];
+                inverseQuantize4x4(crCoeffsBuf[blkIdx], chromaQp);
+                crCoeffsBuf[blkIdx][0] = savedDcCr;
+            }
+        }
+
+        // Reconstruct chroma 4x4 blocks using buffered coefficients.
         uint8_t* mbU = currentFrame_.uMb(mbX, mbY);
         uint8_t* mbV = currentFrame_.vMb(mbX, mbY);
         uint32_t uvStride = currentFrame_.uvStride();
@@ -1121,58 +1209,84 @@ private:
             uint32_t blkX = (blkIdx & 1U) * 4U;
             uint32_t blkY = (blkIdx >> 1U) * 4U;
 
-            uint32_t mbIdx = mbY * widthInMbs_ + mbX;
-
-            // Cb block
-            int16_t cbCoeffs[16] = {};
-            cbCoeffs[0] = dcCb[blkIdx];
-
-            if (cbpChroma >= 2U)
-            {
-                int32_t ncCb = getChromaNc(mbX, mbY, blkIdx, true);
-                ResidualBlock4x4 acBlock;
-                decodeResidualBlock4x4(br, ncCb, 15U, 1U, acBlock);
-                for (uint32_t i = 1U; i < 16U; ++i)
-                    cbCoeffs[i] = acBlock.coeffs[i];
-                nnzCb_[mbIdx * 4U + blkIdx] = acBlock.totalCoeff;
-                inverseQuantize4x4(cbCoeffs, chromaQp);
-            }
-
             uint8_t* predCbPtr = predU + blkY * 8U + blkX;
-            uint8_t* outCbPtr = mbU + blkY * uvStride + blkX;
-            inverseDct4x4AddPred(cbCoeffs, predCbPtr, 8U, outCbPtr, uvStride);
-
-            // Cr block
-            int16_t crCoeffs[16] = {};
-            crCoeffs[0] = dcCr[blkIdx];
-
-            if (cbpChroma >= 2U)
-            {
-                int32_t ncCr = getChromaNc(mbX, mbY, blkIdx, false);
-                ResidualBlock4x4 acBlock;
-                decodeResidualBlock4x4(br, ncCr, 15U, 1U, acBlock);
-                for (uint32_t i = 1U; i < 16U; ++i)
-                    crCoeffs[i] = acBlock.coeffs[i];
-                nnzCr_[mbIdx * 4U + blkIdx] = acBlock.totalCoeff;
-                inverseQuantize4x4(crCoeffs, chromaQp);
-            }
+            uint8_t* outCbPtr  = mbU + blkY * uvStride + blkX;
+            inverseDct4x4AddPred(cbCoeffsBuf[blkIdx], predCbPtr, 8U, outCbPtr, uvStride);
 
             uint8_t* predCrPtr = predV + blkY * 8U + blkX;
-            uint8_t* outCrPtr = mbV + blkY * uvStride + blkX;
-            inverseDct4x4AddPred(crCoeffs, predCrPtr, 8U, outCrPtr, uvStride);
+            uint8_t* outCrPtr  = mbV + blkY * uvStride + blkX;
+            inverseDct4x4AddPred(crCoeffsBuf[blkIdx], predCrPtr, 8U, outCrPtr, uvStride);
         }
     }
 
     // ── P-frame decode methods ──────────────────────────────────────────
 
-    /** Get MV neighbor info for a macroblock. */
+    /** Fill all 16 4x4 blocks of an MB with the same MV. */
+    void setMbMotion(uint32_t mbIdx, MotionVector mv, int8_t refIdx) noexcept
+    {
+        MbMotionInfo info = { mv, refIdx, true };
+        for (uint32_t i = 0U; i < 16U; ++i)
+            mbMotion_[mbIdx * 16U + i] = info;
+    }
+
+    /** Fill a partition's 4x4 blocks with MV.
+     *  For 16x8: part 0 = rows 0-1 (8 blocks), part 1 = rows 2-3 (8 blocks).
+     *  For 8x16: part 0 = cols 0-1 (8 blocks), part 1 = cols 2-3 (8 blocks).
+     */
+    void setPartitionMotion(uint32_t mbIdx, uint32_t mbType, uint32_t partIdx,
+                            MotionVector mv, int8_t refIdx) noexcept
+    {
+        MbMotionInfo info = { mv, refIdx, true };
+        if (mbType == 1U) // 16x8
+        {
+            uint32_t startRow = partIdx * 2U;
+            for (uint32_t r = startRow; r < startRow + 2U; ++r)
+                for (uint32_t c = 0U; c < 4U; ++c)
+                    mbMotion_[mbIdx * 16U + r * 4U + c] = info;
+        }
+        else if (mbType == 2U) // 8x16
+        {
+            uint32_t startCol = partIdx * 2U;
+            for (uint32_t r = 0U; r < 4U; ++r)
+                for (uint32_t c = startCol; c < startCol + 2U; ++c)
+                    mbMotion_[mbIdx * 16U + r * 4U + c] = info;
+        }
+        else // fallback: fill all
+        {
+            setMbMotion(mbIdx, mv, refIdx);
+        }
+    }
+
+    /** Get MV at a specific 4x4 block position (absolute pixel coords / 4).
+     *  @param blk4x blk4y  Block position in 4x4 units (0 to width/4-1, etc.)
+     */
+    MbMotionInfo getMotionAt4x4(int32_t blk4x, int32_t blk4y) const noexcept
+    {
+        int32_t maxX = static_cast<int32_t>(widthInMbs_) * 4 - 1;
+        int32_t maxY = static_cast<int32_t>(heightInMbs_) * 4 - 1;
+        if (blk4x < 0 || blk4y < 0 || blk4x > maxX || blk4y > maxY)
+            return {};
+        uint32_t mbIdx = (blk4y / 4) * widthInMbs_ + (blk4x / 4);
+        uint32_t blkIdx = (blk4y % 4) * 4 + (blk4x % 4);
+        return mbMotion_[mbIdx * 16U + blkIdx];
+    }
+
+    /** Get MV neighbor info for a macroblock (legacy — uses bottom-right 4x4). */
     MbMotionInfo getMbMotionNeighbor(uint32_t mbX, uint32_t mbY, int32_t dx, int32_t dy) const noexcept
     {
         int32_t nx = static_cast<int32_t>(mbX) + dx;
         int32_t ny = static_cast<int32_t>(mbY) + dy;
         if (nx < 0 || ny < 0 || nx >= widthInMbs_ || ny >= heightInMbs_)
             return {};
-        return mbMotion_[ny * widthInMbs_ + nx];
+        // For left neighbor: read right column (blk col 3). For top: bottom row (blk row 3).
+        // For topRight: bottom-left block.
+        uint32_t blkRow = (dy == -1) ? 3U : 0U; // top neighbor → bottom row of above MB
+        uint32_t blkCol = (dx == -1) ? 3U : 0U; // left neighbor → right col of left MB
+        if (dx == 1 && dy == -1) { blkRow = 3U; blkCol = 0U; } // topRight → bottom-left
+        if (dx == -1 && dy == -1) { blkRow = 3U; blkCol = 3U; } // topLeft → bottom-right
+        uint32_t mbIdx = ny * widthInMbs_ + nx;
+        uint32_t blkIdx = blkRow * 4U + blkCol;
+        return mbMotion_[mbIdx * 16U + blkIdx];
     }
 
     /** Decode a P_Skip macroblock: inferred MV, no residual. */
@@ -1196,9 +1310,9 @@ private:
             skipMv = computeMvPredictor(left, top, topRight, 0);
         }
 
-        // Store MV for this MB
+        // Store MV for this MB (all 16 blocks same MV for skip)
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
-        mbMotion_[mbIdx] = { skipMv, 0, true };
+        setMbMotion(mbIdx, skipMv, 0);
 
         // Motion compensation: copy 16x16 block from reference
         int32_t refX = static_cast<int32_t>(mbX * cMbSize) + (skipMv.x >> 2);
@@ -1234,53 +1348,304 @@ private:
     void decodePInterMb(BitReader& br, const Sps& sps, const Pps& pps,
                          int32_t& mbQp, uint32_t mbTypeRaw,
                          Frame& target, const Frame& ref,
-                         uint32_t mbX, uint32_t mbY) noexcept
+                         uint32_t mbX, uint32_t mbY,
+                         uint8_t numRefIdxL0Active = 1U) noexcept
     {
-        // For now: only P_L0_16x16 (mbTypeRaw == 0)
-        // mbTypeRaw: 0=16x16, 1=16x8, 2=8x16, 3=8x8, 4=8x8ref0
+        // mbTypeRaw: 0=P_L0_16x16, 1=P_L0_L0_16x8, 2=P_L0_L0_8x16, 3=P_8x8, 4=P_8x8ref0
 
-        // Read ref_idx_l0 (only if num_ref_frames > 1, simplified: skip for 1 ref)
-        // For baseline with single ref, ref_idx is always 0
+        // ITU-T H.264 §7.3.5.1: mb_pred for P-inter MBs.
+        // Partition types: 0=16x16, 1=16x8, 2=8x16, 3=8x8, 4=8x8ref0
+        // Number of partitions: 1 for 16x16, 2 for 16x8 and 8x16.
+        // 8x8 and 8x8ref0 use sub_mb_pred (not yet supported).
+        // ITU-T H.264 §7.3.5.1: mb_pred / sub_mb_pred for P-inter MBs.
+        // 0=P_L0_16x16 (1 partition), 1=P_L0_L0_16x8 (2), 2=P_L0_L0_8x16 (2)
+        // 3=P_8x8 (4 sub-MBs), 4=P_8x8ref0 (4 sub-MBs, ref=0)
+        int16_t mvdX[4] = {}, mvdY[4] = {};
+        uint32_t numParts = 1U;
 
-        // Read MVD
-        int16_t mvdX = static_cast<int16_t>(br.readSev());
-        int16_t mvdY = static_cast<int16_t>(br.readSev());
+        if (mbTypeRaw <= 2U)
+        {
+            // 16x16, 16x8, or 8x16: 1 or 2 partitions
+            numParts = (mbTypeRaw == 0U) ? 1U : 2U;
 
-        // Compute MV predictor
-        MbMotionInfo left    = getMbMotionNeighbor(mbX, mbY, -1, 0);
-        MbMotionInfo top     = getMbMotionNeighbor(mbX, mbY, 0, -1);
-        MbMotionInfo topRight = getMbMotionNeighbor(mbX, mbY, 1, -1);
-        if (!topRight.available)
-            topRight = getMbMotionNeighbor(mbX, mbY, -1, -1);
+            // Read ref_idx for each partition — §7.3.5.1
+            for (uint32_t p = 0U; p < numParts; ++p)
+            {
+                if (numRefIdxL0Active > 1U)
+                {
+                    if (numRefIdxL0Active == 2U)
+                        br.readBit();   // te(v) range=1
+                    else
+                        br.readUev();   // te(v) range>1
+                }
+            }
 
-        MotionVector mvp = computeMvPredictor(left, top, topRight, 0);
-        MotionVector mv = { static_cast<int16_t>(mvp.x + mvdX),
-                            static_cast<int16_t>(mvp.y + mvdY) };
+            // Read MVD for each partition
+            for (uint32_t p = 0U; p < numParts; ++p)
+            {
+                mvdX[p] = static_cast<int16_t>(br.readSev());
+                mvdY[p] = static_cast<int16_t>(br.readSev());
+            }
+        }
+        else
+        {
+            // P_8x8 or P_8x8ref0: sub_mb_pred — §7.3.5.2
+            // Read 4 sub_mb_type values
+            uint32_t subMbType[4];
+            for (uint32_t s = 0U; s < 4U; ++s)
+                subMbType[s] = br.readUev();
 
-        // Store MV
+            // Read ref_idx for each 8x8 partition (not for P_8x8ref0)
+            if (mbTypeRaw == 3U) // P_8x8 (not ref0)
+            {
+                for (uint32_t s = 0U; s < 4U; ++s)
+                {
+                    if (numRefIdxL0Active > 1U)
+                    {
+                        if (numRefIdxL0Active == 2U)
+                            br.readBit();
+                        else
+                            br.readUev();
+                    }
+                }
+            }
+
+            // Read MVD for each sub-partition
+            // sub_mb_type determines how many MVDs per 8x8:
+            //   0=8x8(1), 1=8x4(2), 2=4x8(2), 3=4x4(4)
+            for (uint32_t s = 0U; s < 4U; ++s)
+            {
+                uint32_t numSubParts = 1U;
+                if (subMbType[s] == 1U || subMbType[s] == 2U) numSubParts = 2U;
+                else if (subMbType[s] == 3U) numSubParts = 4U;
+
+                for (uint32_t sp = 0U; sp < numSubParts; ++sp)
+                {
+                    br.readSev(); // mvd_l0_x
+                    br.readSev(); // mvd_l0_y
+                }
+            }
+            // Use MV=(0,0) as fallback — proper sub-MB MC not implemented yet
+        }
+
+        // Compute per-partition MV predictors — ITU-T H.264 §8.4.1.3.
+        // Use per-4x4-block neighbor lookups for partition-aware prediction.
+        int32_t mb4x = static_cast<int32_t>(mbX) * 4;
+        int32_t mb4y = static_cast<int32_t>(mbY) * 4;
+
+        MotionVector mvPart[2];
+        if (numParts == 1U)
+        {
+            // P_L0_16x16: A=left(col-1,row0), B=top(col0,row-1), C=topRight(col4,row-1)
+            MbMotionInfo a = getMotionAt4x4(mb4x - 1, mb4y);
+            MbMotionInfo b = getMotionAt4x4(mb4x, mb4y - 1);
+            MbMotionInfo c = getMotionAt4x4(mb4x + 4, mb4y - 1);
+            if (!c.available)
+                c = getMotionAt4x4(mb4x - 1, mb4y - 1); // top-left fallback
+            MotionVector mvp = computeMvPredictor(a, b, c, 0);
+            mvPart[0] = { static_cast<int16_t>(mvp.x + mvdX[0]),
+                          static_cast<int16_t>(mvp.y + mvdY[0]) };
+        }
+        else if (mbTypeRaw == 1U)
+        {
+            // P_L0_L0_16x8: §8.4.1.3.1
+            // Partition 0 (top 16x8): B=top neighbor directly if same refIdx
+            MbMotionInfo b0 = getMotionAt4x4(mb4x, mb4y - 1);
+            if (b0.available && b0.refIdx == 0)
+            {
+                mvPart[0] = { static_cast<int16_t>(b0.mv.x + mvdX[0]),
+                              static_cast<int16_t>(b0.mv.y + mvdY[0]) };
+            }
+            else
+            {
+                MbMotionInfo a0 = getMotionAt4x4(mb4x - 1, mb4y);
+                MbMotionInfo c0 = getMotionAt4x4(mb4x + 4, mb4y - 1);
+                if (!c0.available) c0 = getMotionAt4x4(mb4x - 1, mb4y - 1);
+                mvPart[0] = { static_cast<int16_t>(computeMvPredictor(a0, b0, c0, 0).x + mvdX[0]),
+                              static_cast<int16_t>(computeMvPredictor(a0, b0, c0, 0).y + mvdY[0]) };
+            }
+
+            // Partition 1 (bottom 16x8): A=left at bottom half directly if same refIdx
+            MbMotionInfo a1 = getMotionAt4x4(mb4x - 1, mb4y + 2); // left at row 2
+            if (a1.available && a1.refIdx == 0)
+            {
+                mvPart[1] = { static_cast<int16_t>(a1.mv.x + mvdX[1]),
+                              static_cast<int16_t>(a1.mv.y + mvdY[1]) };
+            }
+            else
+            {
+                // B for part1 = partition 0's MV (just decoded above)
+                MbMotionInfo b1 = { mvPart[0], 0, true };
+                MbMotionInfo c1 = getMotionAt4x4(mb4x - 1, mb4y - 1); // top-left
+                mvPart[1] = { static_cast<int16_t>(computeMvPredictor(a1, b1, c1, 0).x + mvdX[1]),
+                              static_cast<int16_t>(computeMvPredictor(a1, b1, c1, 0).y + mvdY[1]) };
+            }
+        }
+        else if (mbTypeRaw == 2U)
+        {
+            // P_L0_L0_8x16: §8.4.1.3.1
+            // Partition 0 (left 8x16): A=left neighbor directly if same refIdx
+            MbMotionInfo a0 = getMotionAt4x4(mb4x - 1, mb4y);
+            if (a0.available && a0.refIdx == 0)
+            {
+                mvPart[0] = { static_cast<int16_t>(a0.mv.x + mvdX[0]),
+                              static_cast<int16_t>(a0.mv.y + mvdY[0]) };
+            }
+            else
+            {
+                MbMotionInfo b0 = getMotionAt4x4(mb4x, mb4y - 1);
+                MbMotionInfo c0 = getMotionAt4x4(mb4x + 2, mb4y - 1); // top of right half
+                if (!c0.available) c0 = getMotionAt4x4(mb4x - 1, mb4y - 1);
+                mvPart[0] = { static_cast<int16_t>(computeMvPredictor(a0, b0, c0, 0).x + mvdX[0]),
+                              static_cast<int16_t>(computeMvPredictor(a0, b0, c0, 0).y + mvdY[0]) };
+            }
+
+            // Partition 1 (right 8x16): C=topRight directly if same refIdx
+            MbMotionInfo c1 = getMotionAt4x4(mb4x + 4, mb4y - 1);
+            if (!c1.available)
+                c1 = getMotionAt4x4(mb4x + 1, mb4y - 1); // top of left partition
+            if (c1.available && c1.refIdx == 0)
+            {
+                mvPart[1] = { static_cast<int16_t>(c1.mv.x + mvdX[1]),
+                              static_cast<int16_t>(c1.mv.y + mvdY[1]) };
+            }
+            else
+            {
+                // A for part1 = partition 0 (just decoded)
+                MbMotionInfo a1 = { mvPart[0], 0, true };
+                MbMotionInfo b1 = getMotionAt4x4(mb4x + 2, mb4y - 1);
+                mvPart[1] = { static_cast<int16_t>(computeMvPredictor(a1, b1, c1, 0).x + mvdX[1]),
+                              static_cast<int16_t>(computeMvPredictor(a1, b1, c1, 0).y + mvdY[1]) };
+            }
+        }
+        else
+        {
+            // P_8x8/P_8x8ref0: standard median predictor (simplified)
+            MbMotionInfo a = getMotionAt4x4(mb4x - 1, mb4y);
+            MbMotionInfo b = getMotionAt4x4(mb4x, mb4y - 1);
+            MbMotionInfo c = getMotionAt4x4(mb4x + 4, mb4y - 1);
+            if (!c.available) c = getMotionAt4x4(mb4x - 1, mb4y - 1);
+            MotionVector mvp = computeMvPredictor(a, b, c, 0);
+            mvPart[0] = { static_cast<int16_t>(mvp.x + mvdX[0]),
+                          static_cast<int16_t>(mvp.y + mvdY[0]) };
+        }
+
+        // Store per-4x4-block MVs for accurate neighbor derivation.
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
-        mbMotion_[mbIdx] = { mv, 0, true };
+        if (numParts == 1U)
+        {
+            setMbMotion(mbIdx, mvPart[0], 0);
+        }
+        else
+        {
+            // Fill each partition's 4x4 blocks with its own MV.
+            setPartitionMotion(mbIdx, mbTypeRaw, 0U, mvPart[0], 0);
+            setPartitionMotion(mbIdx, mbTypeRaw, 1U, mvPart[1], 0);
+        }
 
-        // Motion compensation: luma
-        int32_t refX = static_cast<int32_t>(mbX * cMbSize) + (mv.x >> 2);
-        int32_t refY = static_cast<int32_t>(mbY * cMbSize) + (mv.y >> 2);
-        uint32_t dx = static_cast<uint32_t>(mv.x) & 3U;
-        uint32_t dy = static_cast<uint32_t>(mv.y) & 3U;
 
+        // Per-partition motion compensation — ITU-T H.264 §8.4.2
         uint8_t predLuma[256];
-        lumaMotionComp(ref, refX, refY, dx, dy, cMbSize, cMbSize, predLuma, cMbSize);
-
-        // Chroma motion comp
-        int32_t chromaRefX = static_cast<int32_t>(mbX * cChromaBlockSize) + (mv.x >> 3);
-        int32_t chromaRefY = static_cast<int32_t>(mbY * cChromaBlockSize) + (mv.y >> 3);
-        uint32_t cdx = static_cast<uint32_t>(mv.x) & 7U;
-        uint32_t cdy = static_cast<uint32_t>(mv.y) & 7U;
-
         uint8_t predU[64], predV[64];
-        chromaMotionComp(ref, chromaRefX, chromaRefY, cdx, cdy,
-                         cChromaBlockSize, cChromaBlockSize, true, predU, cChromaBlockSize);
-        chromaMotionComp(ref, chromaRefX, chromaRefY, cdx, cdy,
-                         cChromaBlockSize, cChromaBlockSize, false, predV, cChromaBlockSize);
+
+        if (numParts == 1U)
+        {
+            // P_L0_16x16: single 16x16 partition
+            MotionVector& mv = mvPart[0];
+            int32_t refX = static_cast<int32_t>(mbX * cMbSize) + (mv.x >> 2);
+            int32_t refY = static_cast<int32_t>(mbY * cMbSize) + (mv.y >> 2);
+            lumaMotionComp(ref, refX, refY, static_cast<uint32_t>(mv.x) & 3U,
+                           static_cast<uint32_t>(mv.y) & 3U,
+                           cMbSize, cMbSize, predLuma, cMbSize);
+
+            int32_t cRefX = static_cast<int32_t>(mbX * cChromaBlockSize) + (mv.x >> 3);
+            int32_t cRefY = static_cast<int32_t>(mbY * cChromaBlockSize) + (mv.y >> 3);
+            chromaMotionComp(ref, cRefX, cRefY, static_cast<uint32_t>(mv.x) & 7U,
+                             static_cast<uint32_t>(mv.y) & 7U,
+                             cChromaBlockSize, cChromaBlockSize, true, predU, cChromaBlockSize);
+            chromaMotionComp(ref, cRefX, cRefY, static_cast<uint32_t>(mv.x) & 7U,
+                             static_cast<uint32_t>(mv.y) & 7U,
+                             cChromaBlockSize, cChromaBlockSize, false, predV, cChromaBlockSize);
+        }
+        else if (mbTypeRaw == 1U)
+        {
+            // P_L0_L0_16x8: two 16x8 partitions (top half, bottom half)
+            for (uint32_t p = 0U; p < 2U; ++p)
+            {
+                MotionVector& mv = mvPart[p];
+                uint32_t partOffY = p * 8U;
+                int32_t refX = static_cast<int32_t>(mbX * cMbSize) + (mv.x >> 2);
+                int32_t refY = static_cast<int32_t>(mbY * cMbSize + partOffY) + (mv.y >> 2);
+                lumaMotionComp(ref, refX, refY,
+                               static_cast<uint32_t>(mv.x) & 3U,
+                               static_cast<uint32_t>(mv.y) & 3U,
+                               16U, 8U,
+                               predLuma + partOffY * cMbSize, cMbSize);
+
+                uint32_t cPartOffY = p * 4U;
+                int32_t cRefX = static_cast<int32_t>(mbX * cChromaBlockSize) + (mv.x >> 3);
+                int32_t cRefY = static_cast<int32_t>(mbY * cChromaBlockSize + cPartOffY) + (mv.y >> 3);
+                chromaMotionComp(ref, cRefX, cRefY,
+                                 static_cast<uint32_t>(mv.x) & 7U,
+                                 static_cast<uint32_t>(mv.y) & 7U,
+                                 8U, 4U, true,
+                                 predU + cPartOffY * cChromaBlockSize, cChromaBlockSize);
+                chromaMotionComp(ref, cRefX, cRefY,
+                                 static_cast<uint32_t>(mv.x) & 7U,
+                                 static_cast<uint32_t>(mv.y) & 7U,
+                                 8U, 4U, false,
+                                 predV + cPartOffY * cChromaBlockSize, cChromaBlockSize);
+            }
+        }
+        else if (mbTypeRaw == 2U)
+        {
+            // P_L0_L0_8x16: two 8x16 partitions (left half, right half)
+            for (uint32_t p = 0U; p < 2U; ++p)
+            {
+                MotionVector& mv = mvPart[p];
+                uint32_t partOffX = p * 8U;
+                int32_t refX = static_cast<int32_t>(mbX * cMbSize + partOffX) + (mv.x >> 2);
+                int32_t refY = static_cast<int32_t>(mbY * cMbSize) + (mv.y >> 2);
+                lumaMotionComp(ref, refX, refY,
+                               static_cast<uint32_t>(mv.x) & 3U,
+                               static_cast<uint32_t>(mv.y) & 3U,
+                               8U, 16U,
+                               predLuma + partOffX, cMbSize);
+
+                uint32_t cPartOffX = p * 4U;
+                int32_t cRefX = static_cast<int32_t>(mbX * cChromaBlockSize + cPartOffX) + (mv.x >> 3);
+                int32_t cRefY = static_cast<int32_t>(mbY * cChromaBlockSize) + (mv.y >> 3);
+                chromaMotionComp(ref, cRefX, cRefY,
+                                 static_cast<uint32_t>(mv.x) & 7U,
+                                 static_cast<uint32_t>(mv.y) & 7U,
+                                 4U, 8U, true,
+                                 predU + cPartOffX, cChromaBlockSize);
+                chromaMotionComp(ref, cRefX, cRefY,
+                                 static_cast<uint32_t>(mv.x) & 7U,
+                                 static_cast<uint32_t>(mv.y) & 7U,
+                                 4U, 8U, false,
+                                 predV + cPartOffX, cChromaBlockSize);
+            }
+        }
+        else
+        {
+            // P_8x8 / P_8x8ref0: use partition 0 MV for full block (simplified)
+            MotionVector& mv = mvPart[0];
+            int32_t refX = static_cast<int32_t>(mbX * cMbSize) + (mv.x >> 2);
+            int32_t refY = static_cast<int32_t>(mbY * cMbSize) + (mv.y >> 2);
+            lumaMotionComp(ref, refX, refY, static_cast<uint32_t>(mv.x) & 3U,
+                           static_cast<uint32_t>(mv.y) & 3U,
+                           cMbSize, cMbSize, predLuma, cMbSize);
+
+            int32_t cRefX = static_cast<int32_t>(mbX * cChromaBlockSize) + (mv.x >> 3);
+            int32_t cRefY = static_cast<int32_t>(mbY * cChromaBlockSize) + (mv.y >> 3);
+            chromaMotionComp(ref, cRefX, cRefY, static_cast<uint32_t>(mv.x) & 7U,
+                             static_cast<uint32_t>(mv.y) & 7U,
+                             cChromaBlockSize, cChromaBlockSize, true, predU, cChromaBlockSize);
+            chromaMotionComp(ref, cRefX, cRefY, static_cast<uint32_t>(mv.x) & 7U,
+                             static_cast<uint32_t>(mv.y) & 7U,
+                             cChromaBlockSize, cChromaBlockSize, false, predV, cChromaBlockSize);
+        }
 
         // Read CBP
         uint32_t cbpCode = br.readUev();
@@ -1289,7 +1654,6 @@ private:
             cbp = cCbpTable[cbpCode][1]; // Inter CBP mapping
         uint8_t cbpLuma = cbp & 0x0FU;
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
-
         int32_t qp = mbQp;
         if (cbp > 0U)
         {
@@ -1341,6 +1705,7 @@ private:
             inverseHadamard2x2(dcCb);
             inverseHadamard2x2(dcCr);
 
+            // Chroma DC dequant — ITU-T H.264 §8.5.12.1
             int32_t cqpDiv6 = chromaQp / 6;
             int32_t cqpMod6 = chromaQp % 6;
             int32_t cScale = cDequantScale[cqpMod6][0];
@@ -1351,29 +1716,53 @@ private:
             }
         }
 
+        // Stash per-block AC coefficients — decode all Cb first, then Cr (§7.3.5)
+        int16_t cbCoeffsBuf[4][16] = {};
+        int16_t crCoeffsBuf[4][16] = {};
+        for (uint32_t blkIdx = 0U; blkIdx < 4U; ++blkIdx)
+        {
+            cbCoeffsBuf[blkIdx][0] = dcCb[blkIdx];
+            crCoeffsBuf[blkIdx][0] = dcCr[blkIdx];
+        }
+
+        if (cbpChroma >= 2U)
+        {
+            // All Cb AC blocks first
+            for (uint32_t blkIdx = 0U; blkIdx < 4U; ++blkIdx)
+            {
+                int32_t ncCb = getChromaNc(mbX, mbY, blkIdx, true);
+                ResidualBlock4x4 acBlock;
+                decodeResidualBlock4x4(br, ncCb, 15U, 1U, acBlock);
+                for (uint32_t i = 1U; i < 16U; ++i) cbCoeffsBuf[blkIdx][i] = acBlock.coeffs[i];
+                nnzCb_[mbIdx * 4U + blkIdx] = acBlock.totalCoeff;
+                int16_t savedDc = cbCoeffsBuf[blkIdx][0];
+                inverseQuantize4x4(cbCoeffsBuf[blkIdx], chromaQp);
+                cbCoeffsBuf[blkIdx][0] = savedDc;
+            }
+            // Then all Cr AC blocks
+            for (uint32_t blkIdx = 0U; blkIdx < 4U; ++blkIdx)
+            {
+                int32_t ncCr = getChromaNc(mbX, mbY, blkIdx, false);
+                ResidualBlock4x4 acBlock;
+                decodeResidualBlock4x4(br, ncCr, 15U, 1U, acBlock);
+                for (uint32_t i = 1U; i < 16U; ++i) crCoeffsBuf[blkIdx][i] = acBlock.coeffs[i];
+                nnzCr_[mbIdx * 4U + blkIdx] = acBlock.totalCoeff;
+                int16_t savedDc = crCoeffsBuf[blkIdx][0];
+                inverseQuantize4x4(crCoeffsBuf[blkIdx], chromaQp);
+                crCoeffsBuf[blkIdx][0] = savedDc;
+            }
+        }
+
+        // Reconstruct chroma using motion-compensated predictions
         uint32_t uvStride = target.uvStride();
         for (uint32_t blkIdx = 0U; blkIdx < 4U; ++blkIdx)
         {
             uint32_t blkX = (blkIdx & 1U) * 4U;
             uint32_t blkY = (blkIdx >> 1U) * 4U;
-
-            int16_t cbCoeffs[16] = {}, crCoeffs[16] = {};
-            cbCoeffs[0] = dcCb[blkIdx];
-            crCoeffs[0] = dcCr[blkIdx];
-
-            if (cbpChroma >= 2U)
-            {
-                ResidualBlock4x4 acCb, acCr;
-                decodeResidualBlock4x4(br, 0, 15U, 1U, acCb);
-                for (uint32_t i = 1U; i < 16U; ++i) cbCoeffs[i] = acCb.coeffs[i];
-                inverseQuantize4x4(cbCoeffs, chromaQp);
-                decodeResidualBlock4x4(br, 0, 15U, 1U, acCr);
-                for (uint32_t i = 1U; i < 16U; ++i) crCoeffs[i] = acCr.coeffs[i];
-                inverseQuantize4x4(crCoeffs, chromaQp);
-            }
-
-            inverseDct4x4AddPred(cbCoeffs, predU + blkY * 8U + blkX, 8U, target.uMb(mbX, mbY) + blkY * uvStride + blkX, uvStride);
-            inverseDct4x4AddPred(crCoeffs, predV + blkY * 8U + blkX, 8U, target.vMb(mbX, mbY) + blkY * uvStride + blkX, uvStride);
+            inverseDct4x4AddPred(cbCoeffsBuf[blkIdx], predU + blkY * 8U + blkX, 8U,
+                                 target.uMb(mbX, mbY) + blkY * uvStride + blkX, uvStride);
+            inverseDct4x4AddPred(crCoeffsBuf[blkIdx], predV + blkY * 8U + blkX, 8U,
+                                 target.vMb(mbX, mbY) + blkY * uvStride + blkX, uvStride);
         }
         mbQp = qp; // Propagate accumulated QP to next MB
     }
@@ -1385,7 +1774,7 @@ private:
                                 uint32_t mbX, uint32_t mbY) noexcept
     {
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
-        mbMotion_[mbIdx] = { {0, 0}, -1, true };
+        setMbMotion(mbIdx, {0, 0}, -1);
 
         if (mbTypeRaw == 25U) return true;
 
@@ -1406,10 +1795,10 @@ private:
     {
         (void)br; (void)sh;
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
-        mbMotion_[mbIdx] = { {0, 0}, -1, true };
+        setMbMotion(mbIdx, {0, 0}, -1);
 
-        bool leftIsIntra = (mbX == 0U) || (mbMotion_[mbIdx - 1U].refIdx == -1);
-        bool topIsIntra = (mbY == 0U) || (mbMotion_[mbIdx - widthInMbs_].refIdx == -1);
+        bool leftIsIntra = (mbX == 0U) || (mbMotion_[(mbIdx - 1U) * 16U + 15U].refIdx == -1);
+        bool topIsIntra = (mbY == 0U) || (mbMotion_[(mbIdx - widthInMbs_) * 16U + 12U].refIdx == -1);
 
         uint32_t mbTypeRaw = cabacDecodeMbTypeI(cabacEngine_, cabacCtx_.data(),
                                                  leftIsIntra, topIsIntra);
@@ -1447,8 +1836,8 @@ private:
 
         // Chroma pred mode
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
-        bool leftIntra = (mbX == 0U) || (mbMotion_[mbIdx - 1U].refIdx == -1);
-        bool topIntra = (mbY == 0U) || (mbMotion_[mbIdx - widthInMbs_].refIdx == -1);
+        bool leftIntra = (mbX == 0U) || (mbMotion_[(mbIdx - 1U) * 16U + 15U].refIdx == -1);
+        bool topIntra = (mbY == 0U) || (mbMotion_[(mbIdx - widthInMbs_) * 16U + 12U].refIdx == -1);
         uint32_t chromaPredMode = cabacDecodeIntraChromaMode(cabacEngine_, cabacCtx_.data(),
                                                               leftIntra, topIntra);
 
@@ -1522,8 +1911,8 @@ private:
         uint8_t cbpChroma = i16x16CbpChroma(static_cast<uint8_t>(mbTypeRaw));
 
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
-        bool leftIntra = (mbX == 0U) || (mbMotion_[mbIdx - 1U].refIdx == -1);
-        bool topIntra = (mbY == 0U) || (mbMotion_[mbIdx - widthInMbs_].refIdx == -1);
+        bool leftIntra = (mbX == 0U) || (mbMotion_[(mbIdx - 1U) * 16U + 15U].refIdx == -1);
+        bool topIntra = (mbY == 0U) || (mbMotion_[(mbIdx - widthInMbs_) * 16U + 12U].refIdx == -1);
         uint32_t chromaPredMode = cabacDecodeIntraChromaMode(cabacEngine_, cabacCtx_.data(),
                                                               leftIntra, topIntra);
 
@@ -1610,7 +1999,7 @@ private:
                             static_cast<int16_t>(mvp.y + mvdY) };
 
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
-        mbMotion_[mbIdx] = { mv, 0, true };
+        setMbMotion(mbIdx, mv, 0);
 
         // Motion compensation
         int32_t refX = static_cast<int32_t>(mbX * cMbSize) + (mv.x >> 2);

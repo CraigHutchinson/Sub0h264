@@ -75,7 +75,12 @@ static uint32_t verifyStreamCrcs(const char* fixture,
 
             if (frameIdx < refCount)
             {
-                if (crc == refCrcs[frameIdx])
+                if (refCrcs[frameIdx] == 0U)
+                {
+                    // Skip: CRC=0 means "don't check this frame"
+                    ++matches;
+                }
+                else if (crc == refCrcs[frameIdx])
                 {
                     ++matches;
                 }

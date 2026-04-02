@@ -82,15 +82,57 @@ TEST_CASE("CAVLC: coeff_token chroma DC TC=1 TO=1")
     CHECK(br.bitOffset() == 1U);
 }
 
-TEST_CASE("CAVLC: coeff_token with high nC (>=8)")
+TEST_CASE("CAVLC: coeff_token nC>=8 — Table 9-5(e) fixed 6-bit code")
 {
-    // nC>=8: 6-bit fixed code
-    // 000000 = totalCoeff=0, trailingOnes=0
-    const uint8_t data[] = { 0x04 }; // 0000 0100 → code=000001 → TO=1, TC=(0>>2)+1=1
-    BitReader br(data, 1U);
-    CoeffToken ct = decodeCoeffToken(br, 8);
-    CHECK(ct.totalCoeff <= 16U);
-    CHECK(ct.trailingOnes <= 3U);
+    // ITU-T H.264 Table 9-5(e): nC >= 8 uses a 6-bit fixed-length code.
+    // code 000011 (=3) → tc=0, t1=0 (special case)
+    // all other codes: tc = (code >> 2) + 1, t1 = code & 3
+    // Reference: libavc ih264d_cavlc_parse4x4coeff_n8, line 1300-1306.
+
+    // code=000011 (=3) → tc=0, t1=0
+    {
+        const uint8_t data[] = { 0x0C }; // 0000 1100 → 000011 xx
+        BitReader br(data, 1U);
+        CoeffToken ct = decodeCoeffToken(br, 8);
+        CHECK(ct.totalCoeff == 0U);
+        CHECK(ct.trailingOnes == 0U);
+    }
+
+    // code=000100 (=4) → tc = (4>>2)+1 = 2, t1 = 4&3 = 0
+    {
+        const uint8_t data[] = { 0x10 }; // 0001 0000
+        BitReader br(data, 1U);
+        CoeffToken ct = decodeCoeffToken(br, 8);
+        CHECK(ct.totalCoeff == 2U);
+        CHECK(ct.trailingOnes == 0U);
+    }
+
+    // code=101000 (=40) → tc = (40>>2)+1 = 11, t1 = 40&3 = 0
+    {
+        const uint8_t data[] = { 0xA0 }; // 1010 0000
+        BitReader br(data, 1U);
+        CoeffToken ct = decodeCoeffToken(br, 14);
+        CHECK(ct.totalCoeff == 11U);
+        CHECK(ct.trailingOnes == 0U);
+    }
+
+    // code=111111 (=63) → tc = (63>>2)+1 = 16, t1 = 63&3 = 3
+    {
+        const uint8_t data[] = { 0xFC }; // 1111 1100
+        BitReader br(data, 1U);
+        CoeffToken ct = decodeCoeffToken(br, 16);
+        CHECK(ct.totalCoeff == 16U);
+        CHECK(ct.trailingOnes == 3U);
+    }
+
+    // code=000001 (=1) → tc = (1>>2)+1 = 1, t1 = 1&3 = 1
+    {
+        const uint8_t data[] = { 0x04 }; // 0000 0100
+        BitReader br(data, 1U);
+        CoeffToken ct = decodeCoeffToken(br, 8);
+        CHECK(ct.totalCoeff == 1U);
+        CHECK(ct.trailingOnes == 1U);
+    }
 }
 
 TEST_CASE("CAVLC: decodeLevel basic positive")

@@ -132,13 +132,26 @@ inline CoeffToken decodeCoeffToken(BitReader& br, int32_t nC) noexcept
 
     if (nC >= 8)
     {
-        // Table 9-5(e): fixed 6-bit code for nC >= 8
+        // Table 9-5(e): fixed 6-bit code for nC >= 8.
+        // ITU-T H.264 Table 9-5(e): code 000011 → (tc=0, t1=0).
+        // All other codes: tc = (code >> 2) + 1, t1 = code & 3.
+        // Reference: libavc ih264d_cavlc_parse4x4coeff_n8(), line 1305.
         uint32_t code = br.readBits(6U);
         CoeffToken ct;
-        ct.trailingOnes = static_cast<uint8_t>(code & 3U);
-        ct.totalCoeff = static_cast<uint8_t>((code >> 2U));
-        if (ct.trailingOnes > ct.totalCoeff)
-            ct.trailingOnes = ct.totalCoeff;
+        /// Special code: 000011 (=3) maps to tc=0 — ITU-T H.264 Table 9-5(e).
+        static constexpr uint32_t cNc8ZeroCode = 3U;
+        if (code == cNc8ZeroCode)
+        {
+            ct.totalCoeff = 0U;
+            ct.trailingOnes = 0U;
+        }
+        else
+        {
+            ct.totalCoeff = static_cast<uint8_t>((code >> 2U) + 1U);
+            ct.trailingOnes = static_cast<uint8_t>(code & 3U);
+            if (ct.trailingOnes > ct.totalCoeff)
+                ct.trailingOnes = ct.totalCoeff;
+        }
         return ct;
     }
 
@@ -153,11 +166,6 @@ inline CoeffToken decodeCoeffToken(BitReader& br, int32_t nC) noexcept
 
 // ── Level decoding — ITU-T H.264 §9.2.2 ────────────────────────────────
 
-/** Decode one coefficient level value.
- *  @param br         Bitstream reader
- *  @param suffixLen  Current suffix length [0-6], updated after decode
- *  @return Decoded signed level value
- */
 /** Decode one coefficient level value from the bitstream.
  *
  *  Reads level_prefix (leading zeros + 1) and level_suffix, computes
@@ -430,18 +438,18 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
         levels[levelIdx++] = static_cast<int16_t>(level);
 
         /// Update suffixLength — ITU-T H.264 §9.2.2.
-        /// When suffixLength is 0, unconditionally set to 1.
-        /// Otherwise, increment when |level| exceeds threshold.
-        /// NOTE: these are mutually exclusive (else-if, not two separate ifs).
+        /// Step 1: if suffixLength is 0, unconditionally set to 1.
+        /// Step 2: if |level| exceeds threshold for CURRENT suffixLength,
+        ///         increment suffixLength.
+        /// These steps are INDEPENDENT (not mutually exclusive).
+        /// Reference: libavc ih264d_rest_of_residual_cav_chroma_dc_block
+        ///   u4_suffix_len = (u2_abs_value > 3) ? 2 : 1;  (first level)
+        ///   u4_suffix_len += (u2_abs_value > (3 << (u4_suffix_len - 1)));
         uint32_t absVal = static_cast<uint32_t>(std::abs(level));
         if (suffixLen == 0U)
-        {
             suffixLen = 1U;
-        }
-        else if (suffixLen < cMaxSuffixLength && absVal > cLevelSuffixThreshold[suffixLen])
-        {
+        if (suffixLen < cMaxSuffixLength && absVal > cLevelSuffixThreshold[suffixLen])
             ++suffixLen;
-        }
     }
 
     // 4. Decode total_zeros
@@ -451,10 +459,21 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
         /// Chroma DC blocks (maxCoeff=4) use a separate total_zeros table
         /// — ITU-T H.264 Table 9-9 (2x2 block, 3 sub-tables for TC 1-3).
         static constexpr uint32_t cChromaDcMaxCoeff = 4U;
+#if SUB0H264_TRACE
+        uint32_t tzBitBefore = br.bitOffset();
+#endif
         if (maxCoeff == cChromaDcMaxCoeff)
             totalZeros = decodeTotalZerosChromaDC(br, ct.totalCoeff);
         else
             totalZeros = decodeTotalZeros(br, ct.totalCoeff);
+#if SUB0H264_TRACE
+        // Trace total_zeros for all chroma AC blocks (maxCoeff=15) with tc 1..14
+        if (maxCoeff == 15U && ct.totalCoeff >= 1U)
+            std::printf("[CAVLC-TZ] tc=%u maxC=15 totalZeros=%u tzBits=%lu bitOff=%lu\n",
+                ct.totalCoeff, totalZeros,
+                (unsigned long)(br.bitOffset()-tzBitBefore),
+                (unsigned long)br.bitOffset());
+#endif
     }
 
     // 5. Decode run_before and map to scan positions
@@ -474,11 +493,13 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
             run = zerosLeft;
         }
 
-        // Map scan position to raster position via zigzag — ITU-T H.264 §8.5.6.
-        // Scan range: [startIdx .. startIdx + maxCoeff - 1].
+        // Map scan position to raster position — ITU-T H.264 §8.5.6.
+        // For 4x4 blocks (maxCoeff=16 or 15): use zigzag scan table.
+        // For chroma DC 2x2 blocks (maxCoeff=4): identity mapping (no zigzag).
+        // Reference: libavc uses pu1_inv_scan = {0,1,2,3} for chroma DC.
         if (coeffIdx < 16U)
         {
-            uint32_t rasterPos = cZigzag4x4[coeffIdx];
+            uint32_t rasterPos = (maxCoeff <= 4U) ? coeffIdx : cZigzag4x4[coeffIdx];
             block.coeffs[rasterPos] = levels[i];
         }
 

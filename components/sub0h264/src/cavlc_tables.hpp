@@ -15,27 +15,27 @@ namespace sub0h264 {
 
 // ── Coeff token tables — ITU-T H.264 Table 9-5 ─────────────────────────
 //
-// Verified against FFmpeg (libavcodec/h264_cavlc.c) and the JM reference
-// encoder.  Both sources produce identical (len, code) pairs for every
-// (totalCoeff, trailingOnes) combination in all nC ranges.
+// Derived from libavc gau2_ih264d_code_gx (Android Open Source Project,
+// ih264d_tables.c) — cross-validated against ITU-T H.264 Table 9-5 and
+// verified with scripts/gen_vlc_from_libavc.py (0 duplicates in all 3 tables).
 
 /// VLC code values: [nC_range][trailingOnes][totalCoeff]
 /// nC_range: 0 = nC<2, 1 = 2<=nC<4, 2 = 4<=nC<8
 /// totalCoeff index: 0..16 (17 entries, including totalCoeff=0)
 inline constexpr uint16_t cCoeffTokenCode[3][4][17] = {
-    {
+    { // Table 9-5(a): 0 <= nC < 2
         {  1,  5,  7,  7,  7,  7, 15, 11,  8, 15, 11, 15, 11, 15, 11,  7,  4, },
         {  0,  1,  4,  6,  6,  6,  6, 14, 10, 14, 10, 14, 10,  1, 14, 10,  6, },
         {  0,  0,  1,  5,  5,  5,  5,  5, 13,  9, 13,  9, 13,  9, 13,  9,  5, },
         {  0,  0,  0,  3,  3,  4,  4,  4,  4,  4, 12, 12,  8, 12,  8, 12,  8, },
     },
-    {
+    { // Table 9-5(b): 2 <= nC < 4
         {  3, 11,  7,  7,  7,  4,  7, 15, 11, 15, 11,  8, 15, 11,  7,  9,  7, },
         {  0,  2,  7, 10,  6,  6,  6,  6, 14, 10, 14, 10, 14, 10, 11,  8,  6, },
         {  0,  0,  3,  9,  5,  5,  5,  5, 13,  9, 13,  9, 13,  9,  6, 10,  5, },
         {  0,  0,  0,  5,  4,  6,  8,  4,  4,  4, 12,  8, 12, 12,  8,  1,  4, },
     },
-    {
+    { // Table 9-5(c): 4 <= nC < 8
         { 15, 15, 11,  8, 15, 11,  9,  8, 15, 11, 15, 11,  8, 13,  9,  5,  1, },
         {  0, 14, 15, 12, 10,  8, 14, 10, 14, 14, 10, 14, 10,  7, 12,  8,  4, },
         {  0,  0, 13, 14, 11,  9, 13,  9, 13, 10, 13,  9, 13,  9, 11,  7,  3, },

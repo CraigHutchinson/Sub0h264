@@ -388,22 +388,54 @@ inline void intraPredChroma8x8(IntraChromaMode mode,
     {
     case IntraChromaMode::Dc:
     {
-        // 4 quadrants, each with independent DC prediction
+        // ITU-T H.264 §8.3.4.1: chroma DC prediction for 4:2:0.
+        // Each 4x4 quadrant uses DIFFERENT neighbor combinations:
+        //   (0,0) top-left:     top[0..3] + left[0..3] → avg of 8
+        //   (1,0) top-right:    top[4..7] only          → avg of 4
+        //   (0,1) bottom-left:  left[4..7] only         → avg of 4
+        //   (1,1) bottom-right: top[4..7] + left[4..7]  → avg of 8
+        // When top or left is unavailable, adapt accordingly.
+        // Reference: libavc ih264d_process_intra_mb.c, chroma DC prediction.
         for (uint32_t qy = 0U; qy < 2U; ++qy)
         {
             for (uint32_t qx = 0U; qx < 2U; ++qx)
             {
+                // Determine which neighbors this quadrant uses
+                bool useTop  = hasTop  && (qx == 0U || qy == 1U || !hasLeft);
+                bool useLeft = hasLeft && (qy == 0U || qx == 1U || !hasTop);
+
+                // Simplified: always use top for the same-row quadrant,
+                // always use left for the same-column quadrant.
+                // Per §8.3.4.1: block (qx, qy) uses:
+                //   top  if qy==0 (top row) or both available for (1,1)
+                //   left if qx==0 (left col) or both available for (1,1)
+                // Actually the spec rule is simpler:
+                //   block (0,0): both if available
+                //   block (1,0): top only (left is "not the same column")
+                //   block (0,1): left only (top is "not the same row")
+                //   block (1,1): both if available
+
+                useTop  = hasTop  && (qx == qy || qy == 0U);  // (0,0), (1,0), (1,1)
+                useLeft = hasLeft && (qx == qy || qx == 0U);  // (0,0), (0,1), (1,1)
+
+                // Fallback: if neither applies, use whatever is available
+                if (!useTop && !useLeft)
+                {
+                    useTop = hasTop;
+                    useLeft = hasLeft;
+                }
+
                 uint32_t sum = 0U;
                 uint32_t count = 0U;
 
-                if (hasTop)
+                if (useTop)
                 {
                     const uint8_t* topRow = getRow(pixY - 1U);
                     for (uint32_t i = 0U; i < 4U; ++i)
                         sum += topRow[pixX + qx * 4U + i];
                     count += 4U;
                 }
-                if (hasLeft)
+                if (useLeft)
                 {
                     for (uint32_t i = 0U; i < 4U; ++i)
                         sum += getPixel(pixX - 1U, pixY + qy * 4U + i);
