@@ -1908,6 +1908,33 @@ private:
 
         if (mbTypeRaw == 25U) return true; // I_PCM
 
+        // The I-MB decoders read prediction neighbors from and write output to
+        // currentFrame_. For P-slices, the correct pixels are in *decodeTarget.
+        // Sync the neighborhood from target → currentFrame_ before decode,
+        // then copy the result back after decode.
+        if (&target != &currentFrame_)
+        {
+            // Copy neighboring rows from target so intra prediction reads correct pixels.
+
+            // Copy the entire MB row and the row above (for top prediction)
+            // This ensures left, top, and top-left neighbors are correct.
+            uint32_t startRow = (mbY > 0U) ? (mbY - 1U) * cMbSize : 0U;
+            uint32_t endRow = (mbY + 1U) * cMbSize;
+            if (endRow > currentFrame_.height()) endRow = currentFrame_.height();
+            for (uint32_t r = startRow; r < endRow; ++r)
+                std::memcpy(currentFrame_.yRow(r), target.yRow(r),
+                            currentFrame_.width());
+            uint32_t cStartRow = startRow / 2U;
+            uint32_t cEndRow = endRow / 2U;
+            for (uint32_t r = cStartRow; r < cEndRow; ++r)
+            {
+                std::memcpy(currentFrame_.uRow(r), target.uRow(r),
+                            currentFrame_.width() / 2U);
+                std::memcpy(currentFrame_.vRow(r), target.vRow(r),
+                            currentFrame_.width() / 2U);
+            }
+        }
+
         bool ok;
         if (isI16x16(static_cast<uint8_t>(mbTypeRaw)))
             ok = decodeI16x16Mb(br, sps, pps, mbTypeRaw, mbQp, mbX, mbY);
@@ -1915,7 +1942,6 @@ private:
             ok = decodeI4x4Mb(br, sps, pps, mbQp, mbX, mbY);
 
         // Copy decoded intra MB from currentFrame_ → P-frame target.
-        // The I-MB decoders write to currentFrame_; P-slice target is separate.
         if (ok && &target != &currentFrame_)
         {
             uint32_t yStride = target.yStride();
