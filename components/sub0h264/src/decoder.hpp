@@ -515,7 +515,7 @@ private:
                         else
                         {
                             decodePInterMb(br, *sps, *pps, mbQp,
-                                           mbTypeRaw, *decodeTarget, *refFrame, mbX, mbY,
+                                           mbTypeRaw, *decodeTarget, mbX, mbY,
                                            sh.numRefIdxActiveL0_);
                         }
                     }
@@ -1380,8 +1380,7 @@ private:
      */
     void decodePInterMb(BitReader& br, const Sps& sps, const Pps& pps,
                          int32_t& mbQp, uint32_t mbTypeRaw,
-                         Frame& target, const Frame& ref,
-                         uint32_t mbX, uint32_t mbY,
+                         Frame& target, uint32_t mbX, uint32_t mbY,
                          uint8_t numRefIdxL0Active = 1U) noexcept
     {
         (void)sps;
@@ -1396,6 +1395,7 @@ private:
         // 3=P_8x8 (4 sub-MBs), 4=P_8x8ref0 (4 sub-MBs, ref=0)
         int16_t mvdX[4] = {}, mvdY[4] = {};
         int16_t subMvdX[4] = {}, subMvdY[4] = {}; // Per-8x8 MVDs for P_8x8
+        uint8_t refIdxL0[4] = {};  // Per-partition ref_idx (0-based)
         uint32_t numParts = 1U;
 
         if (mbTypeRaw <= 2U)
@@ -1409,9 +1409,9 @@ private:
                 if (numRefIdxL0Active > 1U)
                 {
                     if (numRefIdxL0Active == 2U)
-                        br.readBit();   // te(v) range=1
+                        refIdxL0[p] = static_cast<uint8_t>(br.readBit()); // te(v) range=1
                     else
-                        br.readUev();   // te(v) range>1
+                        refIdxL0[p] = static_cast<uint8_t>(br.readUev()); // te(v) range>1
                 }
             }
 
@@ -1430,7 +1430,8 @@ private:
             for (uint32_t s = 0U; s < 4U; ++s)
                 subMbType[s] = br.readUev();
 
-            // Read ref_idx for each 8x8 partition (not for P_8x8ref0)
+            // Read ref_idx for each 8x8 partition — §7.3.5.2
+            // P_8x8ref0: all ref_idx = 0 (not read from bitstream).
             if (mbTypeRaw == 3U) // P_8x8 (not ref0)
             {
                 for (uint32_t s = 0U; s < 4U; ++s)
@@ -1438,9 +1439,9 @@ private:
                     if (numRefIdxL0Active > 1U)
                     {
                         if (numRefIdxL0Active == 2U)
-                            br.readBit();
+                            refIdxL0[s] = static_cast<uint8_t>(br.readBit());
                         else
-                            br.readUev();
+                            refIdxL0[s] = static_cast<uint8_t>(br.readUev());
                     }
                 }
             }
@@ -1617,12 +1618,19 @@ private:
 
 
         // Per-partition motion compensation — ITU-T H.264 §8.4.2
+        // Reference frame lookup per partition via DPB L0 list.
+        auto getRef = [this](uint8_t idx) -> const Frame& {
+            const Frame* f = dpb_.getReference(idx);
+            return *f; // Caller must ensure reference exists
+        };
+
         uint8_t predLuma[256];
         uint8_t predU[64], predV[64];
 
         if (mbTypeRaw <= 2U && numParts == 1U)
         {
             // P_L0_16x16: single 16x16 partition
+            const Frame& ref = getRef(refIdxL0[0]);
             MotionVector& mv = mvPart[0];
             int32_t refX = static_cast<int32_t>(mbX * cMbSize) + (mv.x >> 2);
             int32_t refY = static_cast<int32_t>(mbY * cMbSize) + (mv.y >> 2);
@@ -1644,6 +1652,7 @@ private:
             // P_L0_L0_16x8: two 16x8 partitions (top half, bottom half)
             for (uint32_t p = 0U; p < 2U; ++p)
             {
+                const Frame& ref = getRef(refIdxL0[p]);
                 MotionVector& mv = mvPart[p];
                 uint32_t partOffY = p * 8U;
                 int32_t refX = static_cast<int32_t>(mbX * cMbSize) + (mv.x >> 2);
@@ -1674,6 +1683,7 @@ private:
             // P_L0_L0_8x16: two 8x16 partitions (left half, right half)
             for (uint32_t p = 0U; p < 2U; ++p)
             {
+                const Frame& ref = getRef(refIdxL0[p]);
                 MotionVector& mv = mvPart[p];
                 uint32_t partOffX = p * 8U;
                 int32_t refX = static_cast<int32_t>(mbX * cMbSize + partOffX) + (mv.x >> 2);
@@ -1710,6 +1720,7 @@ private:
 
             for (uint32_t s = 0U; s < 4U; ++s)
             {
+                const Frame& ref = getRef(refIdxL0[s]);
                 MotionVector& mv = mvSub8x8[s];
                 uint32_t lox = subLumaOffX[s], loy = subLumaOffY[s];
                 int32_t refX = static_cast<int32_t>(mbX * cMbSize + lox) + (mv.x >> 2);

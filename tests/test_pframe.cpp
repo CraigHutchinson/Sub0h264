@@ -178,7 +178,8 @@ TEST_CASE("P-frame REGRESSION: skip_run 7.3.4 MB after skip run is coded")
     MESSAGE("MB(0,2) MV=(" << mi.mv.x << "," << mi.mv.y << ")");
     // The encoder encoded this MB with MV consistent with (16,8) for the
     // scrolling texture pattern. If skip_run bug recurs, MV would be (0,0).
-    CHECK(mi.mv.x != 0 || mi.mv.y != 0);
+    bool hasNonZeroMv = (mi.mv.x != 0 || mi.mv.y != 0);
+    CHECK(hasNonZeroMv);
 }
 
 TEST_CASE("P-frame: frame 1 pixel-exact vs ffmpeg reference")
