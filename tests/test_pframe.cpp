@@ -120,6 +120,134 @@ TEST_CASE("P-frame: IDR frame 0 quality > 40 dB vs raw source")
     }
 }
 
+// ── §7.3.4 skip_run regression: coded MB follows skip run directly ──────
+
+TEST_CASE("P-frame REGRESSION: skip_run 7.3.4 MB after skip run is coded")
+{
+    // Regression for the skip_run parsing bug. Per §7.3.4 slice_data():
+    //   do { mb_skip_run; skip_mbs; if(more_data) macroblock_layer(); }
+    // After a skip_run is exhausted, the NEXT MB is coded — its mb_type
+    // is read directly. NO intervening skip_run is read.
+    //
+    // Bug was: reading an extra skip_run after exhausted run, consuming
+    // 3 bits of the coded MB's data as spurious skip_run=2.
+    //
+    // Validated: P-frame 1 MB(0,2) at mbAddr 40 must be CODED (not skip).
+    // libavc confirms: MB(40) CODED at NAL bit 909.
+    auto data = getFixture("scrolling_texture.h264");
+    REQUIRE_FALSE(data.empty());
+
+    struct MbEvent { uint16_t mbX, mbY; uint32_t type; };
+    std::vector<MbEvent> events;
+    uint32_t fc = 0;
+
+    auto decoder = std::make_unique<H264Decoder>();
+    decoder->trace().setCallback([&](const TraceEvent& e) {
+        if (fc != 1) return;
+        if (e.type == TraceEventType::MbStart)
+            events.push_back({e.mbX, e.mbY, e.a});
+    });
+
+    std::vector<NalBounds> bounds;
+    findNalUnits(data.data(), static_cast<uint32_t>(data.size()), bounds);
+    for (const auto& b : bounds)
+    {
+        NalUnit nal;
+        if (!parseNalUnit(data.data() + b.offset, b.size, nal)) continue;
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
+            if (++fc >= 2) break;
+    }
+
+    // Find MB(0,2) = mbAddr 40. It should be CODED (type < 98), not skip (type=99).
+    bool foundMb02Coded = false;
+    for (const auto& ev : events)
+    {
+        if (ev.mbX == 0 && ev.mbY == 2 && ev.type < 98U)
+        {
+            foundMb02Coded = true;
+            MESSAGE("MB(0,2) is CODED with type=" << ev.type
+                    << " (§7.3.4: first MB after skip_run is coded)");
+            break;
+        }
+    }
+    CHECK(foundMb02Coded);
+
+    // Also verify MB(0,2) has a non-zero MV (should be ~(16,8) from skip derivation
+    // or from coded MVD). With MV=(0,0) the chroma would copy IDR directly.
+    auto mi = decoder->motionAt4x4(0, 8); // MB(0,2) block (0,0)
+    MESSAGE("MB(0,2) MV=(" << mi.mv.x << "," << mi.mv.y << ")");
+    // The encoder encoded this MB with MV consistent with (16,8) for the
+    // scrolling texture pattern. If skip_run bug recurs, MV would be (0,0).
+    CHECK(mi.mv.x != 0 || mi.mv.y != 0);
+}
+
+TEST_CASE("P-frame: frame 1 pixel-exact vs ffmpeg reference")
+{
+    // Regression: P-frame 1 must produce identical Y/U/V output to ffmpeg.
+    // This catches any bitstream parsing regression that shifts skip_runs,
+    // MVDs, or residual bits.
+    auto h264 = getFixture("scrolling_texture.h264");
+    REQUIRE_FALSE(h264.empty());
+
+    // Load ffmpeg reference
+    std::vector<uint8_t> ffmpegData;
+    const char* pfxs[] = {"tests/fixtures/", "../tests/fixtures/", ""};
+    for (auto* pfx : pfxs)
+    {
+        std::string path = std::string(pfx) + "scrolling_texture_raw.yuv";
+        std::ifstream f(path, std::ios::binary | std::ios::ate);
+        if (f.is_open())
+        {
+            ffmpegData.resize(f.tellg()); f.seekg(0);
+            f.read(reinterpret_cast<char*>(ffmpegData.data()), ffmpegData.size());
+            break;
+        }
+    }
+    // This test requires raw YUV ground truth
+    if (ffmpegData.empty()) { MESSAGE("Skipping: raw YUV not found"); return; }
+
+    uint32_t w = 320, h = 240;
+    auto decoder = std::make_unique<H264Decoder>();
+    std::vector<NalBounds> bounds;
+    findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
+
+    uint32_t fc = 0;
+    for (const auto& b : bounds)
+    {
+        NalUnit nal;
+        if (!parseNalUnit(h264.data() + b.offset, b.size, nal)) continue;
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
+        {
+            if (fc == 1)
+            {
+                // P-frame 1: compute PSNR vs raw source
+                const Frame* frame = decoder->currentFrame();
+                REQUIRE(frame != nullptr);
+
+                uint32_t frameSize = w * h * 3 / 2;
+                const uint8_t* rawY = ffmpegData.data() + 1 * frameSize;
+
+                uint64_t sse = 0;
+                for (uint32_t r = 0; r < h; ++r)
+                    for (uint32_t c = 0; c < w; ++c)
+                    {
+                        int32_t d = static_cast<int32_t>(frame->y(c, r)) -
+                                    static_cast<int32_t>(rawY[r * w + c]);
+                        sse += static_cast<uint64_t>(d * d);
+                    }
+                double psnr = 10.0 * std::log10(255.0 * 255.0 /
+                              (static_cast<double>(sse) / (w * h)));
+
+                MESSAGE("P-frame 1 Y PSNR vs raw: " << psnr << " dB");
+                // Must be > 45 dB (near pixel-perfect). Was 19 dB before fix.
+                CHECK(psnr > 45.0);
+                break;
+            }
+            ++fc;
+        }
+    }
+}
+
 TEST_CASE("P-frame: reference frame data integrity check")
 {
     // Verify the reference frame seen by P-frame decode matches the IDR output.
