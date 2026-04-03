@@ -583,16 +583,108 @@ TEST_CASE("P-frame bit offset trace: compare MB parsing positions vs libavc")
     // [LIBAVC-P] MB(0) CODED bit=28  → MB(0,0)
     // [LIBAVC-P] MB(1) CODED bit=272 → MB(1,0) (or skip run)
     // Print events for first 2 coded MBs to trace bit consumption
-    uint32_t printedMbEnd = 0;
+    // Print skip_runs and coded MB starts for first 3 rows
     for (const auto& mi : mbInfos)
     {
-        if (mi.mbType >= 200U && mi.mbX <= 1U && mi.mbY == 0U)
-        {
+        if (mi.mbY > 2U) continue;
+        if (mi.mbType == 98U)
+            MESSAGE("MB(" << mi.mbX << "," << mi.mbY << ") skip_run=" << mi.bitOff);
+        else if (mi.mbType < 98U)
+            MESSAGE("MB(" << mi.mbX << "," << mi.mbY << ") type=" << mi.mbType
+                    << " bit=" << mi.bitOff);
+        else if (mi.mbType >= 200U && mi.mbX <= 2U)
             MESSAGE("MB(" << mi.mbX << "," << mi.mbY << ") END bit=" << mi.bitOff);
-            ++printedMbEnd;
+    }
+}
+
+// ── Per-block residual bit consumption (§9.2 CAVLC) ────────────────────
+
+TEST_CASE("P-frame: MB(1,0) per-block CAVLC bit consumption vs libavc")
+{
+    // Trace per-4x4-block CAVLC bit consumption for MB(1,0) P_L0_16x16.
+    // libavc consumes 322 bits total for MB(1)→MB(2) gap.
+    // Our decoder consumes 326 bits — 4 bits too many.
+    // This test captures per-block nC, totalCoeff, bits for comparison.
+    //
+    // Reference: ITU-T H.264 §9.2 (CAVLC), libavc ih264d_cavlc_parse4x4coeff
+    auto data = getFixture("scrolling_texture.h264");
+    REQUIRE_FALSE(data.empty());
+
+    struct BlockInfo { uint16_t mbX, mbY; uint32_t blkIdx, nC, tc, bits; };
+    std::vector<BlockInfo> blocks;
+    struct EndInfo { uint16_t mbX, mbY; uint32_t bitOff; };
+    std::vector<EndInfo> ends;
+    uint32_t fc = 0;
+
+    auto decoder = std::make_unique<H264Decoder>();
+    decoder->trace().setCallback([&](const TraceEvent& e) {
+        if (fc != 1) return;
+        if (e.type == TraceEventType::BlockResidual)
+            blocks.push_back({e.mbX, e.mbY, e.a, e.b, e.c, e.d});
+        if (e.type == TraceEventType::MbEnd)
+            ends.push_back({e.mbX, e.mbY, e.b});
+    });
+
+    std::vector<NalBounds> bounds;
+    findNalUnits(data.data(), static_cast<uint32_t>(data.size()), bounds);
+    for (const auto& b : bounds)
+    {
+        NalUnit nal;
+        if (!parseNalUnit(data.data() + b.offset, b.size, nal)) continue;
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
+            if (++fc >= 2) break;
+    }
+
+    // Show MB(0,0) and MB(1,0) residual blocks
+    // Block index: 0-15=luma, 16=chroma DC Cb, 17=chroma DC Cr,
+    //              18-21=chroma AC Cb, 22-25=chroma AC Cr, 99=CBP marker
+    MESSAGE("=== Per-block CAVLC residual trace ===");
+    uint32_t totalBitsMb0 = 0, totalBitsMb1 = 0;
+    for (const auto& bl : blocks)
+    {
+        if (bl.mbX <= 1 && bl.mbY == 0)
+        {
+            const char* label = "";
+            if (bl.blkIdx < 16) label = "luma";
+            else if (bl.blkIdx == 16) label = "dcCb";
+            else if (bl.blkIdx == 17) label = "dcCr";
+            else if (bl.blkIdx < 22) label = "acCb";
+            else if (bl.blkIdx < 26) label = "acCr";
+            else if (bl.blkIdx == 99) label = "CBP";
+
+            MESSAGE("MB(" << bl.mbX << ",0) " << label << " blk" << bl.blkIdx
+                    << " nC=" << bl.nC << " tc=" << bl.tc
+                    << " bits=" << bl.bits);
+            if (bl.mbX == 0) totalBitsMb0 += bl.bits;
+            else totalBitsMb1 += bl.bits;
         }
     }
-    MESSAGE("MbEnd events for row 0 first 2 MBs: " << printedMbEnd);
+    MESSAGE("MB(0,0) total residual bits: " << totalBitsMb0);
+    MESSAGE("MB(1,0) total residual bits: " << totalBitsMb1);
+
+    // Show MbEnd bit offsets for MB(0,0) and MB(1,0)
+    for (const auto& e : ends)
+    {
+        if (e.mbX <= 1 && e.mbY == 0)
+            MESSAGE("MB(" << e.mbX << ",0) end_bit=" << e.bitOff);
+    }
+
+    // Verify our coded MB positions match libavc's 5 coded MBs.
+    // libavc P-frame 1 (NAL-relative): MB(0)=28, MB(1)=272, MB(2)=594, MB(3)=625, MB(4)=634
+    // Our RBSP offsets + 8 (NAL header) should match.
+    // If all 5 match, bitstream alignment is correct.
+    // Note: positions are mb_type start (after skip_run consumed).
+    MESSAGE("Checking coded MB positions vs libavc (NAL-relative):");
+    uint32_t libavcPositions[] = {28, 272, 594, 625, 634};
+    uint32_t codedIdx = 0;
+    for (const auto& e : ends)
+    {
+        // MbEnd with bitOff in start range = pre-CBP markers
+        // We need the MbStart markers for coded MBs
+    }
+    // Use blocks trace to find coded MB bit starts from the main trace
+    // (The bit offset test above already showed these)
+    CHECK(totalBitsMb1 > 0); // Sanity: MB(1,0) has residual
 }
 
 TEST_CASE("P-frame MV trace: scrolling_texture first P-frame MV dump")

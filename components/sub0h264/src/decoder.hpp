@@ -1726,6 +1726,9 @@ private:
             cbp = cCbpTable[cbpCode][1]; // Inter CBP mapping
         uint8_t cbpLuma = cbp & 0x0FU;
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
+        // Trace CBP: use BlockResidual with blkIdx=99 as CBP marker
+        trace_.onBlockResidual(mbX, mbY, 99U, cbpCode, cbpLuma | (cbpChroma << 4U),
+                               static_cast<uint32_t>(br.bitOffset()));
         int32_t qp = mbQp;
         if (cbp > 0U)
         {
@@ -1750,8 +1753,11 @@ private:
             if (hasResidual)
             {
                 int32_t nc = getLumaNc(mbX, mbY, rasterIdx);
+                uint32_t bitBefore = static_cast<uint32_t>(br.bitOffset());
                 ResidualBlock4x4 resBlock;
                 decodeResidualBlock4x4(br, nc, cMaxCoeff4x4, 0U, resBlock);
+                uint32_t bitsUsed = static_cast<uint32_t>(br.bitOffset()) - bitBefore;
+                trace_.onBlockResidual(mbX, mbY, blkIdx, nc, resBlock.totalCoeff, bitsUsed);
                 for (uint32_t i = 0U; i < 16U; ++i)
                     coeffs[i] = resBlock.coeffs[i];
                 nnzLuma_[mbIdx * 16U + rasterIdx] = resBlock.totalCoeff;
@@ -1770,9 +1776,15 @@ private:
         int16_t dcCb[4] = {}, dcCr[4] = {};
         if (cbpChroma >= 1U)
         {
+            uint32_t dcBitStart = static_cast<uint32_t>(br.bitOffset());
             ResidualBlock4x4 dcBlockCb, dcBlockCr;
             decodeResidualBlock4x4(br, -1, 4U, 0U, dcBlockCb);
+            uint32_t dcCbBits = static_cast<uint32_t>(br.bitOffset()) - dcBitStart;
+            trace_.onBlockResidual(mbX, mbY, 16U, -1, dcBlockCb.totalCoeff, dcCbBits);
+            uint32_t dcCrStart = static_cast<uint32_t>(br.bitOffset());
             decodeResidualBlock4x4(br, -1, 4U, 0U, dcBlockCr);
+            uint32_t dcCrBits = static_cast<uint32_t>(br.bitOffset()) - dcCrStart;
+            trace_.onBlockResidual(mbX, mbY, 17U, -1, dcBlockCr.totalCoeff, dcCrBits);
             for (uint32_t i = 0U; i < 4U; ++i) { dcCb[i] = dcBlockCb.coeffs[i]; dcCr[i] = dcBlockCr.coeffs[i]; }
             inverseHadamard2x2(dcCb);
             inverseHadamard2x2(dcCr);
@@ -1799,24 +1811,30 @@ private:
 
         if (cbpChroma >= 2U)
         {
-            // All Cb AC blocks first
+            // All Cb AC blocks first — §7.3.5.3
             for (uint32_t blkIdx = 0U; blkIdx < 4U; ++blkIdx)
             {
                 int32_t ncCb = getChromaNc(mbX, mbY, blkIdx, true);
+                uint32_t acBitBefore = static_cast<uint32_t>(br.bitOffset());
                 ResidualBlock4x4 acBlock;
                 decodeResidualBlock4x4(br, ncCb, 15U, 1U, acBlock);
+                uint32_t acBits = static_cast<uint32_t>(br.bitOffset()) - acBitBefore;
+                trace_.onBlockResidual(mbX, mbY, 18U + blkIdx, ncCb, acBlock.totalCoeff, acBits);
                 for (uint32_t i = 1U; i < 16U; ++i) cbCoeffsBuf[blkIdx][i] = acBlock.coeffs[i];
                 nnzCb_[mbIdx * 4U + blkIdx] = acBlock.totalCoeff;
                 int16_t savedDc = cbCoeffsBuf[blkIdx][0];
                 inverseQuantize4x4(cbCoeffsBuf[blkIdx], chromaQp);
                 cbCoeffsBuf[blkIdx][0] = savedDc;
             }
-            // Then all Cr AC blocks
+            // Then all Cr AC blocks — §7.3.5.3
             for (uint32_t blkIdx = 0U; blkIdx < 4U; ++blkIdx)
             {
                 int32_t ncCr = getChromaNc(mbX, mbY, blkIdx, false);
+                uint32_t acBitBefore = static_cast<uint32_t>(br.bitOffset());
                 ResidualBlock4x4 acBlock;
                 decodeResidualBlock4x4(br, ncCr, 15U, 1U, acBlock);
+                uint32_t acBits = static_cast<uint32_t>(br.bitOffset()) - acBitBefore;
+                trace_.onBlockResidual(mbX, mbY, 22U + blkIdx, ncCr, acBlock.totalCoeff, acBits);
                 for (uint32_t i = 1U; i < 16U; ++i) crCoeffsBuf[blkIdx][i] = acBlock.coeffs[i];
                 nnzCr_[mbIdx * 4U + blkIdx] = acBlock.totalCoeff;
                 int16_t savedDc = crCoeffsBuf[blkIdx][0];
