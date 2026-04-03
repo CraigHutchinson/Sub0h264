@@ -1914,25 +1914,17 @@ private:
         // then copy the result back after decode.
         if (&target != &currentFrame_)
         {
-            // Copy neighboring rows from target so intra prediction reads correct pixels.
-
-            // Copy the entire MB row and the row above (for top prediction)
-            // This ensures left, top, and top-left neighbors are correct.
-            uint32_t startRow = (mbY > 0U) ? (mbY - 1U) * cMbSize : 0U;
-            uint32_t endRow = (mbY + 1U) * cMbSize;
-            if (endRow > currentFrame_.height()) endRow = currentFrame_.height();
-            for (uint32_t r = startRow; r < endRow; ++r)
-                std::memcpy(currentFrame_.yRow(r), target.yRow(r),
-                            currentFrame_.width());
-            uint32_t cStartRow = startRow / 2U;
-            uint32_t cEndRow = endRow / 2U;
-            for (uint32_t r = cStartRow; r < cEndRow; ++r)
-            {
-                std::memcpy(currentFrame_.uRow(r), target.uRow(r),
-                            currentFrame_.width() / 2U);
-                std::memcpy(currentFrame_.vRow(r), target.vRow(r),
-                            currentFrame_.width() / 2U);
-            }
+            // Sync entire frame from target so intra prediction reads correct pixels.
+            // The I-MB decoders reference currentFrame_ for all neighbor access
+            // (left, top, top-left, top-right). Rather than computing the minimal
+            // sync region, copy the full frame for correctness. This is called
+            // rarely (only for intra MBs within P-slices).
+            std::memcpy(currentFrame_.yData(), target.yData(),
+                        currentFrame_.yStride() * currentFrame_.height());
+            std::memcpy(currentFrame_.uData(), target.uData(),
+                        currentFrame_.uvStride() * (currentFrame_.height() / 2U));
+            std::memcpy(currentFrame_.vData(), target.vData(),
+                        currentFrame_.uvStride() * (currentFrame_.height() / 2U));
         }
 
         bool ok;
