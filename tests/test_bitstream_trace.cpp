@@ -4,8 +4,9 @@
  *  MB(9,0) residual blocks from the raw RBSP, comparing per-block bit
  *  offsets against the full decoder's consumption.
  *
- *  Any discrepancy reveals where decodeResidualBlock4x4's internal
- *  composition differs from calling the individual functions.
+ *  NOTE: These tests validate against libavc reference values, not
+ *  directly against the spec. They serve as cross-decoder consistency
+ *  checks. The coefficient values and bit offsets are fixture-specific.
  *
  *  Reference: ITU-T H.264 §9.2, libavc ih264d_parse_cavlc.c
  *

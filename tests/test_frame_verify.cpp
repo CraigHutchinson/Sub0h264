@@ -4,6 +4,12 @@
  *  On CRC mismatch: dumps actual frame as PPM, writes report with PSNR/stats.
  *  Supports fuzzy pass/fail: CRC match = strict, high PSNR = warn not fail.
  *
+ *  NOTE: These are IMPLEMENTATION regression tests, not spec tests. The CRC
+ *  values are snapshots of our decoder's output at a point in time. When we
+ *  fix a decoding bug, these CRC values WILL change and need updating.
+ *  Spec-referenced quality tests are in test_synthetic_quality.cpp (PSNR vs
+ *  raw source) and test_pframe.cpp (pixel-exact vs ffmpeg).
+ *
  *  SPDX-License-Identifier: MIT
  */
 #include "doctest.h"

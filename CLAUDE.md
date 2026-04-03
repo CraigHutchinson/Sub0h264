@@ -109,8 +109,47 @@ decoder->trace().setCallback([&](const TraceEvent& e) {
 - `scripts/gen_vlc_from_libavc.py` — generates coeff_token VLC tables from libavc reference
 - `scripts/check_rbsp_bits.py [offset]` — dumps raw RBSP bits and tries VLC matching
 
+### Comparison Scripts
+- `scripts/gen_frame_compare.py` — side-by-side PNG comparison images
+- `scripts/check_chroma_mc.py` — per-MB chroma MC vs ffmpeg comparison
+- `scripts/compare_idr_ref.py` — cross-decoder IDR chroma comparison
+- `scripts/verify_total_zeros.py` — VLC table validation vs spec Table 9-7
+- `scripts/trace_pframe_bits.py` — manual bitstream slice header + skip_run decode
+- `scripts/check_rbsp_bits.py [offset]` — dumps raw RBSP bits and tries VLC matching
+
 ### CRC Comparison
 CRC32 is a **hash** — close numeric values do NOT indicate similar images. Use CRC as a **binary pass/fail** check only. For progress tracking, use pixel-level metrics (Y/U/V diff counts and max values).
+
+## Debugging & Investigation Techniques
+
+Proven approaches for finding H.264 decode bugs:
+
+### 1. Per-frame PSNR comparison vs ffmpeg/raw source
+Start here. Compare Y/U/V PSNR per frame against `ffmpeg -pix_fmt yuv420p` output. Find the first frame with significant quality drop. This isolates I-frame vs P-frame issues.
+
+### 2. Per-MB pixel diff map
+When a frame has errors, generate per-MB max/mean diff vs ffmpeg. This pinpoints which MBs are wrong. Pattern analysis (every 3rd row, rightmost column, etc.) reveals systematic issues (intra MBs, partition boundaries).
+
+### 3. Bit offset alignment check
+Compare our per-coded-MB bit positions against libavc's trace output. The `[LIBAVC-P] MB(x) CODED bit=y` traces can be extended by modifying the `i2_cur_mb_addr < N` filter in `ih264d_parse_pslice.c`. If bit positions diverge, the residual parsing consumed wrong number of bits.
+
+### 4. Raw bitstream manual decode
+Use `scripts/trace_pframe_bits.py` or inline Python to read RBSP bits at specific positions. Manually decode ue(v)/se(v) values to verify skip_run, mb_type, MVD independently of our C++ code.
+
+### 5. Spec section cross-reference
+For every code path, cite the specific ITU-T H.264 section/table/equation. Audit field-by-field against the spec syntax tables (§7.3.x). The spec is authoritative — reference decoders (libavc, ffmpeg) are interpretations.
+
+### 6. VLC table validation
+Use `static_assert` prefix-free checks (test_spec_tables.cpp) and cross-check against multiple reference implementations. The tc=3 total_zeros table has a non-monotonic length pattern that looks wrong but is correct.
+
+### 7. Reference decoder output comparison
+Decode the same bitstream with libavc (`avcdec.exe`) and ffmpeg. If both agree and we differ, the bug is in our code. If they differ from each other, check the spec.
+
+### Common pitfalls found
+- **§7.3.4 skip_run**: After a skip_run is exhausted, the next MB is coded (no intervening skip_run read). Getting this wrong shifts the entire bitstream.
+- **Intra in P-slice**: I-MB decoders write to `currentFrame_`, but P-slices use a separate DPB frame. Must copy decoded MB to the correct target.
+- **Multi-reference**: ref_idx must be stored per-partition and used for both MC reference lookup AND MV predictor directional shortcuts (§8.4.1.3.1).
+- **P_8x8 sub-partition**: MVDs must actually be stored (not just consumed for bit alignment). Inner scope variable shadowing can silently discard them.
 
 ## Branch Strategy
 - `main` — stable releases
