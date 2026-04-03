@@ -311,13 +311,15 @@ TEST_CASE("Chroma DC: MB(30,1) raw coefficients via trace callback")
     decoder->trace().setCallback([&](const TraceEvent& e) {
         if (e.mbX == 30 && e.mbY == 1 && e.data) {
             if (e.type == TraceEventType::ChromaDcRaw && e.a == 0) {
-                for (int i=0;i<4;i++) rawCb[i]=e.data[i]; gotRaw = true;
+                for (int i=0;i<4;i++) rawCb[i]=e.data[i];
+                gotRaw = true;
             }
             if (e.type == TraceEventType::ChromaDcRaw && e.a == 1) {
                 for (int i=0;i<4;i++) rawCr[i]=e.data[i];
             }
             if (e.type == TraceEventType::ChromaDcDequant && e.a == 0) {
-                for (int i=0;i<4;i++) dqCb[i]=e.data[i]; gotDq = true;
+                for (int i=0;i<4;i++) dqCb[i]=e.data[i];
+                gotDq = true;
             }
             if (e.type == TraceEventType::ChromaDcDequant && e.a == 1) {
                 for (int i=0;i<4;i++) dqCr[i]=e.data[i];

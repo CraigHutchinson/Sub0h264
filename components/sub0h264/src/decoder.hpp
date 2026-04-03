@@ -1425,7 +1425,6 @@ private:
             // Read MVD for each sub-partition — §7.3.5.2.
             // sub_mb_type: 0=8x8(1 MVD), 1=8x4(2), 2=4x8(2), 3=4x4(4)
             // Store first MVD per 8x8 block; consume rest for bit alignment.
-            int16_t subMvdX[4] = {}, subMvdY[4] = {};
             for (uint32_t s = 0U; s < 4U; ++s)
             {
                 uint32_t numSubParts = 1U;

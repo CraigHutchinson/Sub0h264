@@ -55,9 +55,11 @@ static uint32_t verifyStreamCrcs(const char* fixture,
     uint32_t matches = 0U;
     uint32_t fuzzyWarns = 0U;
 
+#ifndef ESP_PLATFORM
     /// Maximum number of failure reports to dump per stream (avoids filling disk).
     static constexpr uint32_t cMaxDumpsPerStream = 5U;
     uint32_t dumpCount = 0U;
+#endif
 
     for (const auto& b : bounds)
     {

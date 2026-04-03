@@ -74,6 +74,7 @@ inline uint32_t cabacDecodeMbTypeI(CabacEngine& engine, CabacCtx* ctx,
     // I_16x16 variants: 3 more bins determine pred mode + cbp
     uint32_t bin1 = engine.decodeBin(ctx[cCtxMbTypeI + 3U]);
     uint32_t bin2 = engine.decodeBin(ctx[cCtxMbTypeI + 4U]);
+    (void)bin2; // Side-effect: consumes bin. Value used in full I_16x16 decode.
 
     uint32_t cbpChroma;
     if (bin1 == 0U)

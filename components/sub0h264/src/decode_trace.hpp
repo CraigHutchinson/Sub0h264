@@ -173,11 +173,12 @@ struct DecodeTrace
                          const MbMotionInfo& a, const MbMotionInfo& b,
                          const MbMotionInfo& c) const noexcept
     {
+        constexpr int16_t cUnavail = INT16_MIN;
         int16_t buf[12] = {
             mvp.x, mvp.y, mvd.x, mvd.y, mv.x, mv.y,
-            a.available ? a.mv.x : INT16_MIN, a.available ? a.mv.y : INT16_MIN,
-            b.available ? b.mv.x : INT16_MIN, b.available ? b.mv.y : INT16_MIN,
-            c.available ? c.mv.x : INT16_MIN, c.available ? c.mv.y : INT16_MIN
+            a.available ? a.mv.x : cUnavail, a.available ? a.mv.y : cUnavail,
+            b.available ? b.mv.x : cUnavail, b.available ? b.mv.y : cUnavail,
+            c.available ? c.mv.x : cUnavail, c.available ? c.mv.y : cUnavail
         };
         emit({TraceEventType::MvPrediction, static_cast<uint16_t>(mbX),
               static_cast<uint16_t>(mbY), partIdx, 0, 0, 0, buf, 12});
