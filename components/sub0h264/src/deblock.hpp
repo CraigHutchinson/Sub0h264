@@ -5,6 +5,24 @@
  *
  *  Reference: ITU-T H.264 §8.7
  *
+ *  Validation status:
+ *    computeBs:            §8.7.2.1 BS derivation. Intra=4/3, coeff=2,
+ *                          MV/ref diff=1, else 0. VALIDATED for I-frames
+ *                          (IDR pixel-perfect vs ffmpeg after deblocking).
+ *    filterLumaWeak:       §8.7.2.3. VALIDATED via I-frame pixel match.
+ *    filterLumaStrong:     §8.7.2.4. VALIDATED via I-frame pixel match.
+ *    filterChromaWeak:     §8.7.2.3 chroma variant. tc = tc0 + 1.
+ *    filterChromaStrong:   §8.7.2.4 chroma variant.
+ *    Threshold tables:     Alpha (Table 8-16), Beta (Table 8-17), tc0 (Table 8-16)
+ *                          verified monotonic + boundary values via static_assert.
+ *    Filter order:         Vertical edges first, then horizontal — per §8.7.
+ *    Chroma BS derivation: Max of 2 corresponding luma rows/cols per §8.7.2.1.
+ *    QP averaging:         Boundary edges use (qpP + qpQ + 1) >> 1 per §8.7.2.2.
+ *                          VALIDATED for I-frames.
+ *    KNOWN ISSUE: P-frame chroma deblocking may produce different results
+ *    from libavc at horizontal MB boundaries in row 2+. Under investigation
+ *    — may be downstream effect of bitstream alignment issue.
+ *
  *  SPDX-License-Identifier: MIT
  */
 #ifndef CROG_SUB0H264_DEBLOCK_HPP

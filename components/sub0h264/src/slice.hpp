@@ -250,10 +250,16 @@ inline Result parseSliceHeader(BitReader& br, const Sps& sps, const Pps& pps,
         }
     }
 
-    // ref_pic_list_modification (skip for now — Phase 6)
+    // ref_pic_list_modification — §7.3.3.1
+    // VALIDATED: reads modification_of_pic_nums_idc loop correctly for L0/L1.
     skipRefPicListModification(br, sh.sliceType_);
 
-    // dec_ref_pic_marking (if nal_ref_idc != 0)
+    // TODO §7.3.3.2: pred_weight_table() not parsed. Safe for Baseline
+    // (weighted_pred_flag=0). Latent misalignment bug for Main/High with
+    // weighted prediction. Add skipPredWeightTable() when supporting those.
+
+    // dec_ref_pic_marking — §7.3.3.3 (if nal_ref_idc != 0)
+    // VALIDATED: IDR reads 2 flags, non-IDR reads MMCO loop.
     if (nalRefIdc != 0U)
         skipDecRefPicMarking(br, isIdr, sh.decRefPicMarking_);
 

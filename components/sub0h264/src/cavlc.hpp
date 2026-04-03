@@ -6,6 +6,19 @@
  *
  *  Reference: ITU-T H.264 §9.2
  *
+ *  Validation status:
+ *    coeff_token:    Tables 9-5(a)-(e) regenerated from libavc, verified
+ *                    against spec. nC>=8 fixed-code decode confirmed correct.
+ *                    VALIDATED via test_cavlc.cpp and test_cavlc_regression.cpp.
+ *    level decode:   §9.2.2 suffixLen adaptation uses two independent if
+ *                    statements (not if/else-if). VALIDATED: matches libavc
+ *                    ih264d_cavlc_parse4x4coeff line 1305.
+ *    total_zeros:    Table 9-7 verified prefix-free at compile time
+ *                    (static_assert in test_spec_tables.cpp). Cross-checked
+ *                    against JM, ffmpeg, libavc reference tables.
+ *    run_before:     Table 9-10 verified prefix-free at compile time.
+ *    chroma DC:      Zigzag identity for maxCoeff<=4. VALIDATED.
+ *
  *  SPDX-License-Identifier: MIT
  */
 #ifndef CROG_SUB0H264_CAVLC_HPP
@@ -234,7 +247,6 @@ inline uint32_t decodeTotalZeros(BitReader& br, uint32_t totalCoeff) noexcept
     if (totalCoeff == 0U || totalCoeff >= 16U)
         return 0U;
 
-    uint32_t maxZeros = 16U - totalCoeff;
     uint32_t tableOffset = cTotalZerosIndex[totalCoeff - 1U];
     uint32_t tableLen = (totalCoeff < 15U)
         ? (cTotalZerosIndex[totalCoeff] - tableOffset)
@@ -255,7 +267,7 @@ inline uint32_t decodeTotalZeros(BitReader& br, uint32_t totalCoeff) noexcept
         if (peeked == codeVal)
         {
             br.skipBits(codeSize);
-            return std::min(tzVal, maxZeros);
+            return tzVal;
         }
     }
 
@@ -465,7 +477,14 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
         if (maxCoeff == cChromaDcMaxCoeff)
             totalZeros = decodeTotalZerosChromaDC(br, ct.totalCoeff);
         else
+        {
             totalZeros = decodeTotalZeros(br, ct.totalCoeff);
+            // Clamp to actual block size — §9.2.3: total_zeros <= maxNumCoeff - totalCoeff.
+            // Table 9-7 entries go up to 16-tc, but chroma AC has maxCoeff=15.
+            uint32_t maxTz = maxCoeff - ct.totalCoeff;
+            if (totalZeros > maxTz)
+                totalZeros = maxTz;
+        }
 #if SUB0H264_TRACE
         // Trace total_zeros for all chroma AC blocks (maxCoeff=15) with tc 1..14
         if (maxCoeff == 15U && ct.totalCoeff >= 1U)

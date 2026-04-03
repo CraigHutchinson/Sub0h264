@@ -5,6 +5,16 @@
  *
  *  Reference: ITU-T H.264 §8.4.2
  *
+ *  Validation status:
+ *    lumaMotionComp:   Full-pel copy verified pixel-exact. Half-pel 6-tap
+ *                      (§8.4.2.2.1) implemented for all 16 positions including
+ *                      2D filter for diagonal position j. Quarter-pel averages
+ *                      per Table 8-12. VALIDATED: P-frame rows 0-1 luma matches
+ *                      libavc/ffmpeg pixel-perfect.
+ *    chromaMotionComp: Bilinear 4-tap per §8.4.2.2.2 Eq. 8-258. Full-pel copy
+ *                      verified exact. Fractional-pel tested for common MVs.
+ *                      VALIDATED: chroma MC output matches IDR reference at MV=0.
+ *
  *  SPDX-License-Identifier: MIT
  */
 #ifndef CROG_SUB0H264_INTER_PRED_HPP

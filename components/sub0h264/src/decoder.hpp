@@ -1304,19 +1304,29 @@ private:
         return mbMotion_[mbIdx * 16U + blkIdx];
     }
 
-    /** Decode a P_Skip macroblock: inferred MV, no residual. */
+    /** Decode a P_Skip macroblock: inferred MV, no residual.
+     *
+     *  VALIDATED: §8.4.1.1 zero-MV condition matches spec (unavailable neighbor
+     *  → MV=0). MC full-pel copy verified pixel-exact vs IDR reference.
+     *  KNOWN ISSUE: P-frame row 2+ chroma diffs vs ffmpeg/libavc. Our output
+     *  matches IDR at MV=(0,0); reference decoders produce output consistent
+     *  with MV=(16,8). Likely a bitstream alignment issue in preceding MB
+     *  residual parsing that shifts the skip_run read position.
+     */
     void decodePSkipMb(Frame& target, const Frame& ref,
                         uint32_t mbX, uint32_t mbY) noexcept
     {
-        // Infer MV from spatial neighbors (ref_idx = 0)
+        // Neighbor derivation — §6.4.11.7 for 16x16 partition, mbPartIdx=0.
+        // VALIDATED: getMbMotionNeighbor reads correct 4x4 block per partition layout.
         MbMotionInfo left    = getMbMotionNeighbor(mbX, mbY, -1, 0);
         MbMotionInfo top     = getMbMotionNeighbor(mbX, mbY, 0, -1);
         MbMotionInfo topRight = getMbMotionNeighbor(mbX, mbY, 1, -1);
         if (!topRight.available)
-            topRight = getMbMotionNeighbor(mbX, mbY, -1, -1); // Use top-left
+            topRight = getMbMotionNeighbor(mbX, mbY, -1, -1); // D fallback §8.4.1.3
 
-        // Special skip MV derivation: if left or top is intra or has MV=(0,0),ref=0
-        // then predicted MV is (0,0). ITU-T H.264 §8.4.1.1
+        // §8.4.1.1: If mbAddrA or mbAddrB unavailable, or either has (ref=0,MV=0,0),
+        // then skip MV = (0,0). Otherwise, MV = median predictor from §8.4.1.3.
+        // VALIDATED against spec text. Produces MV=(0,0) when left unavailable (mbX=0).
         MotionVector skipMv = {0, 0};
         if (left.available && top.available &&
             !(left.refIdx == 0 && left.mv.x == 0 && left.mv.y == 0) &&
@@ -1355,8 +1365,17 @@ private:
         std::fill_n(&nnzLuma_[mbIdx * 16U], 16U, static_cast<uint8_t>(0U));
     }
 
-    /** Decode a P-inter macroblock (16x16 only for now). */
-    /** Decode P-inter macroblock.
+    /** Decode P-inter macroblock — §7.3.5 mb_pred / sub_mb_pred.
+     *
+     *  Handles P_L0_16x16, P_L0_L0_16x8, P_L0_L0_8x16, P_8x8, P_8x8ref0.
+     *
+     *  VALIDATED: Bitstream parsing bit-aligned with libavc through MB(4,0).
+     *  VALIDATED: P_8x8 sub-partition MVDs correctly stored (shadow var fix).
+     *  VALIDATED: 8x16/16x8 directional shortcuts per §8.4.1.3.1.
+     *  VALIDATED: Per-4x4-block MV storage for partition-aware neighbor derivation.
+     *  KNOWN ISSUE: Residual bit consumption may be off by ~1 bit for some
+     *  chroma AC blocks, causing skip_run misalignment after row 1.
+     *
      *  @param mbQp  [in/out] Accumulated QP — ITU-T H.264 §7.4.5.
      */
     void decodePInterMb(BitReader& br, const Sps& sps, const Pps& pps,
