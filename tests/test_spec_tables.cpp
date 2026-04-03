@@ -217,9 +217,41 @@ constexpr bool tzIndexMonotonic()
     return true;
 }
 static_assert(tzIndexMonotonic(), "cTotalZerosIndex must be strictly increasing");
-
-// Last index + (16 - totalCoeff) entries should equal 135
 static_assert(cTotalZerosIndex[0] == 0, "cTotalZerosIndex[0] must start at 0");
+
+// Verify prefix-free property: no VLC code is a prefix of another within
+// the same totalCoeff sub-table. This is required for unambiguous decoding.
+// ITU-T H.264 §9.2.3 — unique decodability of total_zeros VLC.
+constexpr bool totalZerosPrefixFree()
+{
+    for (int tc = 0; tc < 15; ++tc)
+    {
+        uint32_t start = cTotalZerosIndex[tc];
+        uint32_t end = (tc < 14) ? cTotalZerosIndex[tc + 1] : 135U;
+        uint32_t count = end - start;
+
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            uint32_t sizeI = cTotalZerosSize[start + i];
+            uint32_t codeI = cTotalZerosCode[start + i];
+            for (uint32_t j = i + 1; j < count; ++j)
+            {
+                uint32_t sizeJ = cTotalZerosSize[start + j];
+                uint32_t codeJ = cTotalZerosCode[start + j];
+
+                // Check if shorter code is a prefix of longer
+                uint32_t minLen = (sizeI < sizeJ) ? sizeI : sizeJ;
+                uint32_t shiftI = (sizeI > minLen) ? (sizeI - minLen) : 0;
+                uint32_t shiftJ = (sizeJ > minLen) ? (sizeJ - minLen) : 0;
+                if ((codeI >> shiftI) == (codeJ >> shiftJ))
+                    return false; // Prefix collision
+            }
+        }
+    }
+    return true;
+}
+static_assert(totalZerosPrefixFree(),
+              "total_zeros VLC must be prefix-free per §9.2.3");
 
 // ── run_before — ITU-T H.264 Table 9-10 ───────────────────────────────
 
@@ -227,6 +259,29 @@ static_assert(sizeof(cRunBeforeIndex) == 7, "cRunBeforeIndex must have 7 entries
 static_assert(sizeof(cRunBeforeSize) == 42, "cRunBeforeSize must have 42 entries");
 static_assert(sizeof(cRunBeforeCode) == 42, "cRunBeforeCode must have 42 entries");
 static_assert(cRunBeforeIndex[0] == 0, "cRunBeforeIndex must start at 0");
+
+// Prefix-free check for run_before VLC — ITU-T H.264 Table 9-10.
+constexpr bool runBeforePrefixFree()
+{
+    for (int zl = 0; zl < 7; ++zl)
+    {
+        uint32_t start = cRunBeforeIndex[zl];
+        uint32_t end = (zl < 6) ? cRunBeforeIndex[zl + 1] : 42U;
+        uint32_t count = end - start;
+        for (uint32_t i = 0; i < count; ++i)
+            for (uint32_t j = i + 1; j < count; ++j)
+            {
+                uint32_t sI = cRunBeforeSize[start+i], cI = cRunBeforeCode[start+i];
+                uint32_t sJ = cRunBeforeSize[start+j], cJ = cRunBeforeCode[start+j];
+                uint32_t m = (sI < sJ) ? sI : sJ;
+                if ((cI >> (sI > m ? sI - m : 0)) == (cJ >> (sJ > m ? sJ - m : 0)))
+                    return false;
+            }
+    }
+    return true;
+}
+static_assert(runBeforePrefixFree(),
+              "run_before VLC must be prefix-free per §9.2.3");
 
 // ── Chroma DC total_zeros — ITU-T H.264 Table 9-9 ─────────────────────
 

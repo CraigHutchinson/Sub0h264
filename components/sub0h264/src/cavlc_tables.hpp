@@ -91,6 +91,8 @@ inline constexpr uint8_t cTotalZerosIndex[15] = {
 };
 
 /// Total zeros VLC code sizes (flattened, indexed via cTotalZerosIndex).
+/// ITU-T H.264 Table 9-7. Note: totalCoeff=3 has a characteristic
+/// 3-bit "dip" at tz=6-7 (lengths: 4,3,3,3,4,4,3,3,4,5,5,6,5,6).
 inline constexpr uint8_t cTotalZerosSize[135] = {
      1, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 9,
      3, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 6, 6, 6, 6,
@@ -110,6 +112,7 @@ inline constexpr uint8_t cTotalZerosSize[135] = {
 };
 
 /// Total zeros VLC code values (flattened, indexed via cTotalZerosIndex).
+/// ITU-T H.264 Table 9-7.
 inline constexpr uint8_t cTotalZerosCode[135] = {
      1, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 1,
      7, 6, 5, 4, 3, 5, 4, 3, 2, 3, 2, 3, 2, 1, 0,
