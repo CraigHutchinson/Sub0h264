@@ -583,10 +583,10 @@ TEST_CASE("P-frame bit offset trace: compare MB parsing positions vs libavc")
     // [LIBAVC-P] MB(0) CODED bit=28  → MB(0,0)
     // [LIBAVC-P] MB(1) CODED bit=272 → MB(1,0) (or skip run)
     // Print events for first 2 coded MBs to trace bit consumption
-    // Print skip_runs and coded MB starts for first 3 rows
+    // Print skip_runs and coded MB starts for first 4 rows
     for (const auto& mi : mbInfos)
     {
-        if (mi.mbY > 2U) continue;
+        if (mi.mbY > 3U) continue;
         if (mi.mbType == 98U)
             MESSAGE("MB(" << mi.mbX << "," << mi.mbY << ") skip_run=" << mi.bitOff);
         else if (mi.mbType < 98U)
