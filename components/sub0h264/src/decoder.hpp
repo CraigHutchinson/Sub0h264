@@ -587,6 +587,7 @@ private:
                        const SliceHeader& sh, int32_t& currentQp,
                        uint32_t mbX, uint32_t mbY) noexcept
     {
+        (void)sh;
         if (!br.hasBits(1U))
             return false;
 
@@ -633,6 +634,7 @@ private:
                          uint32_t mbTypeRaw, int32_t& qp,
                          uint32_t mbX, uint32_t mbY) noexcept
     {
+        (void)sps;
         uint8_t predMode = i16x16PredMode(static_cast<uint8_t>(mbTypeRaw));
         uint8_t cbpLuma  = i16x16CbpLuma(static_cast<uint8_t>(mbTypeRaw));
         uint8_t cbpChroma = i16x16CbpChroma(static_cast<uint8_t>(mbTypeRaw));
@@ -846,6 +848,7 @@ private:
     bool decodeI4x4Mb(BitReader& br, const Sps& sps, const Pps& pps,
                        int32_t& qp, uint32_t mbX, uint32_t mbY) noexcept
     {
+        (void)sps;
         // Read intra 4x4 prediction modes for all 16 blocks.
         // ITU-T H.264 §8.3.1.1: most probable mode = min(leftMode, topMode).
         // If prev_intra4x4_pred_mode_flag=1: use MPM.
@@ -1362,6 +1365,7 @@ private:
                          uint32_t mbX, uint32_t mbY,
                          uint8_t numRefIdxL0Active = 1U) noexcept
     {
+        (void)sps;
         // mbTypeRaw: 0=P_L0_16x16, 1=P_L0_L0_16x8, 2=P_L0_L0_8x16, 3=P_8x8, 4=P_8x8ref0
 
         // ITU-T H.264 §7.3.5.1: mb_pred for P-inter MBs.
@@ -1839,6 +1843,7 @@ private:
                                 uint32_t mbTypeRaw, Frame& target,
                                 uint32_t mbX, uint32_t mbY) noexcept
     {
+        (void)sh; (void)target;
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
         setMbMotion(mbIdx, {0, 0}, -1);
 
@@ -2049,7 +2054,7 @@ private:
                               Frame& target, const Frame& ref,
                               uint32_t mbX, uint32_t mbY) noexcept
     {
-        (void)br; (void)sps;
+        (void)br; (void)sps; (void)mbTypeRaw;
         // Decode MVD via CABAC
         int16_t mvdX = cabacDecodeMvd(cabacEngine_, cabacCtx_.data(), cCtxMvdX, 0);
         int16_t mvdY = cabacDecodeMvd(cabacEngine_, cabacCtx_.data(), cCtxMvdY, 0);
