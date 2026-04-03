@@ -250,12 +250,28 @@ inline uint32_t cabacDecodeResidual4x4(CabacEngine& engine, CabacCtx* ctx,
                                         int16_t* coeffs, uint32_t maxCoeff,
                                         uint32_t ctxBlockCat) noexcept
 {
-    // Context offsets for significant/last flags
-    uint32_t sigOffset = cCtxSigCoeff + ctxBlockCat * 15U;
-    uint32_t lastOffset = cCtxLastSigCoeff + ctxBlockCat * 15U;
-    uint32_t levelOffset = cCtxCoeffAbsLevel + ctxBlockCat * 10U;
+    // coded_block_flag — §9.3.3.1.1.1 Table 9-34.
+    // Decoded for ctxBlockCat 1,2,4 (AC blocks). NOT decoded for cat 0,3 (DC blocks,
+    // where presence is inferred from CBP). If cbf=0, skip the entire block.
+    // Context: cCtxCbf + ctxBlockCat * 4 + ctxIdxInc.
+    // Simplified: ctxIdxInc=0 (TODO: proper neighbor derivation per §9.3.3.1.1.3).
+    if (ctxBlockCat != 0U && ctxBlockCat != 3U)
+    {
+        uint32_t cbfCtx = cCtxCbf + ctxBlockCat * 4U;
+        if (engine.decodeBin(ctx[cbfCtx]) == 0U)
+            return 0U; // coded_block_flag = 0: no coefficients
+    }
 
-    // First: decode significant coefficient map
+    // Context offsets per block category — ITU-T H.264 Table 9-39/9-40/9-41.
+    // NOT uniformly spaced: chroma DC has only 3 sig contexts, chroma AC starts at 152.
+    static constexpr uint32_t cSigOffsets[5]   = {105, 120, 134, 149, 152};
+    static constexpr uint32_t cLastOffsets[5]  = {166, 181, 195, 210, 213};
+    static constexpr uint32_t cLevelOffsets[5] = {227, 237, 247, 257, 267};
+    uint32_t sigOffset   = cSigOffsets[ctxBlockCat];
+    uint32_t lastOffset  = cLastOffsets[ctxBlockCat];
+    uint32_t levelOffset = cLevelOffsets[ctxBlockCat];
+
+    // Decode significant coefficient map
     uint8_t sigMap[16] = {};
     uint32_t numSig = 0U;
     int32_t lastSigIdx = -1;
