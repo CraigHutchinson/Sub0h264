@@ -37,6 +37,10 @@ cmake --build --preset esp32p4
 | `test_apps/hello_h264/` | ESP-IDF hello-world test app |
 | `tests/` | Desktop unit tests (doctest) |
 
+## TODO
+
+- [ ] **H.264 spec tables C++23 refactor** — `static_assert` validation, `consteval` generators, magic number cleanup. See [refactor plan](docs/ai-guides/spec-tables-refactor-plan.md). *(Parked — Phase 0 complete, Phase 1 next)*
+
 ## License
 
 MIT &mdash; see [LICENSE.md](LICENSE.md)

@@ -1,3 +1,4 @@
 {
-    "idf.espIdfPath": "C:\\esp\\master\\esp-idf"
+    "idf.espIdfPath": "C:\\esp\\master\\esp-idf",
+    "idf.currentSetup": "C:\\esp\\master\\esp-idf"
 }

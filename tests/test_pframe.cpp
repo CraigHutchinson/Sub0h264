@@ -561,6 +561,8 @@ TEST_CASE("P-frame bit offset trace: compare MB parsing positions vs libavc")
         if (fc != 1U) return; // Only P-frame 1
         if (e.type == TraceEventType::MbStart)
             mbInfos.push_back({e.mbX, e.mbY, e.a, e.b});
+        else if (e.type == TraceEventType::MbEnd)
+            mbInfos.push_back({e.mbX, e.mbY, 200U + e.a, e.b}); // 200+ = MbEnd marker
     });
 
     std::vector<NalBounds> bounds;
@@ -580,16 +582,17 @@ TEST_CASE("P-frame bit offset trace: compare MB parsing positions vs libavc")
     // libavc reference bit offsets for P-frame 1 coded MBs
     // [LIBAVC-P] MB(0) CODED bit=28  → MB(0,0)
     // [LIBAVC-P] MB(1) CODED bit=272 → MB(1,0) (or skip run)
-    uint32_t libavBits[] = {28, 272, 594, 625, 634};
-    uint32_t infoCount = (mbInfos.size() < 10U) ? static_cast<uint32_t>(mbInfos.size()) : 10U;
-    for (uint32_t i = 0; i < infoCount; ++i)
+    // Print events for first 2 coded MBs to trace bit consumption
+    uint32_t printedMbEnd = 0;
+    for (const auto& mi : mbInfos)
     {
-        auto& mi = mbInfos[i];
-        uint32_t libRef = (i < 5) ? libavBits[i] : 0;
-        MESSAGE("MB(" << mi.mbX << "," << mi.mbY << ") type=" << mi.mbType
-                << " bit=" << mi.bitOff
-                << (libRef > 0 ? " (libavc=" + std::to_string(libRef) + ")" : ""));
+        if (mi.mbType >= 200U && mi.mbX <= 1U && mi.mbY == 0U)
+        {
+            MESSAGE("MB(" << mi.mbX << "," << mi.mbY << ") END bit=" << mi.bitOff);
+            ++printedMbEnd;
+        }
     }
+    MESSAGE("MbEnd events for row 0 first 2 MBs: " << printedMbEnd);
 }
 
 TEST_CASE("P-frame MV trace: scrolling_texture first P-frame MV dump")

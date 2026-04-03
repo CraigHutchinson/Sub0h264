@@ -485,6 +485,7 @@ private:
                     if (needSkipRun)
                     {
                         mbSkipRun = br.readUev();
+                        trace_.onMbStart(mbX, mbY, 98U, mbSkipRun); // 98 = skip_run value
                         needSkipRun = false;
                     }
 
@@ -1717,7 +1718,8 @@ private:
             }
         }
 
-        // Read CBP
+        // Read CBP — ITU-T H.264 §7.3.5.1
+        trace_.onMbEnd(mbX, mbY, static_cast<uint32_t>(br.bitOffset())); // pre-CBP bit
         uint32_t cbpCode = br.readUev();
         uint8_t cbp = 0U;
         if (cbpCode < 48U)
@@ -1835,6 +1837,7 @@ private:
                                  target.vMb(mbX, mbY) + blkY * uvStride + blkX, uvStride);
         }
         mbQp = qp; // Propagate accumulated QP to next MB
+        trace_.onMbEnd(mbX, mbY, static_cast<uint32_t>(br.bitOffset()));
     }
 
     /** Decode an intra MB within a P-slice (mb_type offset already applied). */
