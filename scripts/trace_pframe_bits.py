@@ -1,218 +1,202 @@
 #!/usr/bin/env python3
-"""Manually trace P-frame bitstream skip_run and mb_type values.
+"""Parse P-frame bitstream: slice header, skip_runs, mb_type, ref_idx, MVD.
 
-Reads raw RBSP bits from the scrolling_texture P-slice NAL and decodes
-the slice header + first few skip_run/mb_type pairs to verify alignment.
+Reads raw RBSP bits and decodes syntax elements to verify bit alignment.
 
 Usage:
-    python scripts/trace_pframe_bits.py
+    python scripts/trace_pframe_bits.py --fixture pan_up --frame 16
+    python scripts/trace_pframe_bits.py --fixture scrolling_texture --frame 1 --mbs 5
 """
+import argparse
 import sys
+sys.path.insert(0, "scripts")
+from trace_slice_header_bits import find_nal_starts, extract_rbsp, BitReader
 
-def read_ue(bits, pos):
-    """Read exp-Golomb unsigned from bit array. Returns (value, next_pos)."""
-    lz = 0
-    while pos + lz < len(bits) and bits[pos + lz] == 0:
-        lz += 1
-    if pos + lz >= len(bits):
-        return None, pos
-    code_num = (1 << lz) - 1
-    for k in range(lz):
-        code_num += bits[pos + lz + 1 + k] << (lz - 1 - k)
-    return code_num, pos + 2 * lz + 1
-
-def read_se(bits, pos):
-    """Read exp-Golomb signed from bit array."""
-    code_num, pos = read_ue(bits, pos)
-    if code_num is None:
-        return None, pos
-    if code_num == 0:
-        return 0, pos
-    elif code_num % 2 == 1:
-        return (code_num + 1) // 2, pos
-    else:
-        return -(code_num // 2), pos
-
-def read_bits(bits, pos, n):
-    """Read n bits as unsigned integer."""
-    val = 0
-    for i in range(n):
-        val = (val << 1) | bits[pos + i]
-    return val, pos + n
 
 def main():
-    data = open("tests/fixtures/scrolling_texture.h264", "rb").read()
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--fixture", default="scrolling_texture",
+                        help="Fixture name (without .h264)")
+    parser.add_argument("--frame", type=int, default=1,
+                        help="Frame index (0-based)")
+    parser.add_argument("--frame-num-bits", type=int, default=4,
+                        help="Bits for frame_num (log2_max_frame_num_minus4 + 4)")
+    parser.add_argument("--mbs", type=int, default=3,
+                        help="Number of coded MBs to parse")
+    parser.add_argument("--pps-num-ref-l0", type=int, default=3,
+                        help="PPS default num_ref_idx_l0_active (minus1 + 1)")
+    args = parser.parse_args()
 
-    # Find first non-IDR slice NAL (nal_unit_type=1)
-    i = 0
-    while i < len(data) - 4:
-        if data[i:i+4] == b'\x00\x00\x00\x01':
-            nal_type = data[i+4] & 0x1f
-            if nal_type == 1:
-                nal_start = i + 5  # skip start code + NAL header byte
-                break
-        i += 1
-    else:
-        print("No P-slice NAL found")
+    h264_path = f"tests/fixtures/{args.fixture}.h264"
+    try:
+        data = open(h264_path, "rb").read()
+    except FileNotFoundError:
+        print(f"Error: {h264_path} not found")
         return
 
-    # Extract RBSP (remove emulation prevention bytes)
-    rbsp = []
-    j = nal_start
-    while j < len(data) - 2:
-        if data[j:j+3] == b'\x00\x00\x03':
-            rbsp.append(data[j])
-            rbsp.append(data[j+1])
-            j += 3
-        elif data[j:j+4] == b'\x00\x00\x00\x01' or data[j:j+3] == b'\x00\x00\x01':
-            break
-        else:
-            rbsp.append(data[j])
-            j += 1
+    nal_starts = find_nal_starts(data)
 
-    # Convert to bits
-    bits = []
-    for b in rbsp:
-        for bit in range(7, -1, -1):
-            bits.append((b >> bit) & 1)
+    # Find the target frame's slice NAL
+    slice_count = 0
+    for idx, ns in enumerate(nal_starts):
+        nal_type = data[ns] & 0x1f
+        if nal_type not in (1, 5):
+            continue
+        if slice_count == args.frame:
+            is_idr = (nal_type == 5)
+            nal_ref_idc = (data[ns] >> 5) & 0x3
+            next_ns = nal_starts[idx + 1] if idx + 1 < len(nal_starts) else None
+            rbsp = extract_rbsp(data, ns, next_ns)
+            bits = []
+            for b in rbsp:
+                for bit in range(7, -1, -1):
+                    bits.append((b >> bit) & 1)
+            br = BitReader(bits)
 
-    print(f"P-slice RBSP: {len(rbsp)} bytes = {len(bits)} bits")
+            print(f"=== Frame {args.frame} of {args.fixture} ===")
+            print(f"NAL type={nal_type} ref_idc={nal_ref_idc}\n")
 
-    # Parse slice header
-    pos = 0
-    first_mb, pos = read_ue(bits, pos)
-    slice_type, pos = read_ue(bits, pos)
-    pps_id, pos = read_ue(bits, pos)
-    # log2_max_frame_num_minus4 = 0 => bitsInFrameNum = 4
-    frame_num, pos = read_bits(bits, pos, 4)
-    # num_ref_idx_active_override_flag
-    override_flag, pos = read_bits(bits, pos, 1)
-    if override_flag:
-        num_ref_idx_l0, pos = read_ue(bits, pos)
-        num_ref_idx_l0 += 1
-    else:
-        num_ref_idx_l0 = 1  # PPS default
+            # Parse slice header
+            first_mb = br.read_ue()
+            slice_type_raw = br.read_ue()
+            slice_type = slice_type_raw - 5 if slice_type_raw >= 5 else slice_type_raw
+            pps_id = br.read_ue()
+            frame_num = br.read_bits(args.frame_num_bits)
+            print(f"Slice header: first_mb={first_mb} type={slice_type_raw}"
+                  f" pps={pps_id} fn={frame_num}")
 
-    # ref_pic_list_reordering_flag_l0
-    reorder_flag, pos = read_bits(bits, pos, 1)
-    # dec_ref_pic_marking (nal_ref_idc != 0)
-    marking_flag, pos = read_bits(bits, pos, 1)
-    # slice_qp_delta
-    qp_delta, pos = read_se(bits, pos)
-    # disable_deblocking_filter_idc
-    deblock_idc, pos = read_ue(bits, pos)
-    if deblock_idc != 1:
-        alpha_offset, pos = read_se(bits, pos)
-        beta_offset, pos = read_se(bits, pos)
-    else:
-        alpha_offset = beta_offset = 0
+            if is_idr:
+                idr_pic_id = br.read_ue()
+                print(f"  idr_pic_id={idr_pic_id}")
 
-    print(f"\nSlice header:")
-    print(f"  first_mb={first_mb}, type={slice_type}, pps={pps_id}, frame_num={frame_num}")
-    print(f"  override={override_flag}, num_ref_l0={num_ref_idx_l0}")
-    print(f"  reorder={reorder_flag}, marking={marking_flag}")
-    print(f"  qp_delta={qp_delta}, deblock_idc={deblock_idc}")
-    print(f"  alpha={alpha_offset}, beta={beta_offset}")
-    print(f"  Slice header ends at RBSP bit {pos}")
-    print(f"  (NAL bit {pos + 8})")
+            is_p = slice_type in (0, 3)
+            num_ref_l0 = args.pps_num_ref_l0
 
-    # Parse first few skip_run + coded MBs
-    print(f"\n=== MB parsing from bit {pos} ===")
-    mb_addr = 0
-    width_in_mbs = 20
-    coded_mb_count = 0
+            if is_p:
+                override = br.read_bit()
+                if override:
+                    num_ref_l0 = br.read_ue() + 1
+                print(f"  override={override} num_ref_l0={num_ref_l0}")
 
-    while mb_addr < 300 and coded_mb_count < 10:
-        mbx = mb_addr % width_in_mbs
-        mby = mb_addr // width_in_mbs
+                reorder = br.read_bit()
+                print(f"  reorder_flag={reorder}")
+                if reorder:
+                    while True:
+                        op = br.read_ue()
+                        if op == 3:
+                            break
+                        _ = br.read_ue()
 
-        # Read skip_run
-        skip_start = pos
-        skip_run, pos = read_ue(bits, skip_start)
-        print(f"\n  skip_run={skip_run} at bit {skip_start} (NAL {skip_start+8})")
+            if nal_ref_idc != 0:
+                if is_idr:
+                    br.read_bit()  # no_output
+                    br.read_bit()  # long_term
+                else:
+                    adaptive = br.read_bit()
+                    print(f"  adaptive_marking={adaptive}")
 
-        # Process skip MBs
-        for s in range(skip_run):
-            sx = (mb_addr + s) % width_in_mbs
-            sy = (mb_addr + s) // width_in_mbs
-            # Skip MBs are not printed (too many)
-        mb_addr += skip_run
+            qp_delta = br.read_se()
+            deblock = br.read_ue()
+            alpha = beta = 0
+            if deblock != 1:
+                alpha = br.read_se()
+                beta = br.read_se()
+            print(f"  qp_delta={qp_delta} deblock={deblock} alpha={alpha} beta={beta}")
+            print(f"  Header ends at RBSP bit {br.pos} (NAL {br.pos+8})")
 
-        if mb_addr >= 300:
-            break
+            # Parse MB-level data
+            print(f"\n=== MB parsing ===")
+            mb_addr = 0
+            width_in_mbs = 20  # 320/16
+            coded_count = 0
 
-        # Read coded MB
-        mbx = mb_addr % width_in_mbs
-        mby = mb_addr // width_in_mbs
-        mb_type_start = pos
-        mb_type, pos = read_ue(bits, pos)
-        print(f"  MB({mbx},{mby}) mbAddr={mb_addr} mb_type={mb_type} at bit {mb_type_start} (NAL {mb_type_start+8})")
+            while mb_addr < 300 and coded_count < args.mbs:
+                skip_run = br.read_ue()
+                mbx = mb_addr % width_in_mbs
+                mby = mb_addr // width_in_mbs
+                if skip_run > 0:
+                    print(f"\n  skip_run={skip_run} at bit {br.pos}"
+                          f" (MB({mbx},{mby}) to MB({(mb_addr+skip_run-1)%width_in_mbs},"
+                          f"{(mb_addr+skip_run-1)//width_in_mbs}))")
+                mb_addr += skip_run
+                if mb_addr >= 300:
+                    break
 
-        coded_mb_count += 1
-        mb_addr += 1
+                mbx = mb_addr % width_in_mbs
+                mby = mb_addr // width_in_mbs
+                mb_type = br.read_ue()
+                print(f"\n  MB({mbx},{mby}) addr={mb_addr} type={mb_type} at bit {br.pos}")
 
-        # For mb_type >= 5: intra in P-slice, skip detailed parsing
-        if mb_type >= 5:
-            print(f"    => Intra in P-slice (type {mb_type-5}), skipping residual")
-            # Can't easily parse intra residual here — stop
-            break
+                if mb_type >= 5:
+                    print(f"    Intra in P-slice (type {mb_type-5}), stopping")
+                    break
 
-        # For mb_type 0-4: P-inter
-        if mb_type <= 2:
-            num_parts = 1 if mb_type == 0 else 2
-            # ref_idx (only if num_ref_l0 > 1)
-            for p in range(num_parts):
-                if num_ref_idx_l0 > 1:
-                    if num_ref_idx_l0 == 2:
-                        _, pos = read_bits(bits, pos, 1)
-                    else:
-                        _, pos = read_ue(bits, pos)
-            # MVD
-            for p in range(num_parts):
-                mvdx, pos = read_se(bits, pos)
-                mvdy, pos = read_se(bits, pos)
-                print(f"    part{p} MVD=({mvdx},{mvdy})")
-        elif mb_type <= 4:
-            # P_8x8 / P_8x8ref0
-            sub_types = []
-            for s in range(4):
-                st, pos = read_ue(bits, pos)
-                sub_types.append(st)
-            print(f"    sub_mb_types={sub_types}")
-            if mb_type == 3:
-                for s in range(4):
-                    if num_ref_idx_l0 > 1:
-                        if num_ref_idx_l0 == 2:
-                            _, pos = read_bits(bits, pos, 1)
+                coded_count += 1
+                mb_addr += 1
+
+                if mb_type <= 2:
+                    num_parts = 1 if mb_type == 0 else 2
+                    names = {0: "16x16", 1: "16x8", 2: "8x16"}
+                    print(f"    {names[mb_type]}: {num_parts} partitions")
+
+                    # ref_idx
+                    for p in range(num_parts):
+                        if num_ref_l0 > 1:
+                            if num_ref_l0 == 2:
+                                ri = 1 - br.read_bit()
+                            else:
+                                ri = br.read_ue()
+                            print(f"    ref_idx[{p}]={ri} (pos={br.pos})")
                         else:
-                            _, pos = read_ue(bits, pos)
-            for s in range(4):
-                num_sub = [1, 2, 2, 4][sub_types[s]]
-                for sp in range(num_sub):
-                    mvdx, pos = read_se(bits, pos)
-                    mvdy, pos = read_se(bits, pos)
-                    if sp == 0:
-                        print(f"    sub{s} MVD=({mvdx},{mvdy})")
+                            print(f"    ref_idx[{p}]=0 (inferred)")
 
-        # CBP
-        cbp_code, pos = read_ue(bits, pos)
-        # Inter CBP mapping (Table 9-4 column 1)
-        inter_cbp = [0,16,32,15,31,47,0,16,32,15,31,47,0,16,32,15,31,47,
-                     0,16,32,15,31,47,0,16,32,15,31,47,0,16,32,15,31,47,
-                     0,16,32,15,31,47,0,16,32,15,31,47]
-        cbp = inter_cbp[cbp_code] if cbp_code < 48 else 0
-        cbp_luma = cbp & 0x0f
-        cbp_chroma = (cbp >> 4) & 0x03
-        print(f"    CBP code={cbp_code} => cbp=0x{cbp:02x} (luma={cbp_luma}, chroma={cbp_chroma})")
+                    # MVD
+                    for p in range(num_parts):
+                        mvdx = br.read_se()
+                        mvdy = br.read_se()
+                        print(f"    MVD[{p}]=({mvdx},{mvdy}) (pos={br.pos})")
 
-        if cbp > 0:
-            qp_d, pos = read_se(bits, pos)
-            print(f"    qp_delta={qp_d}")
+                elif mb_type <= 4:
+                    print(f"    P_8x8{'ref0' if mb_type==4 else ''}")
+                    sub_types = [br.read_ue() for _ in range(4)]
+                    print(f"    sub_types={sub_types}")
+                    if mb_type == 3:
+                        for s in range(4):
+                            if num_ref_l0 > 1:
+                                if num_ref_l0 == 2:
+                                    ri = 1 - br.read_bit()
+                                else:
+                                    ri = br.read_ue()
+                                print(f"    sub_ref[{s}]={ri}")
+                    for s in range(4):
+                        num_sub = [1, 2, 2, 4][sub_types[s]]
+                        for sp in range(num_sub):
+                            mvdx = br.read_se()
+                            mvdy = br.read_se()
+                            if sp == 0:
+                                print(f"    sub{s} MVD=({mvdx},{mvdy})")
 
-        # Skip residual parsing (too complex for a simple script)
-        print(f"    Residual starts at bit {pos} (NAL {pos+8})")
-        print(f"    *** Cannot parse CAVLC residual in Python — stopping ***")
-        break
+                # CBP
+                cbp_code = br.read_ue()
+                inter_cbp = [0,16,32,15,31,47,0,16,32,15,31,47,
+                             0,16,32,15,31,47,0,16,32,15,31,47,
+                             0,16,32,15,31,47,0,16,32,15,31,47,
+                             0,16,32,15,31,47,0,16,32,15,31,47]
+                cbp = inter_cbp[cbp_code] if cbp_code < 48 else 0
+                print(f"    CBP code={cbp_code} cbp=0x{cbp:02x} (pos={br.pos})")
+                if cbp > 0:
+                    qpd = br.read_se()
+                    print(f"    qp_delta={qpd}")
+                    print(f"    Residual at bit {br.pos} (cannot parse in Python)")
+                    break
+
+            return
+
+        slice_count += 1
+
+    print(f"Error: frame {args.frame} not found (only {slice_count} slices)")
+
 
 if __name__ == "__main__":
     main()

@@ -1390,6 +1390,9 @@ private:
                          uint8_t numRefIdxL0Active = 1U) noexcept
     {
         (void)sps;
+        // Trace numRefIdxL0Active for first MB of each frame
+        if (mbX == 0U && mbY == 0U)
+            trace_.onBlockResidual(mbX, mbY, 95U, numRefIdxL0Active, mbTypeRaw, 0U);
         // mbTypeRaw: 0=P_L0_16x16, 1=P_L0_L0_16x8, 2=P_L0_L0_8x16, 3=P_8x8, 4=P_8x8ref0
 
         // ITU-T H.264 §7.3.5.1: mb_pred for P-inter MBs.
@@ -1631,7 +1634,11 @@ private:
         // Reference frame lookup per partition via DPB L0 list.
         auto getRef = [this](uint8_t idx) -> const Frame& {
             const Frame* f = dpb_.getReference(idx);
-            return *f; // Caller must ensure reference exists
+            // Fall back to most recent ref if requested index exceeds DPB size.
+            // This handles cases where numRefIdxL0Active (from PPS/override)
+            // exceeds the actual number of references in the DPB (short GOPs).
+            if (!f) f = dpb_.getReference(0U);
+            return *f;
         };
 
         uint8_t predLuma[256];

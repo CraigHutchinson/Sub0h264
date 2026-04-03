@@ -643,12 +643,20 @@ TEST_CASE("P-frame: pan_up frame 16 MV and chroma check")
     std::vector<MvPred> mvPreds;
     uint32_t fc = 0;
 
+    struct MbStartInfo { uint16_t mbX, mbY; uint32_t type, bit; };
+    std::vector<MbStartInfo> mbStarts;
+    uint32_t numRefActive = 0;
     auto decoder = std::make_unique<H264Decoder>();
     decoder->trace().setCallback([&](const TraceEvent& e) {
         if (fc == 16 && e.type == TraceEventType::MvPrediction
             && e.mbX == 0 && e.mbY == 0 && e.data && e.dataLen >= 6)
             mvPreds.push_back({e.mbX, e.mbY, e.a,
                                e.data[0], e.data[1], e.data[2], e.data[3]});
+        if (fc == 16 && e.type == TraceEventType::MbStart && e.a < 98U)
+            mbStarts.push_back({e.mbX, e.mbY, e.a, e.b});
+        // Capture numRefIdxL0Active from diagnostic trace (blk95)
+        if (fc == 16 && e.type == TraceEventType::BlockResidual && e.a == 95U)
+            numRefActive = e.b;
     });
 
     std::vector<NalBounds> bounds;
@@ -675,7 +683,12 @@ TEST_CASE("P-frame: pan_up frame 16 MV and chroma check")
                 }
                 const Frame* frame = decoder->currentFrame();
                 REQUIRE(frame != nullptr);
-                MESSAGE("pan_up f16 U(0,0)=" << (int)frame->u(0,0));
+                MESSAGE("pan_up f16 U(0,0)=" << (int)frame->u(0,0)
+                        << " numRefIdxL0Active=" << numRefActive);
+                // Show bit offsets for first few coded MBs
+                for (uint32_t i = 0; i < std::min(static_cast<uint32_t>(mbStarts.size()), 5U); ++i)
+                    MESSAGE("  MB(" << mbStarts[i].mbX << "," << mbStarts[i].mbY
+                            << ") type=" << mbStarts[i].type << " bit=" << mbStarts[i].bit);
                 // Show MV prediction trace for MB(0,0) partitions
                 for (const auto& mp : mvPreds)
                     MESSAGE("  part" << mp.part << " MVP=(" << mp.mvpX << "," << mp.mvpY

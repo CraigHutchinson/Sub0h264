@@ -64,29 +64,32 @@ inline MotionVector computeMvPredictor(const MbMotionInfo& left,
     if (top.available)       { ++availCount; if (top.refIdx == refIdx) { ++matchCount; lastMatchIdx = 1; } }
     if (topRight.available)  { ++availCount; if (topRight.refIdx == refIdx) { ++matchCount; lastMatchIdx = 2; } }
 
-    const MbMotionInfo* neighbors[3] = { &left, &top, &topRight };
+    // §8.4.1.3: If B is not available, set B = A (both MV and refIdx).
+    // If C is not available, set C = A. This happens BEFORE ref_idx matching.
+    MbMotionInfo effA = left;
+    MbMotionInfo effB = top.available ? top : left;
+    MbMotionInfo effC = topRight.available ? topRight : left;
 
-    // Special case: only one neighbor available → use its MV
-    if (availCount == 1U)
-    {
-        for (uint32_t i = 0U; i < 3U; ++i)
-        {
-            if (neighbors[i]->available)
-                return neighbors[i]->mv;
-        }
-    }
+    // Recount matches with effective neighbors
+    matchCount = 0U;
+    lastMatchIdx = -1;
+    if (effA.available && effA.refIdx == refIdx) { ++matchCount; lastMatchIdx = 0; }
+    if (effB.available && effB.refIdx == refIdx) { ++matchCount; lastMatchIdx = 1; }
+    if (effC.available && effC.refIdx == refIdx) { ++matchCount; lastMatchIdx = 2; }
 
-    // If exactly one neighbor has matching ref_idx → use that MV
+    const MbMotionInfo* effNeighbors[3] = { &effA, &effB, &effC };
+
+    // §8.4.1.3: If exactly one has matching ref_idx → use that MV.
     if (matchCount == 1U)
-        return neighbors[lastMatchIdx]->mv;
+        return effNeighbors[lastMatchIdx]->mv;
 
-    // Default: median predictor of all three
-    int16_t mvA_x = left.available ? left.mv.x : 0;
-    int16_t mvA_y = left.available ? left.mv.y : 0;
-    int16_t mvB_x = top.available ? top.mv.x : 0;
-    int16_t mvB_y = top.available ? top.mv.y : 0;
-    int16_t mvC_x = topRight.available ? topRight.mv.x : 0;
-    int16_t mvC_y = topRight.available ? topRight.mv.y : 0;
+    // Default: median of all three effective MVs.
+    int16_t mvA_x = effA.available ? effA.mv.x : 0;
+    int16_t mvA_y = effA.available ? effA.mv.y : 0;
+    int16_t mvB_x = effB.available ? effB.mv.x : 0;
+    int16_t mvB_y = effB.available ? effB.mv.y : 0;
+    int16_t mvC_x = effC.available ? effC.mv.x : 0;
+    int16_t mvC_y = effC.available ? effC.mv.y : 0;
 
     return { median3(mvA_x, mvB_x, mvC_x), median3(mvA_y, mvB_y, mvC_y) };
 }
