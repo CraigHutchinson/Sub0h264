@@ -1480,7 +1480,7 @@ private:
             MbMotionInfo c = getMotionAt4x4(mb4x + 4, mb4y - 1);
             if (!c.available)
                 c = getMotionAt4x4(mb4x - 1, mb4y - 1); // top-left fallback
-            MotionVector mvp = computeMvPredictor(a, b, c, 0);
+            MotionVector mvp = computeMvPredictor(a, b, c, static_cast<int8_t>(refIdxL0[0]));
             mvPart[0] = { static_cast<int16_t>(mvp.x + mvdX[0]),
                           static_cast<int16_t>(mvp.y + mvdY[0]) };
             trace_.onMvPrediction(mbX, mbY, 0, mvp, {mvdX[0], mvdY[0]}, mvPart[0], a, b, c);
@@ -1494,11 +1494,12 @@ private:
                 MbMotionInfo b0 = getMotionAt4x4(mb4x, mb4y - 1);
                 MbMotionInfo c0 = getMotionAt4x4(mb4x + 4, mb4y - 1);
                 if (!c0.available) c0 = getMotionAt4x4(mb4x - 1, mb4y - 1);
+                int8_t ri0 = static_cast<int8_t>(refIdxL0[0]);
                 MotionVector mvp0;
-                if (b0.available && b0.refIdx == 0)
-                    mvp0 = b0.mv; // directional shortcut
+                if (b0.available && b0.refIdx == ri0)
+                    mvp0 = b0.mv; // directional shortcut — §8.4.1.3.1
                 else
-                    mvp0 = computeMvPredictor(a0, b0, c0, 0);
+                    mvp0 = computeMvPredictor(a0, b0, c0, ri0);
                 mvPart[0] = { static_cast<int16_t>(mvp0.x + mvdX[0]),
                               static_cast<int16_t>(mvp0.y + mvdY[0]) };
                 trace_.onMvPrediction(mbX, mbY, 0, mvp0, {mvdX[0], mvdY[0]}, mvPart[0], a0, b0, c0);
@@ -1507,7 +1508,7 @@ private:
             // Partition 1 (bottom 16x8): §8.4.1.3.1 directional shortcut: use LEFT.
             {
                 MbMotionInfo a1 = getMotionAt4x4(mb4x - 1, mb4y + 2); // left at row 2
-                MbMotionInfo b1 = { mvPart[0], 0, true }; // within-MB top = partition 0
+                MbMotionInfo b1 = { mvPart[0], static_cast<int8_t>(refIdxL0[0]), true }; // partition 0
                 // C = top-right of partition at (16, 7) relative to MB → unavailable.
                 MbMotionInfo c1 = getMotionAt4x4(mb4x + 4, mb4y + 1);
                 if (!c1.available)
@@ -1515,11 +1516,12 @@ private:
                     // D = top-left of partition at (-1, 7) → left MB's (col 3, row 1). §8.4.1.3
                     c1 = getMotionAt4x4(mb4x - 1, mb4y + 1);
                 }
+                int8_t ri1 = static_cast<int8_t>(refIdxL0[1]);
                 MotionVector mvp1;
-                if (a1.available && a1.refIdx == 0)
-                    mvp1 = a1.mv; // directional shortcut
+                if (a1.available && a1.refIdx == ri1)
+                    mvp1 = a1.mv; // directional shortcut — §8.4.1.3.1
                 else
-                    mvp1 = computeMvPredictor(a1, b1, c1, 0);
+                    mvp1 = computeMvPredictor(a1, b1, c1, ri1);
                 mvPart[1] = { static_cast<int16_t>(mvp1.x + mvdX[1]),
                               static_cast<int16_t>(mvp1.y + mvdY[1]) };
                 trace_.onMvPrediction(mbX, mbY, 1, mvp1, {mvdX[1], mvdY[1]}, mvPart[1], a1, b1, c1);
@@ -1534,11 +1536,12 @@ private:
                 MbMotionInfo b0 = getMotionAt4x4(mb4x, mb4y - 1);
                 MbMotionInfo c0 = getMotionAt4x4(mb4x + 2, mb4y - 1); // top of right half
                 if (!c0.available) c0 = getMotionAt4x4(mb4x - 1, mb4y - 1);
+                int8_t ri0 = static_cast<int8_t>(refIdxL0[0]);
                 MotionVector mvp0;
-                if (a0.available && a0.refIdx == 0)
-                    mvp0 = a0.mv; // directional shortcut
+                if (a0.available && a0.refIdx == ri0)
+                    mvp0 = a0.mv; // directional shortcut — §8.4.1.3.1
                 else
-                    mvp0 = computeMvPredictor(a0, b0, c0, 0);
+                    mvp0 = computeMvPredictor(a0, b0, c0, ri0);
                 mvPart[0] = { static_cast<int16_t>(mvp0.x + mvdX[0]),
                               static_cast<int16_t>(mvp0.y + mvdY[0]) };
                 trace_.onMvPrediction(mbX, mbY, 0, mvp0, {mvdX[0], mvdY[0]}, mvPart[0], a0, b0, c0);
@@ -1546,16 +1549,17 @@ private:
 
             // Partition 1 (right 8x16): C=topRight directly if same refIdx
             {
-                MbMotionInfo a1 = { mvPart[0], 0, true }; // partition 0
+                MbMotionInfo a1 = { mvPart[0], static_cast<int8_t>(refIdxL0[0]), true };
                 MbMotionInfo b1 = getMotionAt4x4(mb4x + 2, mb4y - 1);
                 MbMotionInfo c1 = getMotionAt4x4(mb4x + 4, mb4y - 1);
                 if (!c1.available)
                     c1 = getMotionAt4x4(mb4x + 1, mb4y - 1); // D fallback
+                int8_t ri1 = static_cast<int8_t>(refIdxL0[1]);
                 MotionVector mvp1;
-                if (c1.available && c1.refIdx == 0)
-                    mvp1 = c1.mv; // directional shortcut
+                if (c1.available && c1.refIdx == ri1)
+                    mvp1 = c1.mv; // directional shortcut — §8.4.1.3.1
                 else
-                    mvp1 = computeMvPredictor(a1, b1, c1, 0);
+                    mvp1 = computeMvPredictor(a1, b1, c1, ri1);
                 mvPart[1] = { static_cast<int16_t>(mvp1.x + mvdX[1]),
                               static_cast<int16_t>(mvp1.y + mvdY[1]) };
                 trace_.onMvPrediction(mbX, mbY, 1, mvp1, {mvdX[1], mvdY[1]}, mvPart[1], a1, b1, c1);
@@ -1586,13 +1590,13 @@ private:
                 if (!c.available)
                     c = getMotionAt4x4(sx - 1, sy - 1); // D fallback
 
-                MotionVector mvp = computeMvPredictor(a, b, c, 0);
+                MotionVector mvp = computeMvPredictor(a, b, c, static_cast<int8_t>(refIdxL0[s]));
                 MotionVector mv = { static_cast<int16_t>(mvp.x + subMvdX[s]),
                                     static_cast<int16_t>(mvp.y + subMvdY[s]) };
                 trace_.onMvPrediction(mbX, mbY, s, mvp, {subMvdX[s], subMvdY[s]}, mv, a, b, c);
 
                 // Store this sub-partition's MV in its 4 blocks (2x2 in 4x4 grid)
-                MbMotionInfo info = { mv, 0, true };
+                MbMotionInfo info = { mv, static_cast<int8_t>(refIdxL0[s]), true };
                 for (uint32_t r = 0U; r < 2U; ++r)
                     for (uint32_t cc = 0U; cc < 2U; ++cc)
                         mbMotion_[mbIdx * 16U + (subOffY[s] + r) * 4U + subOffX[s] + cc] = info;
@@ -1602,16 +1606,16 @@ private:
             // Per-sub-partition MVs already stored above.
         }
 
-        // Store per-4x4-block MVs for accurate neighbor derivation.
+        // Store per-4x4-block MVs with actual ref_idx for neighbor derivation.
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
         if (mbTypeRaw <= 2U)
         {
             if (numParts == 1U)
-                setMbMotion(mbIdx, mvPart[0], 0);
+                setMbMotion(mbIdx, mvPart[0], static_cast<int8_t>(refIdxL0[0]));
             else
             {
-                setPartitionMotion(mbIdx, mbTypeRaw, 0U, mvPart[0], 0);
-                setPartitionMotion(mbIdx, mbTypeRaw, 1U, mvPart[1], 0);
+                setPartitionMotion(mbIdx, mbTypeRaw, 0U, mvPart[0], static_cast<int8_t>(refIdxL0[0]));
+                setPartitionMotion(mbIdx, mbTypeRaw, 1U, mvPart[1], static_cast<int8_t>(refIdxL0[1]));
             }
         }
         // P_8x8 MVs were stored incrementally in the sub-partition loop above.
