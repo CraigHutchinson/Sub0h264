@@ -38,4 +38,5 @@ set(SUB0H264_TEST_SOURCES
     test_bitstream_trace.cpp
     test_cavlc_regression.cpp
     test_synthetic_quality.cpp
+    test_spec_tables.cpp
 )

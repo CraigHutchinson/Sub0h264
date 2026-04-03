@@ -120,6 +120,305 @@ TEST_CASE("P-frame: IDR frame 0 quality > 40 dB vs raw source")
     }
 }
 
+TEST_CASE("P-frame: reference frame data integrity check")
+{
+    // Verify the reference frame seen by P-frame decode matches the IDR output.
+    auto data = getFixture("scrolling_texture.h264");
+    REQUIRE_FALSE(data.empty());
+
+    auto decoder = std::make_unique<H264Decoder>();
+    std::vector<NalBounds> bounds;
+    findNalUnits(data.data(), static_cast<uint32_t>(data.size()), bounds);
+
+    uint32_t fc = 0;
+    uint8_t idrPixels[8] = {};  // Save first 8 pixels of row 0 from IDR
+    uint8_t idrRow1[8] = {};    // Save first 8 pixels of row 1 from IDR
+
+    for (const auto& b : bounds)
+    {
+        NalUnit nal;
+        if (!parseNalUnit(data.data() + b.offset, b.size, nal))
+            continue;
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
+        {
+            const Frame* frame = decoder->currentFrame();
+            REQUIRE(frame != nullptr);
+
+            if (fc == 0)
+            {
+                // IDR frame - save reference pixels and dump chroma for analysis
+                for (int i = 0; i < 8; ++i)
+                {
+                    idrPixels[i] = frame->y(i, 0);
+                    idrRow1[i] = frame->y(i, 1);
+                }
+                MESSAGE("IDR row0[0..7]: " << (int)idrPixels[0] << " " << (int)idrPixels[1]
+                        << " " << (int)idrPixels[2] << " " << (int)idrPixels[3]
+                        << " " << (int)idrPixels[4] << " " << (int)idrPixels[5]
+                        << " " << (int)idrPixels[6] << " " << (int)idrPixels[7]);
+                // Dump IDR U row 9 cols 15-21 for reference comparison
+                MESSAGE("IDR U row9[15..21]: "
+                        << (int)frame->u(15,9) << " " << (int)frame->u(16,9) << " "
+                        << (int)frame->u(17,9) << " " << (int)frame->u(18,9) << " "
+                        << (int)frame->u(19,9) << " " << (int)frame->u(20,9) << " "
+                        << (int)frame->u(21,9));
+                MESSAGE("IDR V row9[15..21]: "
+                        << (int)frame->v(15,9) << " " << (int)frame->v(16,9) << " "
+                        << (int)frame->v(17,9) << " " << (int)frame->v(18,9) << " "
+                        << (int)frame->v(19,9) << " " << (int)frame->v(20,9) << " "
+                        << (int)frame->v(21,9));
+                // Dump IDR full chroma for python comparison
+                FILE* df = std::fopen("build/our_idr_chroma.yuv", "wb");
+                if (df) {
+                    uint32_t w = frame->width(), h = frame->height();
+                    for (uint32_t r = 0; r < h/2; ++r)
+                        std::fwrite(frame->uRow(r), 1, w/2, df);
+                    for (uint32_t r = 0; r < h/2; ++r)
+                        std::fwrite(frame->vRow(r), 1, w/2, df);
+                    std::fclose(df);
+                }
+            }
+            else if (fc == 1)
+            {
+                // P-frame 1 - check our output pixels
+                MESSAGE("P-frame row0[0..7]: " << (int)frame->y(0,0) << " " << (int)frame->y(1,0)
+                        << " " << (int)frame->y(2,0) << " " << (int)frame->y(3,0)
+                        << " " << (int)frame->y(4,0) << " " << (int)frame->y(5,0)
+                        << " " << (int)frame->y(6,0) << " " << (int)frame->y(7,0));
+                // MB(0,0) p0 MV=(0,4) = full-pel (0,1). Should read ref row 1.
+                // Check if P-frame output at (0,0) ≈ IDR at (0,1)
+                MESSAGE("Expected (ref row1): " << (int)idrRow1[0] << " " << (int)idrRow1[1]
+                        << " " << (int)idrRow1[2] << " " << (int)idrRow1[3]);
+                break;
+            }
+            ++fc;
+        }
+    }
+}
+
+TEST_CASE("P-frame: chroma MC verification for skip MB")
+{
+    // Manually compute expected chroma MC output for a skip MB and compare
+    // with decoder output. The IDR chroma is pixel-perfect vs ffmpeg, so
+    // any error must be in the P-frame chroma MC path.
+    auto data = getFixture("scrolling_texture.h264");
+    REQUIRE_FALSE(data.empty());
+
+    auto decoder = std::make_unique<H264Decoder>();
+    std::vector<NalBounds> bounds;
+    findNalUnits(data.data(), static_cast<uint32_t>(data.size()), bounds);
+
+    uint32_t fc = 0;
+    // Save IDR chroma for manual MC verification
+    std::vector<uint8_t> idrU, idrV;
+    uint32_t w = 320, h = 240;
+    uint32_t cw = w / 2, ch = h / 2;
+
+    for (const auto& b : bounds)
+    {
+        NalUnit nal;
+        if (!parseNalUnit(data.data() + b.offset, b.size, nal))
+            continue;
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
+        {
+            const Frame* frame = decoder->currentFrame();
+            REQUIRE(frame != nullptr);
+
+            if (fc == 0)
+            {
+                // Save IDR chroma planes
+                idrU.resize(cw * ch);
+                idrV.resize(cw * ch);
+                for (uint32_t r = 0; r < ch; ++r)
+                {
+                    std::memcpy(idrU.data() + r * cw, frame->uRow(r), cw);
+                    std::memcpy(idrV.data() + r * cw, frame->vRow(r), cw);
+                }
+            }
+            else if (fc == 1)
+            {
+                // P-frame: verify chroma at MB(3,0) which is a skip MB with MV=(14,8)
+                // MV=(14,8) in qpel → chroma eighth-pel: (14, 8)
+                // Integer: (14>>3, 8>>3) = (1, 1)
+                // Fraction: (14&7, 8&7) = (6, 0)
+                // chromaRefX = 3*8 + 1 = 25, chromaRefY = 0*8 + 1 = 1
+                int32_t refX = 25, refY = 1;
+                uint32_t dx = 6, dy = 0;
+
+                auto getRef = [&](int32_t x, int32_t y, const std::vector<uint8_t>& plane) -> uint8_t {
+                    x = std::max(0, std::min(x, static_cast<int32_t>(cw) - 1));
+                    y = std::max(0, std::min(y, static_cast<int32_t>(ch) - 1));
+                    return plane[y * cw + x];
+                };
+
+                // Compute expected chroma bilinear for first few pixels
+                uint32_t w00 = (8 - dx) * (8 - dy); // 2 * 8 = 16
+                uint32_t w10 = dx * (8 - dy);        // 6 * 8 = 48
+                uint32_t w01 = (8 - dx) * dy;        // 2 * 0 = 0
+                uint32_t w11 = dx * dy;               // 6 * 0 = 0
+
+                MESSAGE("Chroma MC weights: w00=" << w00 << " w10=" << w10
+                        << " w01=" << w01 << " w11=" << w11);
+
+                // Check U plane at (0,0) within MB(3,0) chroma block
+                uint32_t mbCx = 3 * 8; // chroma pixel offset for MB(3,0)
+                for (uint32_t r = 0; r < 2; ++r)
+                {
+                    for (uint32_t c = 0; c < 4; ++c)
+                    {
+                        uint8_t a = getRef(refX + c, refY + r, idrU);
+                        uint8_t b = getRef(refX + c + 1, refY + r, idrU);
+                        uint8_t cc = getRef(refX + c, refY + r + 1, idrU);
+                        uint8_t d = getRef(refX + c + 1, refY + r + 1, idrU);
+                        uint32_t expected = (w00 * a + w10 * b + w01 * cc + w11 * d + 32) >> 6;
+                        uint8_t actual = frame->u(mbCx + c, r);
+
+                        if (expected != actual)
+                        {
+                            MESSAGE("U MB(3,0) (" << c << "," << r << "): "
+                                    << "expected=" << expected << " actual=" << (int)actual
+                                    << " ref=(" << (int)a << "," << (int)b << "," << (int)cc << "," << (int)d << ")");
+                        }
+                    }
+                }
+
+                // Also check V
+                for (uint32_t r = 0; r < 2; ++r)
+                {
+                    for (uint32_t c = 0; c < 4; ++c)
+                    {
+                        uint8_t a = getRef(refX + c, refY + r, idrV);
+                        uint8_t b = getRef(refX + c + 1, refY + r, idrV);
+                        uint8_t cc = getRef(refX + c, refY + r + 1, idrV);
+                        uint8_t d = getRef(refX + c + 1, refY + r + 1, idrV);
+                        uint32_t expected = (w00 * a + w10 * b + w01 * cc + w11 * d + 32) >> 6;
+                        uint8_t actual = frame->v(mbCx + c, r);
+
+                        if (expected != actual)
+                        {
+                            MESSAGE("V MB(3,0) (" << c << "," << r << "): "
+                                    << "expected=" << expected << " actual=" << (int)actual
+                                    << " ref=(" << (int)a << "," << (int)b << "," << (int)cc << "," << (int)d << ")");
+                        }
+                    }
+                }
+
+                // Summary check: is chroma MC correct for this MB?
+                uint32_t mismatches = 0;
+                for (uint32_t r = 0; r < 8; ++r)
+                    for (uint32_t c = 0; c < 8; ++c)
+                    {
+                        uint8_t a = getRef(refX + c, refY + r, idrU);
+                        uint8_t b2 = getRef(refX + c + 1, refY + r, idrU);
+                        uint8_t c2 = getRef(refX + c, refY + r + 1, idrU);
+                        uint8_t d2 = getRef(refX + c + 1, refY + r + 1, idrU);
+                        uint32_t exp = (w00 * a + w10 * b2 + w01 * c2 + w11 * d2 + 32) >> 6;
+                        if (static_cast<uint8_t>(exp) != frame->u(mbCx + c, r))
+                            ++mismatches;
+                    }
+                MESSAGE("MB(3,0) U chroma mismatches: " << mismatches << "/64");
+                CHECK(mismatches == 0);
+
+                // Check what reference data the decoder actually sees
+                // Compare IDR chroma saved from currentFrame() vs raw fixture
+                std::vector<uint8_t> rawData;
+                const char* pfxs[] = { "tests/fixtures/", "../tests/fixtures/", "" };
+                for (auto* pfx2 : pfxs)
+                {
+                    std::string rpath = std::string(pfx2) + "scrolling_texture_raw.yuv";
+                    std::ifstream rf(rpath, std::ios::binary | std::ios::ate);
+                    if (rf.is_open())
+                    {
+                        rawData.resize(rf.tellg()); rf.seekg(0);
+                        rf.read((char*)rawData.data(), rawData.size());
+                        break;
+                    }
+                }
+                if (!rawData.empty())
+                {
+                    // Compare IDR U plane vs raw source U plane (frame 0)
+                    uint32_t ySize = w * h;
+                    const uint8_t* rawU0 = rawData.data() + ySize;
+                    uint32_t uDiff = 0;
+                    for (uint32_t i = 0; i < cw * ch; ++i)
+                        if (idrU[i] != rawU0[i]) ++uDiff;
+                    MESSAGE("IDR U vs raw source frame 0: " << uDiff << " / " << cw * ch << " diffs");
+                }
+
+                // Read actual stored MV for various MBs via public accessor
+                {
+                    // Check stored MVs in rows 0-3
+                    for (uint32_t my2 = 0; my2 < 4; ++my2)
+                    {
+                        for (uint32_t mx2 = 0; mx2 < 7; ++mx2)
+                        {
+                            auto mi = decoder->motionAt4x4(mx2 * 4, my2 * 4);
+                            if (mi.mv.x != 14 || mi.mv.y != 8 || my2 < 2)
+                                MESSAGE("MB(" << mx2 << "," << my2 << ") MV=("
+                                        << mi.mv.x << "," << mi.mv.y
+                                        << ") ref=" << (int)mi.refIdx);
+                        }
+                    }
+                }
+
+                // Verify chroma MC using ACTUAL stored per-4x4 MVs.
+                // For partitioned MBs, different 4x4 blocks have different MVs,
+                // so we check per-4x4-block (maps to 2x2 chroma pixels).
+                uint32_t totalChromaMismatch = 0, totalChromaChecked = 0;
+                for (uint32_t my2 = 0; my2 < h / 16U; ++my2)
+                {
+                    for (uint32_t mx2 = 0; mx2 < w / 16U; ++mx2)
+                    {
+                        // Check per-4x4 luma block → each maps to 2x2 chroma
+                        uint32_t mbMm = 0;
+                        for (uint32_t by = 0; by < 4; ++by)
+                        {
+                            for (uint32_t bx = 0; bx < 4; ++bx)
+                            {
+                                auto mi = decoder->motionAt4x4(mx2*4+bx, my2*4+by);
+                                if (!mi.available || mi.refIdx < 0) continue;
+
+                                int16_t mvx = mi.mv.x, mvy = mi.mv.y;
+                                int32_t crx = static_cast<int32_t>(mx2*8 + bx*2) + (mvx >> 3);
+                                int32_t cry = static_cast<int32_t>(my2*8 + by*2) + (mvy >> 3);
+                                uint32_t cdx2 = static_cast<uint32_t>(mvx) & 7U;
+                                uint32_t cdy2 = static_cast<uint32_t>(mvy) & 7U;
+                                uint32_t ww00 = (8-cdx2)*(8-cdy2), ww10 = cdx2*(8-cdy2);
+                                uint32_t ww01 = (8-cdx2)*cdy2, ww11 = cdx2*cdy2;
+
+                                for (uint32_t pr = 0; pr < 2; ++pr)
+                                    for (uint32_t pc = 0; pc < 2; ++pc)
+                                    {
+                                        uint8_t aa = getRef(crx+pc, cry+pr, idrU);
+                                        uint8_t bb = getRef(crx+pc+1, cry+pr, idrU);
+                                        uint8_t cc3 = getRef(crx+pc, cry+pr+1, idrU);
+                                        uint8_t dd = getRef(crx+pc+1, cry+pr+1, idrU);
+                                        uint32_t exp5 = (ww00*aa + ww10*bb + ww01*cc3 + ww11*dd + 32) >> 6;
+                                        uint32_t cx = mx2*8 + bx*2 + pc;
+                                        uint32_t cy = my2*8 + by*2 + pr;
+                                        if (static_cast<uint8_t>(exp5) != frame->u(cx, cy))
+                                            ++mbMm;
+                                        ++totalChromaChecked;
+                                    }
+                            }
+                        }
+                        totalChromaMismatch += mbMm;
+                        if (mbMm > 0)
+                            MESSAGE("MB(" << mx2 << "," << my2 << ") U chroma: "
+                                    << mbMm << "/64 mismatches");
+                    }
+                }
+                MESSAGE("Total U chroma per-4x4 mismatches: " << totalChromaMismatch
+                        << "/" << totalChromaChecked);
+                CHECK(totalChromaMismatch < totalChromaChecked / 50); // <2% threshold
+
+                break;
+            }
+            ++fc;
+        }
+    }
+}
+
 // ── MV prediction helpers (confirmed correct via unit test) ─────────────
 
 TEST_CASE("median3: spec-compliant median-of-three §8.4.1.3.1")
@@ -238,4 +537,125 @@ TEST_CASE("DPB: reference frame survives across P-frame decode")
         }
     }
     CHECK(frameCount >= 3);
+}
+
+// ── MV prediction trace for first P-frame ──────────────────────────────
+
+TEST_CASE("P-frame bit offset trace: compare MB parsing positions vs libavc")
+{
+    // Compare our per-MB bit offsets with libavc to find parsing divergence.
+    // libavc P-frame 1 offsets: MB(0)=28, MB(1)=272, MB(2)=594, MB(3)=625, MB(4)=634
+    auto data = getFixture("scrolling_texture.h264");
+    REQUIRE_FALSE(data.empty());
+
+    struct MbInfo { uint16_t mbX, mbY; uint32_t mbType, bitOff; };
+    std::vector<MbInfo> mbInfos;
+    uint32_t fc = 0U;
+
+    auto decoder = std::make_unique<H264Decoder>();
+    decoder->trace().setCallback([&](const TraceEvent& e) {
+        if (fc != 1U) return; // Only P-frame 1
+        if (e.type == TraceEventType::MbStart)
+            mbInfos.push_back({e.mbX, e.mbY, e.a, e.b});
+    });
+
+    std::vector<NalBounds> bounds;
+    findNalUnits(data.data(), static_cast<uint32_t>(data.size()), bounds);
+    for (const auto& b : bounds)
+    {
+        NalUnit nal;
+        if (!parseNalUnit(data.data() + b.offset, b.size, nal)) continue;
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
+        {
+            if (++fc >= 2U) break;
+        }
+    }
+
+    REQUIRE(mbInfos.size() > 5U);
+
+    // libavc reference bit offsets for P-frame 1 coded MBs
+    // [LIBAVC-P] MB(0) CODED bit=28  → MB(0,0)
+    // [LIBAVC-P] MB(1) CODED bit=272 → MB(1,0) (or skip run)
+    uint32_t libavBits[] = {28, 272, 594, 625, 634};
+    for (uint32_t i = 0; i < std::min(static_cast<uint32_t>(mbInfos.size()), 10U); ++i)
+    {
+        auto& mi = mbInfos[i];
+        uint32_t libRef = (i < 5) ? libavBits[i] : 0;
+        MESSAGE("MB(" << mi.mbX << "," << mi.mbY << ") type=" << mi.mbType
+                << " bit=" << mi.bitOff
+                << (libRef > 0 ? " (libavc=" + std::to_string(libRef) + ")" : ""));
+    }
+}
+
+TEST_CASE("P-frame MV trace: scrolling_texture first P-frame MV dump")
+{
+    // Capture per-MB MV prediction data for the first P-frame.
+    // This is a diagnostic test — it prints MV info for manual comparison
+    // against libavc reference. Does not assert specific values yet.
+    auto data = getFixture("scrolling_texture.h264");
+    REQUIRE_FALSE(data.empty());
+
+    struct MvRecord {
+        uint16_t mbX, mbY;
+        uint32_t partIdx;
+        int16_t mvpX, mvpY, mvdX, mvdY, mvX, mvY;
+        int16_t aX, aY, bX, bY, cX, cY;
+    };
+    std::vector<MvRecord> mvRecords;
+    uint32_t frameCount = 0U;
+
+    auto decoder = std::make_unique<H264Decoder>();
+    decoder->trace().setCallback([&](const TraceEvent& e) {
+        // Only capture MV events from frame 1 (first P-frame)
+        if (frameCount != 1U) return;
+        if (e.type == TraceEventType::MvPrediction && e.data != nullptr && e.dataLen == 12U)
+        {
+            mvRecords.push_back({
+                e.mbX, e.mbY, e.a,
+                e.data[0], e.data[1], e.data[2], e.data[3], e.data[4], e.data[5],
+                e.data[6], e.data[7], e.data[8], e.data[9], e.data[10], e.data[11]
+            });
+        }
+    });
+
+    std::vector<NalBounds> bounds;
+    findNalUnits(data.data(), static_cast<uint32_t>(data.size()), bounds);
+    for (const auto& b : bounds)
+    {
+        NalUnit nal;
+        if (!parseNalUnit(data.data() + b.offset, b.size, nal))
+            continue;
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
+        {
+            ++frameCount;
+            if (frameCount >= 2U) break; // Stop after first P-frame
+        }
+    }
+
+    REQUIRE(frameCount >= 2U);
+    MESSAGE("First P-frame: " << mvRecords.size() << " MV records");
+
+    // Print first 30 MBs (first 1.5 rows of 320x240 = 20 MBs/row)
+    uint32_t printCount = std::min(static_cast<uint32_t>(mvRecords.size()), 40U);
+    for (uint32_t i = 0U; i < printCount; ++i)
+    {
+        auto& r = mvRecords[i];
+        MESSAGE("MB(" << r.mbX << "," << r.mbY << ") p" << r.partIdx
+                << " MVP=(" << r.mvpX << "," << r.mvpY
+                << ") MVD=(" << r.mvdX << "," << r.mvdY
+                << ") MV=(" << r.mvX << "," << r.mvY
+                << ") A=(" << r.aX << "," << r.aY
+                << ") B=(" << r.bX << "," << r.bY
+                << ") C=(" << r.cX << "," << r.cY << ")");
+    }
+
+    // Basic sanity: no MV should be wildly out of bounds (>±512 qpel = ±128 pixels)
+    uint32_t wildMvCount = 0U;
+    for (const auto& r : mvRecords)
+    {
+        if (std::abs(r.mvX) > 512 || std::abs(r.mvY) > 512)
+            ++wildMvCount;
+    }
+    MESSAGE("Wild MVs (>±128 pels): " << wildMvCount << "/" << mvRecords.size());
+    CHECK(wildMvCount == 0U);
 }

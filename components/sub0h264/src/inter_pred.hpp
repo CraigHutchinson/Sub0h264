@@ -109,62 +109,141 @@ inline void lumaMotionComp(const Frame& ref,
         return;
     }
 
-    // Quarter-pel: average between two half-pel positions
-    // General case: first interpolate to the two bracketing half-pel positions,
-    // then average. For simplicity, use a two-pass approach.
+    // Quarter-pel horizontal (dx=1 or 3, dy=0):
+    // a=(G+b+1)>>1 for dx=1, c=(H+b+1)>>1 for dx=3. §8.4.2.2.1
     if (dy == 0U)
     {
-        // Horizontal quarter-pel: average full and half
-        int32_t halfX = (dx == 1U) ? refX : refX + 1;
         for (uint32_t row = 0U; row < height; ++row)
             for (uint32_t col = 0U; col < width; ++col)
             {
-                int32_t full = getSample(refX + col + (dx == 3U ? 1 : 0), refY + row);
+                // b = horizontal half-pel between col and col+1
                 int32_t sum = 0;
                 for (int32_t k = -2; k <= 3; ++k)
-                    sum += cLumaFilter6Tap[k + 2] * getSample(halfX + col + k - (dx == 3U ? 1 : 0), refY + row);
-                int32_t half = clipU8((sum + 16) >> 5);
-                dst[row * dstStride + col] = static_cast<uint8_t>(clipU8((full + half + 1) >> 1));
+                    sum += cLumaFilter6Tap[k + 2] * getSample(refX + col + k, refY + row);
+                int32_t b = clipU8((sum + 16) >> 5);
+                // Integer sample: G for dx=1, H (col+1) for dx=3
+                int32_t full = getSample(refX + col + (dx == 3U ? 1 : 0), refY + row);
+                dst[row * dstStride + col] = static_cast<uint8_t>((full + b + 1) >> 1);
             }
         return;
     }
 
+    // Quarter-pel vertical (dx=0, dy=1 or 3):
+    // d=(G+h+1)>>1 for dy=1, n=(J+h+1)>>1 for dy=3. §8.4.2.2.1
     if (dx == 0U)
     {
-        // Vertical quarter-pel: average full and half
         for (uint32_t row = 0U; row < height; ++row)
             for (uint32_t col = 0U; col < width; ++col)
             {
-                int32_t full = getSample(refX + col, refY + row + (dy == 3U ? 1 : 0));
+                // h = vertical half-pel between row and row+1
                 int32_t sum = 0;
                 for (int32_t k = -2; k <= 3; ++k)
                     sum += cLumaFilter6Tap[k + 2] * getSample(refX + col, refY + row + k);
-                int32_t half = clipU8((sum + 16) >> 5);
-                dst[row * dstStride + col] = static_cast<uint8_t>(clipU8((full + half + 1) >> 1));
+                int32_t h = clipU8((sum + 16) >> 5);
+                // Integer sample: G for dy=1, J (row+1) for dy=3
+                int32_t full = getSample(refX + col, refY + row + (dy == 3U ? 1 : 0));
+                dst[row * dstStride + col] = static_cast<uint8_t>((full + h + 1) >> 1);
             }
         return;
     }
 
-    // Diagonal fractional position: interpolate in both dimensions
-    // Use horizontal half-pel first, then vertical filter on that
+    // ── Diagonal fractional positions (dx!=0, dy!=0) ────────────────
+    // ITU-T H.264 §8.4.2.2.1: requires computing intermediate half-pel
+    // values b, h, j, m, s and then averaging per Table 8-12.
+
+    // Helper: horizontal 6-tap producing UNCLIPPED intermediate (for j computation).
+    auto hFilter = [&](int32_t x, int32_t y) -> int32_t {
+        int32_t sum = 0;
+        for (int32_t k = -2; k <= 3; ++k)
+            sum += cLumaFilter6Tap[k + 2] * getSample(x + k, y);
+        return sum; // NOT clipped — intermediate for 2D filter
+    };
+
+    // Helper: horizontal 6-tap, clipped (for b, s values).
+    auto hFilterClip = [&](int32_t x, int32_t y) -> int32_t {
+        return clipU8((hFilter(x, y) + 16) >> 5);
+    };
+
+    // Helper: vertical 6-tap, clipped (for h, m values).
+    auto vFilterClip = [&](int32_t x, int32_t y) -> int32_t {
+        int32_t sum = 0;
+        for (int32_t k = -2; k <= 3; ++k)
+            sum += cLumaFilter6Tap[k + 2] * getSample(x, y + k);
+        return clipU8((sum + 16) >> 5);
+    };
+
+    // Helper: j = 2D 6-tap at (x, y). Vertical 6-tap on horizontal intermediates.
+    // §8.4.2.2.1: j = clip((vFilter(hFilter_unclipped) + 512) >> 10)
+    auto j2D = [&](int32_t x, int32_t y) -> int32_t {
+        int32_t sum = 0;
+        for (int32_t k = -2; k <= 3; ++k)
+            sum += cLumaFilter6Tap[k + 2] * hFilter(x, y + k);
+        return clipU8((sum + 512) >> 10);
+    };
+
+    // Compute per-pixel based on fractional position — Table 8-12:
+    //   (1,1)=e: (b+h+1)>>1     (2,1)=f: (b+j+1)>>1     (3,1)=g: (b+m+1)>>1
+    //   (1,2)=i: (h+j+1)>>1     (2,2)=j: 2D filter       (3,2)=k: (j+m+1)>>1
+    //   (1,3)=p: (h+s+1)>>1     (2,3)=q: (j+s+1)>>1     (3,3)=r: (m+s+1)>>1
+    // Where: b=hHalf@row, h=vHalf@col, j=2D@(col,row),
+    //        m=vHalf@(col+1), s=hHalf@(row+1)
     for (uint32_t row = 0U; row < height; ++row)
+    {
         for (uint32_t col = 0U; col < width; ++col)
         {
-            // Horizontal half-pel at (refX + col, refY + row)
-            int32_t sumH = 0;
-            for (int32_t k = -2; k <= 3; ++k)
-                sumH += cLumaFilter6Tap[k + 2] * getSample(refX + col + k, refY + row);
-            int32_t halfH = clipU8((sumH + 16) >> 5);
+            int32_t x = refX + static_cast<int32_t>(col);
+            int32_t y = refY + static_cast<int32_t>(row);
+            int32_t val;
 
-            // Vertical half-pel at (refX + col, refY + row)
-            int32_t sumV = 0;
-            for (int32_t k = -2; k <= 3; ++k)
-                sumV += cLumaFilter6Tap[k + 2] * getSample(refX + col, refY + row + k);
-            int32_t halfV = clipU8((sumV + 16) >> 5);
+            if (dx == 2U && dy == 2U)
+            {
+                // j = 2D 6-tap — §8.4.2.2.1 Eq. 8-239/8-240
+                val = j2D(x, y);
+            }
+            else if (dx == 1U && dy == 1U)
+            {
+                // e = (b + h + 1) >> 1
+                val = (hFilterClip(x, y) + vFilterClip(x, y) + 1) >> 1;
+            }
+            else if (dx == 3U && dy == 1U)
+            {
+                // g = (b + m + 1) >> 1 — m is vertical half at col+1
+                val = (hFilterClip(x, y) + vFilterClip(x + 1, y) + 1) >> 1;
+            }
+            else if (dx == 1U && dy == 3U)
+            {
+                // p = (h + s + 1) >> 1 — s is horizontal half at row+1
+                val = (vFilterClip(x, y) + hFilterClip(x, y + 1) + 1) >> 1;
+            }
+            else if (dx == 3U && dy == 3U)
+            {
+                // r = (m + s + 1) >> 1
+                val = (vFilterClip(x + 1, y) + hFilterClip(x, y + 1) + 1) >> 1;
+            }
+            else if (dx == 2U && dy == 1U)
+            {
+                // f = (b + j + 1) >> 1
+                val = (hFilterClip(x, y) + j2D(x, y) + 1) >> 1;
+            }
+            else if (dx == 2U && dy == 3U)
+            {
+                // q = (j + s + 1) >> 1
+                val = (j2D(x, y) + hFilterClip(x, y + 1) + 1) >> 1;
+            }
+            else if (dx == 1U && dy == 2U)
+            {
+                // i = (h + j + 1) >> 1
+                val = (vFilterClip(x, y) + j2D(x, y) + 1) >> 1;
+            }
+            else // dx == 3U && dy == 2U
+            {
+                // k = (j + m + 1) >> 1
+                val = (j2D(x, y) + vFilterClip(x + 1, y) + 1) >> 1;
+            }
 
-            // Average for diagonal position
-            dst[row * dstStride + col] = static_cast<uint8_t>(clipU8((halfH + halfV + 1) >> 1));
+            dst[row * dstStride + col] = static_cast<uint8_t>(val);
         }
+    }
 }
 
 /** Perform chroma bilinear motion compensation.

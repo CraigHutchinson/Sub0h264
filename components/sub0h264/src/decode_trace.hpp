@@ -23,6 +23,8 @@
 #ifndef CROG_SUB0H264_DECODE_TRACE_HPP
 #define CROG_SUB0H264_DECODE_TRACE_HPP
 
+#include "motion.hpp"
+
 #include <cstdint>
 #include <cstdio>
 #include <cstdarg>
@@ -42,6 +44,7 @@ enum class TraceEventType : uint8_t
     ChromaDcDequant,  ///< Chroma DC after Hadamard + dequant: a=0 Cb, a=1 Cr
     BlockResidual,    ///< CAVLC block: blkIdx, nC, totalCoeff, bits
     LumaDcDequant,    ///< Luma I_16x16 DC after dequant: values in data[]
+    MvPrediction,     ///< MV prediction: a=partIdx, data=[mvpX,mvpY,mvdX,mvdY,mvX,mvY,aX,aY,bX,bY,cX,cY]
 };
 
 /// Structured trace event — passed to callbacks.
@@ -155,6 +158,35 @@ struct DecodeTrace
         if (enabled && shouldTraceBlock(mbX, mbY, blkIdx))
             std::printf("[TRACE] MB(%u,%u) blk%u nC=%d tc=%u %ub\n",
                 mbX, mbY, blkIdx, nC, tc, bits);
+#endif
+    }
+
+    /** Trace MV prediction result for a partition.
+     *  @param partIdx Partition index (0 or 1)
+     *  @param mvp  Predicted MV (before adding MVD)
+     *  @param mvd  Motion vector difference from bitstream
+     *  @param mv   Final MV (mvp + mvd)
+     *  @param a,b,c  Neighbor motion info (LEFT, TOP, TOP_RIGHT/TOP_LEFT)
+     */
+    void onMvPrediction(uint32_t mbX, uint32_t mbY, uint32_t partIdx,
+                         MotionVector mvp, MotionVector mvd, MotionVector mv,
+                         const MbMotionInfo& a, const MbMotionInfo& b,
+                         const MbMotionInfo& c) const noexcept
+    {
+        int16_t buf[12] = {
+            mvp.x, mvp.y, mvd.x, mvd.y, mv.x, mv.y,
+            a.available ? a.mv.x : INT16_MIN, a.available ? a.mv.y : INT16_MIN,
+            b.available ? b.mv.x : INT16_MIN, b.available ? b.mv.y : INT16_MIN,
+            c.available ? c.mv.x : INT16_MIN, c.available ? c.mv.y : INT16_MIN
+        };
+        emit({TraceEventType::MvPrediction, static_cast<uint16_t>(mbX),
+              static_cast<uint16_t>(mbY), partIdx, 0, 0, 0, buf, 12});
+#if SUB0H264_TRACE
+        if (enabled && shouldTrace(mbX, mbY))
+            std::printf("[TRACE] MB(%u,%u) part%u MVP=(%d,%d) MVD=(%d,%d) MV=(%d,%d) "
+                        "A=(%d,%d) B=(%d,%d) C=(%d,%d)\n",
+                        mbX, mbY, partIdx, mvp.x, mvp.y, mvd.x, mvd.y, mv.x, mv.y,
+                        buf[6], buf[7], buf[8], buf[9], buf[10], buf[11]);
 #endif
     }
 

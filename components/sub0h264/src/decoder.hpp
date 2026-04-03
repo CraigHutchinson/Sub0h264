@@ -139,6 +139,13 @@ public:
     /** Access trace for setting callbacks from tests. */
     DecodeTrace& trace() noexcept { return trace_; }
 
+    /** Read MV at a specific 4x4 block position (absolute 4x4 grid coords).
+     *  Public for test inspection of internal MV state. */
+    MbMotionInfo motionAt4x4(int32_t blk4x, int32_t blk4y) const noexcept
+    {
+        return getMotionAt4x4(blk4x, blk4y);
+    }
+
 private:
     DecodeTrace trace_;
     ParamSets paramSets_;
@@ -483,6 +490,7 @@ private:
 
                     if (mbSkipRun > 0U)
                     {
+                        trace_.onMbStart(mbX, mbY, 99U, static_cast<uint32_t>(br.bitOffset()));
                         decodePSkipMb(*decodeTarget, *refFrame, mbX, mbY);
                         --mbSkipRun;
                         if (mbSkipRun == 0U)
@@ -490,8 +498,11 @@ private:
                     }
                     else
                     {
+                        trace_.onMbStart(mbX, mbY, 100U, static_cast<uint32_t>(br.bitOffset()));
                         uint32_t mbTypeRaw = br.readUev();
                         needSkipRun = true;
+
+                        trace_.onMbStart(mbX, mbY, mbTypeRaw, static_cast<uint32_t>(br.bitOffset()));
 
                         if (mbTypeRaw >= 5U)
                         {
@@ -1361,6 +1372,7 @@ private:
         // 0=P_L0_16x16 (1 partition), 1=P_L0_L0_16x8 (2), 2=P_L0_L0_8x16 (2)
         // 3=P_8x8 (4 sub-MBs), 4=P_8x8ref0 (4 sub-MBs, ref=0)
         int16_t mvdX[4] = {}, mvdY[4] = {};
+        int16_t subMvdX[4] = {}, subMvdY[4] = {}; // Per-8x8 MVDs for P_8x8
         uint32_t numParts = 1U;
 
         if (mbTypeRaw <= 2U)
@@ -1410,9 +1422,10 @@ private:
                 }
             }
 
-            // Read MVD for each sub-partition
-            // sub_mb_type determines how many MVDs per 8x8:
-            //   0=8x8(1), 1=8x4(2), 2=4x8(2), 3=4x4(4)
+            // Read MVD for each sub-partition — §7.3.5.2.
+            // sub_mb_type: 0=8x8(1 MVD), 1=8x4(2), 2=4x8(2), 3=4x4(4)
+            // Store first MVD per 8x8 block; consume rest for bit alignment.
+            int16_t subMvdX[4] = {}, subMvdY[4] = {};
             for (uint32_t s = 0U; s < 4U; ++s)
             {
                 uint32_t numSubParts = 1U;
@@ -1421,11 +1434,11 @@ private:
 
                 for (uint32_t sp = 0U; sp < numSubParts; ++sp)
                 {
-                    br.readSev(); // mvd_l0_x
-                    br.readSev(); // mvd_l0_y
+                    int16_t dx = static_cast<int16_t>(br.readSev());
+                    int16_t dy = static_cast<int16_t>(br.readSev());
+                    if (sp == 0U) { subMvdX[s] = dx; subMvdY[s] = dy; }
                 }
             }
-            // Use MV=(0,0) as fallback — proper sub-MB MC not implemented yet
         }
 
         // Compute per-partition MV predictors — ITU-T H.264 §8.4.1.3.
@@ -1434,121 +1447,158 @@ private:
         int32_t mb4y = static_cast<int32_t>(mbY) * 4;
 
         MotionVector mvPart[2];
-        if (numParts == 1U)
+        MotionVector mvSub8x8[4] = {}; // Per-8x8 MVs for P_8x8
+        if (mbTypeRaw <= 2U && numParts == 1U)
         {
             // P_L0_16x16: A=left(col-1,row0), B=top(col0,row-1), C=topRight(col4,row-1)
             MbMotionInfo a = getMotionAt4x4(mb4x - 1, mb4y);
             MbMotionInfo b = getMotionAt4x4(mb4x, mb4y - 1);
+
             MbMotionInfo c = getMotionAt4x4(mb4x + 4, mb4y - 1);
             if (!c.available)
                 c = getMotionAt4x4(mb4x - 1, mb4y - 1); // top-left fallback
             MotionVector mvp = computeMvPredictor(a, b, c, 0);
             mvPart[0] = { static_cast<int16_t>(mvp.x + mvdX[0]),
                           static_cast<int16_t>(mvp.y + mvdY[0]) };
+            trace_.onMvPrediction(mbX, mbY, 0, mvp, {mvdX[0], mvdY[0]}, mvPart[0], a, b, c);
         }
         else if (mbTypeRaw == 1U)
         {
             // P_L0_L0_16x8: §8.4.1.3.1
             // Partition 0 (top 16x8): B=top neighbor directly if same refIdx
-            MbMotionInfo b0 = getMotionAt4x4(mb4x, mb4y - 1);
-            if (b0.available && b0.refIdx == 0)
-            {
-                mvPart[0] = { static_cast<int16_t>(b0.mv.x + mvdX[0]),
-                              static_cast<int16_t>(b0.mv.y + mvdY[0]) };
-            }
-            else
             {
                 MbMotionInfo a0 = getMotionAt4x4(mb4x - 1, mb4y);
+                MbMotionInfo b0 = getMotionAt4x4(mb4x, mb4y - 1);
                 MbMotionInfo c0 = getMotionAt4x4(mb4x + 4, mb4y - 1);
                 if (!c0.available) c0 = getMotionAt4x4(mb4x - 1, mb4y - 1);
-                mvPart[0] = { static_cast<int16_t>(computeMvPredictor(a0, b0, c0, 0).x + mvdX[0]),
-                              static_cast<int16_t>(computeMvPredictor(a0, b0, c0, 0).y + mvdY[0]) };
+                MotionVector mvp0;
+                if (b0.available && b0.refIdx == 0)
+                    mvp0 = b0.mv; // directional shortcut
+                else
+                    mvp0 = computeMvPredictor(a0, b0, c0, 0);
+                mvPart[0] = { static_cast<int16_t>(mvp0.x + mvdX[0]),
+                              static_cast<int16_t>(mvp0.y + mvdY[0]) };
+                trace_.onMvPrediction(mbX, mbY, 0, mvp0, {mvdX[0], mvdY[0]}, mvPart[0], a0, b0, c0);
             }
 
-            // Partition 1 (bottom 16x8): A=left at bottom half directly if same refIdx
-            MbMotionInfo a1 = getMotionAt4x4(mb4x - 1, mb4y + 2); // left at row 2
-            if (a1.available && a1.refIdx == 0)
+            // Partition 1 (bottom 16x8): §8.4.1.3.1 directional shortcut: use LEFT.
             {
-                mvPart[1] = { static_cast<int16_t>(a1.mv.x + mvdX[1]),
-                              static_cast<int16_t>(a1.mv.y + mvdY[1]) };
-            }
-            else
-            {
-                // B for part1 = partition 0's MV (just decoded above)
-                MbMotionInfo b1 = { mvPart[0], 0, true };
-                MbMotionInfo c1 = getMotionAt4x4(mb4x - 1, mb4y - 1); // top-left
-                mvPart[1] = { static_cast<int16_t>(computeMvPredictor(a1, b1, c1, 0).x + mvdX[1]),
-                              static_cast<int16_t>(computeMvPredictor(a1, b1, c1, 0).y + mvdY[1]) };
+                MbMotionInfo a1 = getMotionAt4x4(mb4x - 1, mb4y + 2); // left at row 2
+                MbMotionInfo b1 = { mvPart[0], 0, true }; // within-MB top = partition 0
+                // C = top-right of partition at (16, 7) relative to MB → unavailable.
+                MbMotionInfo c1 = getMotionAt4x4(mb4x + 4, mb4y + 1);
+                if (!c1.available)
+                {
+                    // D = top-left of partition at (-1, 7) → left MB's (col 3, row 1). §8.4.1.3
+                    c1 = getMotionAt4x4(mb4x - 1, mb4y + 1);
+                }
+                MotionVector mvp1;
+                if (a1.available && a1.refIdx == 0)
+                    mvp1 = a1.mv; // directional shortcut
+                else
+                    mvp1 = computeMvPredictor(a1, b1, c1, 0);
+                mvPart[1] = { static_cast<int16_t>(mvp1.x + mvdX[1]),
+                              static_cast<int16_t>(mvp1.y + mvdY[1]) };
+                trace_.onMvPrediction(mbX, mbY, 1, mvp1, {mvdX[1], mvdY[1]}, mvPart[1], a1, b1, c1);
             }
         }
         else if (mbTypeRaw == 2U)
         {
             // P_L0_L0_8x16: §8.4.1.3.1
             // Partition 0 (left 8x16): A=left neighbor directly if same refIdx
-            MbMotionInfo a0 = getMotionAt4x4(mb4x - 1, mb4y);
-            if (a0.available && a0.refIdx == 0)
             {
-                mvPart[0] = { static_cast<int16_t>(a0.mv.x + mvdX[0]),
-                              static_cast<int16_t>(a0.mv.y + mvdY[0]) };
-            }
-            else
-            {
+                MbMotionInfo a0 = getMotionAt4x4(mb4x - 1, mb4y);
                 MbMotionInfo b0 = getMotionAt4x4(mb4x, mb4y - 1);
                 MbMotionInfo c0 = getMotionAt4x4(mb4x + 2, mb4y - 1); // top of right half
                 if (!c0.available) c0 = getMotionAt4x4(mb4x - 1, mb4y - 1);
-                mvPart[0] = { static_cast<int16_t>(computeMvPredictor(a0, b0, c0, 0).x + mvdX[0]),
-                              static_cast<int16_t>(computeMvPredictor(a0, b0, c0, 0).y + mvdY[0]) };
+                MotionVector mvp0;
+                if (a0.available && a0.refIdx == 0)
+                    mvp0 = a0.mv; // directional shortcut
+                else
+                    mvp0 = computeMvPredictor(a0, b0, c0, 0);
+                mvPart[0] = { static_cast<int16_t>(mvp0.x + mvdX[0]),
+                              static_cast<int16_t>(mvp0.y + mvdY[0]) };
+                trace_.onMvPrediction(mbX, mbY, 0, mvp0, {mvdX[0], mvdY[0]}, mvPart[0], a0, b0, c0);
             }
 
             // Partition 1 (right 8x16): C=topRight directly if same refIdx
-            MbMotionInfo c1 = getMotionAt4x4(mb4x + 4, mb4y - 1);
-            if (!c1.available)
-                c1 = getMotionAt4x4(mb4x + 1, mb4y - 1); // top of left partition
-            if (c1.available && c1.refIdx == 0)
             {
-                mvPart[1] = { static_cast<int16_t>(c1.mv.x + mvdX[1]),
-                              static_cast<int16_t>(c1.mv.y + mvdY[1]) };
-            }
-            else
-            {
-                // A for part1 = partition 0 (just decoded)
-                MbMotionInfo a1 = { mvPart[0], 0, true };
+                MbMotionInfo a1 = { mvPart[0], 0, true }; // partition 0
                 MbMotionInfo b1 = getMotionAt4x4(mb4x + 2, mb4y - 1);
-                mvPart[1] = { static_cast<int16_t>(computeMvPredictor(a1, b1, c1, 0).x + mvdX[1]),
-                              static_cast<int16_t>(computeMvPredictor(a1, b1, c1, 0).y + mvdY[1]) };
+                MbMotionInfo c1 = getMotionAt4x4(mb4x + 4, mb4y - 1);
+                if (!c1.available)
+                    c1 = getMotionAt4x4(mb4x + 1, mb4y - 1); // D fallback
+                MotionVector mvp1;
+                if (c1.available && c1.refIdx == 0)
+                    mvp1 = c1.mv; // directional shortcut
+                else
+                    mvp1 = computeMvPredictor(a1, b1, c1, 0);
+                mvPart[1] = { static_cast<int16_t>(mvp1.x + mvdX[1]),
+                              static_cast<int16_t>(mvp1.y + mvdY[1]) };
+                trace_.onMvPrediction(mbX, mbY, 1, mvp1, {mvdX[1], mvdY[1]}, mvPart[1], a1, b1, c1);
             }
         }
         else
         {
-            // P_8x8/P_8x8ref0: standard median predictor (simplified)
-            MbMotionInfo a = getMotionAt4x4(mb4x - 1, mb4y);
-            MbMotionInfo b = getMotionAt4x4(mb4x, mb4y - 1);
-            MbMotionInfo c = getMotionAt4x4(mb4x + 4, mb4y - 1);
-            if (!c.available) c = getMotionAt4x4(mb4x - 1, mb4y - 1);
-            MotionVector mvp = computeMvPredictor(a, b, c, 0);
-            mvPart[0] = { static_cast<int16_t>(mvp.x + mvdX[0]),
-                          static_cast<int16_t>(mvp.y + mvdY[0]) };
+            // P_8x8/P_8x8ref0: per-8x8 sub-partition MV prediction — §8.4.1.3.
+            // 4 sub-partitions in raster order: TL(0), TR(1), BL(2), BR(3).
+            // Each 8x8 sub-partition has its own MV = MVP + MVD.
+            // Store MVs immediately so subsequent sub-partitions can use them.
+            // Sub-partition origins in 4x4 block coordinates:
+            //   sub0=(mb4x,   mb4y),   sub1=(mb4x+2, mb4y)
+            //   sub2=(mb4x,   mb4y+2), sub3=(mb4x+2, mb4y+2)
+            static constexpr int32_t subOffX[4] = {0, 2, 0, 2};
+            static constexpr int32_t subOffY[4] = {0, 0, 2, 2};
+
+            uint32_t mbIdx = mbY * widthInMbs_ + mbX;
+            for (uint32_t s = 0U; s < 4U; ++s)
+            {
+                int32_t sx = mb4x + subOffX[s];
+                int32_t sy = mb4y + subOffY[s];
+
+                // Neighbors for this 8x8 sub-partition — §8.4.1.3
+                MbMotionInfo a = getMotionAt4x4(sx - 1, sy);
+                MbMotionInfo b = getMotionAt4x4(sx, sy - 1);
+                MbMotionInfo c = getMotionAt4x4(sx + 2, sy - 1);
+                if (!c.available)
+                    c = getMotionAt4x4(sx - 1, sy - 1); // D fallback
+
+                MotionVector mvp = computeMvPredictor(a, b, c, 0);
+                MotionVector mv = { static_cast<int16_t>(mvp.x + subMvdX[s]),
+                                    static_cast<int16_t>(mvp.y + subMvdY[s]) };
+                trace_.onMvPrediction(mbX, mbY, s, mvp, {subMvdX[s], subMvdY[s]}, mv, a, b, c);
+
+                // Store this sub-partition's MV in its 4 blocks (2x2 in 4x4 grid)
+                MbMotionInfo info = { mv, 0, true };
+                for (uint32_t r = 0U; r < 2U; ++r)
+                    for (uint32_t cc = 0U; cc < 2U; ++cc)
+                        mbMotion_[mbIdx * 16U + (subOffY[s] + r) * 4U + subOffX[s] + cc] = info;
+
+                mvSub8x8[s] = mv;
+            }
+            // Per-sub-partition MVs already stored above.
         }
 
         // Store per-4x4-block MVs for accurate neighbor derivation.
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
-        if (numParts == 1U)
+        if (mbTypeRaw <= 2U)
         {
-            setMbMotion(mbIdx, mvPart[0], 0);
+            if (numParts == 1U)
+                setMbMotion(mbIdx, mvPart[0], 0);
+            else
+            {
+                setPartitionMotion(mbIdx, mbTypeRaw, 0U, mvPart[0], 0);
+                setPartitionMotion(mbIdx, mbTypeRaw, 1U, mvPart[1], 0);
+            }
         }
-        else
-        {
-            // Fill each partition's 4x4 blocks with its own MV.
-            setPartitionMotion(mbIdx, mbTypeRaw, 0U, mvPart[0], 0);
-            setPartitionMotion(mbIdx, mbTypeRaw, 1U, mvPart[1], 0);
-        }
+        // P_8x8 MVs were stored incrementally in the sub-partition loop above.
 
 
         // Per-partition motion compensation — ITU-T H.264 §8.4.2
         uint8_t predLuma[256];
         uint8_t predU[64], predV[64];
 
-        if (numParts == 1U)
+        if (mbTypeRaw <= 2U && numParts == 1U)
         {
             // P_L0_16x16: single 16x16 partition
             MotionVector& mv = mvPart[0];
@@ -1629,22 +1679,39 @@ private:
         }
         else
         {
-            // P_8x8 / P_8x8ref0: use partition 0 MV for full block (simplified)
-            MotionVector& mv = mvPart[0];
-            int32_t refX = static_cast<int32_t>(mbX * cMbSize) + (mv.x >> 2);
-            int32_t refY = static_cast<int32_t>(mbY * cMbSize) + (mv.y >> 2);
-            lumaMotionComp(ref, refX, refY, static_cast<uint32_t>(mv.x) & 3U,
-                           static_cast<uint32_t>(mv.y) & 3U,
-                           cMbSize, cMbSize, predLuma, cMbSize);
+            // P_8x8 / P_8x8ref0: per-8x8 motion compensation — §8.4.2.
+            // 4 sub-partitions: TL(0), TR(1), BL(2), BR(3), each 8x8 luma / 4x4 chroma.
+            static constexpr uint32_t subLumaOffX[4] = {0, 8, 0, 8};
+            static constexpr uint32_t subLumaOffY[4] = {0, 0, 8, 8};
+            static constexpr uint32_t subChromaOffX[4] = {0, 4, 0, 4};
+            static constexpr uint32_t subChromaOffY[4] = {0, 0, 4, 4};
 
-            int32_t cRefX = static_cast<int32_t>(mbX * cChromaBlockSize) + (mv.x >> 3);
-            int32_t cRefY = static_cast<int32_t>(mbY * cChromaBlockSize) + (mv.y >> 3);
-            chromaMotionComp(ref, cRefX, cRefY, static_cast<uint32_t>(mv.x) & 7U,
-                             static_cast<uint32_t>(mv.y) & 7U,
-                             cChromaBlockSize, cChromaBlockSize, true, predU, cChromaBlockSize);
-            chromaMotionComp(ref, cRefX, cRefY, static_cast<uint32_t>(mv.x) & 7U,
-                             static_cast<uint32_t>(mv.y) & 7U,
-                             cChromaBlockSize, cChromaBlockSize, false, predV, cChromaBlockSize);
+            for (uint32_t s = 0U; s < 4U; ++s)
+            {
+                MotionVector& mv = mvSub8x8[s];
+                uint32_t lox = subLumaOffX[s], loy = subLumaOffY[s];
+                int32_t refX = static_cast<int32_t>(mbX * cMbSize + lox) + (mv.x >> 2);
+                int32_t refY = static_cast<int32_t>(mbY * cMbSize + loy) + (mv.y >> 2);
+                lumaMotionComp(ref, refX, refY,
+                               static_cast<uint32_t>(mv.x) & 3U,
+                               static_cast<uint32_t>(mv.y) & 3U,
+                               8U, 8U,
+                               predLuma + loy * cMbSize + lox, cMbSize);
+
+                uint32_t cox = subChromaOffX[s], coy = subChromaOffY[s];
+                int32_t cRefX = static_cast<int32_t>(mbX * cChromaBlockSize + cox) + (mv.x >> 3);
+                int32_t cRefY = static_cast<int32_t>(mbY * cChromaBlockSize + coy) + (mv.y >> 3);
+                chromaMotionComp(ref, cRefX, cRefY,
+                                 static_cast<uint32_t>(mv.x) & 7U,
+                                 static_cast<uint32_t>(mv.y) & 7U,
+                                 4U, 4U, true,
+                                 predU + coy * cChromaBlockSize + cox, cChromaBlockSize);
+                chromaMotionComp(ref, cRefX, cRefY,
+                                 static_cast<uint32_t>(mv.x) & 7U,
+                                 static_cast<uint32_t>(mv.y) & 7U,
+                                 4U, 4U, false,
+                                 predV + coy * cChromaBlockSize + cox, cChromaBlockSize);
+            }
         }
 
         // Read CBP
