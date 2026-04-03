@@ -150,9 +150,13 @@ def gen_gradient_pan(outdir, name="gradient_pan", intra_only=False):
     return name
 
 
-def encode_yuv_to_h264(yuv_path, h264_path, w, h, nframes, intra_only=False):
-    """Encode raw YUV to H.264 baseline profile using ffmpeg/libx264."""
+def encode_yuv_to_h264(yuv_path, h264_path, w, h, nframes, intra_only=False,
+                       profile="baseline"):
+    """Encode raw YUV to H.264 using ffmpeg/libx264.
+    profile: "baseline" (CAVLC, no B-frames) or "high" (CABAC, 8x8 transform).
+    """
     gop = "1" if intra_only else "10"
+    bf = "0" if profile == "baseline" else "0"  # No B-frames for P-only decode
     cmd = [
         "ffmpeg", "-y",
         "-f", "rawvideo",
@@ -162,12 +166,12 @@ def encode_yuv_to_h264(yuv_path, h264_path, w, h, nframes, intra_only=False):
         "-i", yuv_path,
         "-frames:v", str(nframes),
         "-c:v", "libx264",
-        "-profile:v", "baseline",
+        "-profile:v", profile,
         "-level", "3.0",
         "-preset", "medium",
         "-qp", str(QP),
         "-g", gop,
-        "-bf", "0",  # No B-frames (baseline)
+        "-bf", bf,
         "-an",
         h264_path,
     ]
@@ -269,6 +273,24 @@ def main():
     fixtures.append(gen_pan_direction(args.outdir, "pan_slow", dx=1, dy=1))
     # Static scene: tests zero-MV skip derivation §8.4.1.1
     fixtures.append(gen_static_scene(args.outdir))
+
+    # High profile CABAC versions — same raw source, re-encoded with CABAC
+    # Tests §9.3 CABAC decode path with ground truth quality comparison.
+    for base in ["scrolling_texture", "gradient_pan"]:
+        raw_path = os.path.join(args.outdir, f"{base}_raw.yuv")
+        if os.path.exists(raw_path):
+            name = f"{base}_high"
+            h264_path = os.path.join(args.outdir, f"{name}.h264")
+            print(f"Generating {name} (High/CABAC from existing raw)...")
+            encode_yuv_to_h264(raw_path, h264_path, W, H, NUM_FRAMES,
+                               profile="high")
+            # Symlink raw YUV (same source, different encoding)
+            raw_link = os.path.join(args.outdir, f"{name}_raw.yuv")
+            if not os.path.exists(raw_link):
+                import shutil
+                shutil.copy2(raw_path, raw_link)
+            fixtures.append(name)
+            print(f"  H264: {h264_path} ({os.path.getsize(h264_path)} bytes)")
 
     # I-frame-only versions (every frame is IDR)
     fixtures.append(gen_scrolling_texture(args.outdir, name="scrolling_texture_ionly",
