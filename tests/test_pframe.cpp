@@ -626,8 +626,12 @@ TEST_CASE("P-frame: pan_up frame 16 MV and chroma check")
             if (fc == 16)
             {
                 auto mi = decoder->motionAt4x4(0, 0);
-                MESSAGE("pan_up f16 MB(0,0) MV=(" << mi.mv.x << "," << mi.mv.y
+                MESSAGE("pan_up f16 MB(0,0) blk(0,0) MV=(" << mi.mv.x << "," << mi.mv.y
                         << ") ref=" << (int)mi.refIdx);
+                // Check bottom half of MB(0,0) for partition split
+                auto mi_bot = decoder->motionAt4x4(0, 2); // row 2 of 4x4 grid = bottom half for 16x8
+                MESSAGE("  MB(0,0) blk(0,2) MV=(" << mi_bot.mv.x << "," << mi_bot.mv.y
+                        << ") ref=" << (int)mi_bot.refIdx);
                 const Frame* frame = decoder->currentFrame();
                 REQUIRE(frame != nullptr);
                 MESSAGE("pan_up f16 U(0,0)=" << (int)frame->u(0,0));

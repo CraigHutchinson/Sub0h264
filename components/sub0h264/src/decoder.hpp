@@ -1921,10 +1921,6 @@ private:
         if (&target != &currentFrame_)
         {
             // Sync entire frame from target so intra prediction reads correct pixels.
-            // The I-MB decoders reference currentFrame_ for all neighbor access
-            // (left, top, top-left, top-right). Rather than computing the minimal
-            // sync region, copy the full frame for correctness. This is called
-            // rarely (only for intra MBs within P-slices).
             std::memcpy(currentFrame_.yData(), target.yData(),
                         currentFrame_.yStride() * currentFrame_.height());
             std::memcpy(currentFrame_.uData(), target.uData(),
