@@ -246,18 +246,22 @@ inline int16_t cabacDecodeMvd(CabacEngine& engine, CabacCtx* ctx,
  *  @param ctxBlockCat Block category for context offset selection
  *  @return Number of non-zero coefficients
  */
+/** Decode a 4x4 residual block via CABAC — §9.3.3.1.1.
+ *  @param cbfCtxInc  Context increment for coded_block_flag (0-3).
+ *                    Derived from neighbor NNZ per §9.3.3.1.1.3:
+ *                    ctxInc = (nA != 0) + 2*(nB != 0) where nA=left, nB=top.
+ *                    Pass 0 for DC blocks (cat 0,3) where cbf is not decoded.
+ */
 inline uint32_t cabacDecodeResidual4x4(CabacEngine& engine, CabacCtx* ctx,
                                         int16_t* coeffs, uint32_t maxCoeff,
-                                        uint32_t ctxBlockCat) noexcept
+                                        uint32_t ctxBlockCat,
+                                        uint32_t cbfCtxInc = 0U) noexcept
 {
     // coded_block_flag — §9.3.3.1.1.1 Table 9-34.
-    // Decoded for ctxBlockCat 1,2,4 (AC blocks). NOT decoded for cat 0,3 (DC blocks,
-    // where presence is inferred from CBP). If cbf=0, skip the entire block.
-    // Context: cCtxCbf + ctxBlockCat * 4 + ctxIdxInc.
-    // Simplified: ctxIdxInc=0 (TODO: proper neighbor derivation per §9.3.3.1.1.3).
+    // Decoded for ctxBlockCat 1,2,4 (AC blocks). NOT decoded for cat 0,3 (DC blocks).
     if (ctxBlockCat != 0U && ctxBlockCat != 3U)
     {
-        uint32_t cbfCtx = cCtxCbf + ctxBlockCat * 4U;
+        uint32_t cbfCtx = cCtxCbf + ctxBlockCat * 4U + cbfCtxInc;
         if (engine.decodeBin(ctx[cbfCtx]) == 0U)
             return 0U; // coded_block_flag = 0: no coefficients
     }
@@ -290,12 +294,19 @@ inline uint32_t cabacDecodeResidual4x4(CabacEngine& engine, CabacCtx* ctx,
         }
     }
 
-    // Last position always significant if we didn't find "last" flag
-    if (lastSigIdx < 0 || (numSig > 0U && lastSigIdx < static_cast<int32_t>(maxCoeff - 1U)))
+    // §9.3.3.1.3: If loop exhausted without last_significant_coeff_flag=1,
+    // position maxCoeff-1 is implicitly significant.
+    if (lastSigIdx < static_cast<int32_t>(maxCoeff - 1U))
     {
-        // If we exhausted the loop without finding "last", the last position is significant
+        // Either: no significant flags found at all (numSig==0, and we never
+        // broke out), or we found some but none was "last". In both cases,
+        // if numSig==0 after the full loop, there are truly no coefficients.
         if (numSig == 0U)
             return 0U;
+        // Otherwise: last position is implicitly significant
+        sigMap[maxCoeff - 1U] = 1U;
+        lastSigIdx = static_cast<int32_t>(maxCoeff - 1U);
+        ++numSig;
     }
 
     // Decode coefficient levels (reverse scan order)
@@ -345,6 +356,7 @@ inline uint32_t cabacDecodeResidual4x4(CabacEngine& engine, CabacCtx* ctx,
 
         // Sign (bypass)
         uint32_t sign = engine.decodeBypass();
+        // Output in SCAN ORDER — caller applies zigzag reordering.
         coeffs[i] = sign ? static_cast<int16_t>(-absLevel) : static_cast<int16_t>(absLevel);
 
         // Update context tracking

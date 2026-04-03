@@ -2061,7 +2061,11 @@ private:
             int16_t coeffs[16] = {};
             if (hasResidual)
             {
-                cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), coeffs, 16U, 2U);
+                int16_t scanCoeffs[16] = {};
+                cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), scanCoeffs, 16U, 2U);
+                // Reorder from scan to raster via zigzag — §8.5.6
+                for (uint32_t k = 0U; k < 16U; ++k)
+                    coeffs[cZigzag4x4[k]] = scanCoeffs[k];
                 nnzLuma_[mbIdx * 16U + rasterIdx] = 1U; // Simplified NNZ tracking
                 inverseQuantize4x4(coeffs, qp);
             }
@@ -2102,10 +2106,15 @@ private:
         intraPred16x16(static_cast<Intra16x16Mode>(predMode), currentFrame_, mbX, mbY, lumaPred);
 
         // Decode DC block via CABAC (category 0 = Luma DC)
-        int16_t dcCoeffs[16] = {};
-        cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), dcCoeffs, 16U, 0U);
+        // CABAC outputs in scan order; reorder to raster for Hadamard.
+        int16_t dcScan[16] = {};
+        cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), dcScan, 16U, 0U);
 
-        // Trace raw CABAC DC coefficients for first MB via chroma DC event (reuse)
+        int16_t dcCoeffs[16] = {};
+        for (uint32_t i = 0U; i < 16U; ++i)
+            dcCoeffs[cZigzag4x4[i]] = dcScan[i];
+
+        // Trace raw CABAC DC coefficients for first MB
         if (mbX == 0U && mbY == 0U)
             trace_.onChromaDcDequant(mbX, mbY, dcCoeffs, dcCoeffs + 8);
 
@@ -2139,11 +2148,20 @@ private:
 
             if (cbpLuma)
             {
-                int16_t acCoeffs[16] = {};
-                cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), acCoeffs, 15U, 1U);
-                for (uint32_t i = 1U; i < 16U; ++i)
-                    coeffs[i] = acCoeffs[i - 1U];
-                nnzLuma_[mbIdx * 16U + rasterIdx] = 1U; // TODO: actual NNZ from CABAC
+                // Compute coded_block_flag context per §9.3.3.1.1.3:
+                // ctxInc = (leftNnz > 0) + 2 * (topNnz > 0)
+                int32_t nc = getLumaNc(mbX, mbY, rasterIdx);
+                uint32_t cbfInc = (nc > 0) ? 1U : 0U; // Simplified: use nC as proxy
+                // TODO: proper left/top split for condTermFlagA/B
+
+                int16_t acScan[16] = {};
+                uint32_t numSig = cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(),
+                                                          acScan, 15U, 1U, cbfInc);
+                // AC coefficients in scan order 0..14 → raster positions via zigzag.
+                // Zigzag indices 1..15 correspond to AC positions (skip DC at index 0).
+                for (uint32_t i = 0U; i < 15U; ++i)
+                    coeffs[cZigzag4x4[i + 1U]] = acScan[i];
+                nnzLuma_[mbIdx * 16U + rasterIdx] = (numSig > 0U) ? 1U : 0U;
             }
 
             // Save DC (already dequantized via Hadamard path), dequant AC, restore DC.
