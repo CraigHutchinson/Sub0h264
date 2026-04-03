@@ -494,14 +494,14 @@ private:
                         trace_.onMbStart(mbX, mbY, 99U, static_cast<uint32_t>(br.bitOffset()));
                         decodePSkipMb(*decodeTarget, *refFrame, mbX, mbY);
                         --mbSkipRun;
-                        if (mbSkipRun == 0U)
-                            needSkipRun = true;
+                        // §7.3.4: after skip_run exhausted, next MB is coded
+                        // (mb_type follows, NOT another skip_run).
                     }
                     else
                     {
                         trace_.onMbStart(mbX, mbY, 100U, static_cast<uint32_t>(br.bitOffset()));
                         uint32_t mbTypeRaw = br.readUev();
-                        needSkipRun = true;
+                        needSkipRun = true; // After coded MB, read next skip_run
 
                         trace_.onMbStart(mbX, mbY, mbTypeRaw, static_cast<uint32_t>(br.bitOffset()));
 
