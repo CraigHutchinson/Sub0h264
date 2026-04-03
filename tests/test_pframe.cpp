@@ -638,14 +638,17 @@ TEST_CASE("P-frame: pan_up frame 16 MV and chroma check")
     auto data = getFixture("pan_up.h264");
     if (data.empty()) { MESSAGE("Skipping: pan_up.h264 not found"); return; }
 
-    struct DiagInfo { uint32_t refU0, refU1, chromaRefY, cdy; };
-    std::vector<DiagInfo> diags;
+    // Capture MV prediction trace for MB(0,0) in frame 16
+    struct MvPred { uint16_t mbX, mbY; uint32_t part; int16_t mvpX, mvpY, mvdX, mvdY; };
+    std::vector<MvPred> mvPreds;
     uint32_t fc = 0;
 
     auto decoder = std::make_unique<H264Decoder>();
     decoder->trace().setCallback([&](const TraceEvent& e) {
-        if (fc == 16 && e.type == TraceEventType::BlockResidual && e.a == 96U)
-            diags.push_back({e.b, e.c, e.d & 0xFFFF, e.d >> 16});
+        if (fc == 16 && e.type == TraceEventType::MvPrediction
+            && e.mbX == 0 && e.mbY == 0 && e.data && e.dataLen >= 6)
+            mvPreds.push_back({e.mbX, e.mbY, e.a,
+                               e.data[0], e.data[1], e.data[2], e.data[3]});
     });
 
     std::vector<NalBounds> bounds;
@@ -673,13 +676,10 @@ TEST_CASE("P-frame: pan_up frame 16 MV and chroma check")
                 const Frame* frame = decoder->currentFrame();
                 REQUIRE(frame != nullptr);
                 MESSAGE("pan_up f16 U(0,0)=" << (int)frame->u(0,0));
-                if (!diags.empty())
-                {
-                    auto& d = diags[0];
-                    MESSAGE("  ref.u(0," << d.chromaRefY << ")=" << d.refU0
-                            << " ref.u(0," << (d.chromaRefY+1) << ")=" << d.refU1
-                            << " cdy=" << d.cdy);
-                }
+                // Show MV prediction trace for MB(0,0) partitions
+                for (const auto& mp : mvPreds)
+                    MESSAGE("  part" << mp.part << " MVP=(" << mp.mvpX << "," << mp.mvpY
+                            << ") MVD=(" << mp.mvdX << "," << mp.mvdY << ")");
                 // Check MB(0,1) — where errors start
                 auto mi3 = decoder->motionAt4x4(0, 4);
                 MESSAGE("  MB(0,1) MV=(" << mi3.mv.x << "," << mi3.mv.y
