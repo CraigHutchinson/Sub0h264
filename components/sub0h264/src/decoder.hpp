@@ -1409,7 +1409,7 @@ private:
                 if (numRefIdxL0Active > 1U)
                 {
                     if (numRefIdxL0Active == 2U)
-                        refIdxL0[p] = static_cast<uint8_t>(br.readBit()); // te(v) range=1
+                        refIdxL0[p] = static_cast<uint8_t>(1U - br.readBit()); // te(v) range=1 §9.1
                     else
                         refIdxL0[p] = static_cast<uint8_t>(br.readUev()); // te(v) range>1
                 }
@@ -1439,7 +1439,7 @@ private:
                     if (numRefIdxL0Active > 1U)
                     {
                         if (numRefIdxL0Active == 2U)
-                            refIdxL0[s] = static_cast<uint8_t>(br.readBit());
+                            refIdxL0[s] = static_cast<uint8_t>(1U - br.readBit()); // te(v) §9.1
                         else
                             refIdxL0[s] = static_cast<uint8_t>(br.readUev());
                     }

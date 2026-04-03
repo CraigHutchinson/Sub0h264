@@ -582,10 +582,16 @@ TEST_CASE("P-frame 2: check MB(19,3) decode - zero-output investigation")
                 MESSAGE("Frame 2 MB(19,3) y(304,48) = " << (int)y00);
                 CHECK(y00 > 50); // Should be ~122, catches all-zero bug
 
-                // Check MV at MB(19,3)
+                // Check MV at MB(19,3) and MB(10,0)
                 auto mi = decoder->motionAt4x4(19*4, 3*4);
                 MESSAGE("Frame 2 MB(19,3) MV=(" << mi.mv.x << "," << mi.mv.y
                         << ") ref=" << (int)mi.refIdx << " avail=" << mi.available);
+                auto mi2 = decoder->motionAt4x4(10*4, 0);
+                MESSAGE("Frame 2 MB(10,0) MV=(" << mi2.mv.x << "," << mi2.mv.y
+                        << ") ref=" << (int)mi2.refIdx);
+                auto mi3 = decoder->motionAt4x4(0, 0);
+                MESSAGE("Frame 2 MB(0,0) MV=(" << mi3.mv.x << "," << mi3.mv.y
+                        << ") ref=" << (int)mi3.refIdx);
                 break;
             }
             ++fc;
