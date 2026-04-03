@@ -599,6 +599,40 @@ TEST_CASE("P-frame 2: check MB(19,3) decode - zero-output investigation")
     }
 }
 
+TEST_CASE("P-frame: scrolling_texture frame 8 partition check")
+{
+    auto data = getFixture("scrolling_texture.h264");
+    REQUIRE_FALSE(data.empty());
+
+    auto decoder = std::make_unique<H264Decoder>();
+    std::vector<NalBounds> bounds;
+    findNalUnits(data.data(), static_cast<uint32_t>(data.size()), bounds);
+
+    uint32_t fc = 0;
+    for (const auto& b : bounds)
+    {
+        NalUnit nal;
+        if (!parseNalUnit(data.data() + b.offset, b.size, nal)) continue;
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
+        {
+            if (fc == 8)
+            {
+                // Check MB(0,0) partitions
+                for (int qy = 0; qy < 4; qy += 2)
+                    for (int qx = 0; qx < 4; qx += 2)
+                    {
+                        auto miq = decoder->motionAt4x4(qx, qy);
+                        MESSAGE("scroll f8 MB(0,0) blk(" << qx << "," << qy
+                                << ") MV=(" << miq.mv.x << "," << miq.mv.y
+                                << ") ref=" << (int)miq.refIdx);
+                    }
+                break;
+            }
+            ++fc;
+        }
+    }
+}
+
 TEST_CASE("P-frame: pan_up frame 16 MV and chroma check")
 {
     auto data = getFixture("pan_up.h264");
@@ -625,13 +659,17 @@ TEST_CASE("P-frame: pan_up frame 16 MV and chroma check")
         {
             if (fc == 16)
             {
-                auto mi = decoder->motionAt4x4(0, 0);
-                MESSAGE("pan_up f16 MB(0,0) blk(0,0) MV=(" << mi.mv.x << "," << mi.mv.y
-                        << ") ref=" << (int)mi.refIdx);
-                // Check bottom half of MB(0,0) for partition split
-                auto mi_bot = decoder->motionAt4x4(0, 2); // row 2 of 4x4 grid = bottom half for 16x8
-                MESSAGE("  MB(0,0) blk(0,2) MV=(" << mi_bot.mv.x << "," << mi_bot.mv.y
-                        << ") ref=" << (int)mi_bot.refIdx);
+                // Check all 4 quadrants of MB(0,0) for partition split detection
+                for (int qy = 0; qy < 4; qy += 2)
+                {
+                    for (int qx = 0; qx < 4; qx += 2)
+                    {
+                        auto miq = decoder->motionAt4x4(qx, qy);
+                        MESSAGE("  MB(0,0) blk(" << qx << "," << qy
+                                << ") MV=(" << miq.mv.x << "," << miq.mv.y
+                                << ") ref=" << (int)miq.refIdx);
+                    }
+                }
                 const Frame* frame = decoder->currentFrame();
                 REQUIRE(frame != nullptr);
                 MESSAGE("pan_up f16 U(0,0)=" << (int)frame->u(0,0));
