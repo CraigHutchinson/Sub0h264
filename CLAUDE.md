@@ -72,8 +72,9 @@ Follow `STYLE_GUIDE.md` and `docs/ai-guides/coding-style.md` for all C++ code. K
 - Tests must pass locally before committing: `ctest --preset default`
 - A git pre-push hook runs tests automatically: `git config core.hooksPath .githooks`
 - **Test against the H.264 spec** — include spec section/table references in test comments
+- **PSNR vs raw source** — quality tests compare decoded output against the raw uncompressed source YUV (ground truth), NOT against another decoder's output (ffmpeg/libavc). The raw source sets the absolute quality bar; any conforming decoder should achieve the same PSNR within rounding.
 - **Regression tests** — when fixing a bug, add a test that verifies the correct behavior and would fail with the old code
-- Reference decoders (libavc, ffmpeg) can be used to generate ground-truth values for tests
+- Reference decoders (libavc, ffmpeg) are useful for **debugging** (tracing bit offsets, MB types) but are NOT the quality reference. The spec is authoritative; reference decoders are interpretations.
 
 ## Decoder Trace System
 
@@ -118,14 +119,14 @@ decoder->trace().setCallback([&](const TraceEvent& e) {
 - `scripts/check_rbsp_bits.py [offset]` — dumps raw RBSP bits and tries VLC matching
 
 ### CRC Comparison
-CRC32 is a **hash** — close numeric values do NOT indicate similar images. Use CRC as a **binary pass/fail** check only. For progress tracking, use pixel-level metrics (Y/U/V diff counts and max values).
+CRC32 is a **hash** — close numeric values do NOT indicate similar images. CRC tests in `test_frame_verify.cpp` are **implementation regression tests** (snapshots of our current output). When fixing decode bugs, CRC values change and must be updated. They are NOT spec-referenced tests. Use PSNR vs raw source for quality validation.
 
 ## Debugging & Investigation Techniques
 
 Proven approaches for finding H.264 decode bugs:
 
-### 1. Per-frame PSNR comparison vs ffmpeg/raw source
-Start here. Compare Y/U/V PSNR per frame against `ffmpeg -pix_fmt yuv420p` output. Find the first frame with significant quality drop. This isolates I-frame vs P-frame issues.
+### 1. Per-frame PSNR comparison vs raw uncompressed source
+Start here. Compare Y/U/V PSNR per frame against the raw source YUV (pre-encoding ground truth). Find the first frame with significant quality drop. This isolates I-frame vs P-frame issues. Do NOT compare against ffmpeg output at binary level — both decoders are spec interpretations. ffmpeg can be used for debugging reference but the raw source is the quality metric.
 
 ### 2. Per-MB pixel diff map
 When a frame has errors, generate per-MB max/mean diff vs ffmpeg. This pinpoints which MBs are wrong. Pattern analysis (every 3rd row, rightmost column, etc.) reveals systematic issues (intra MBs, partition boundaries).
@@ -142,8 +143,8 @@ For every code path, cite the specific ITU-T H.264 section/table/equation. Audit
 ### 6. VLC table validation
 Use `static_assert` prefix-free checks (test_spec_tables.cpp) and cross-check against multiple reference implementations. The tc=3 total_zeros table has a non-monotonic length pattern that looks wrong but is correct.
 
-### 7. Reference decoder output comparison
-Decode the same bitstream with libavc (`avcdec.exe`) and ffmpeg. If both agree and we differ, the bug is in our code. If they differ from each other, check the spec.
+### 7. Reference decoder output comparison (for debugging only)
+Decode the same bitstream with libavc (`avcdec.exe`) and ffmpeg. Useful for tracing bit offsets and MB decisions. If both agree on a value and we differ, likely a bug in our code. But the SPEC is authoritative — reference decoders are interpretations, not ground truth. Quality measurement should always be PSNR vs raw source.
 
 ### Common pitfalls found
 - **§7.3.4 skip_run**: After a skip_run is exhausted, the next MB is coded (no intervening skip_run read). Getting this wrong shifts the entire bitstream.

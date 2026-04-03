@@ -182,16 +182,17 @@ TEST_CASE("P-frame REGRESSION: skip_run 7.3.4 MB after skip run is coded")
     CHECK(hasNonZeroMv);
 }
 
-TEST_CASE("P-frame: frame 1 pixel-exact vs ffmpeg reference")
+TEST_CASE("P-frame: frame 1 PSNR > 45 dB vs raw source")
 {
-    // Regression: P-frame 1 must produce identical Y/U/V output to ffmpeg.
-    // This catches any bitstream parsing regression that shifts skip_runs,
-    // MVDs, or residual bits.
+    // Regression for §7.3.4 skip_run fix and general P-frame decode quality.
+    // Compares against raw uncompressed source (ground truth), NOT against
+    // another decoder's output. The spec is deterministic for baseline profile,
+    // so any conforming decoder should produce the same output within rounding.
     auto h264 = getFixture("scrolling_texture.h264");
     REQUIRE_FALSE(h264.empty());
 
-    // Load ffmpeg reference
-    std::vector<uint8_t> ffmpegData;
+    // Load raw uncompressed source (ground truth)
+    std::vector<uint8_t> rawSource;
     const char* pfxs[] = {"tests/fixtures/", "../tests/fixtures/", ""};
     for (auto* pfx : pfxs)
     {
@@ -199,13 +200,12 @@ TEST_CASE("P-frame: frame 1 pixel-exact vs ffmpeg reference")
         std::ifstream f(path, std::ios::binary | std::ios::ate);
         if (f.is_open())
         {
-            ffmpegData.resize(f.tellg()); f.seekg(0);
-            f.read(reinterpret_cast<char*>(ffmpegData.data()), ffmpegData.size());
+            rawSource.resize(f.tellg()); f.seekg(0);
+            f.read(reinterpret_cast<char*>(rawSource.data()), rawSource.size());
             break;
         }
     }
-    // This test requires raw YUV ground truth
-    if (ffmpegData.empty()) { MESSAGE("Skipping: raw YUV not found"); return; }
+    if (rawSource.empty()) { MESSAGE("Skipping: raw YUV not found"); return; }
 
     uint32_t w = 320, h = 240;
     auto decoder = std::make_unique<H264Decoder>();
@@ -226,7 +226,7 @@ TEST_CASE("P-frame: frame 1 pixel-exact vs ffmpeg reference")
                 REQUIRE(frame != nullptr);
 
                 uint32_t frameSize = w * h * 3 / 2;
-                const uint8_t* rawY = ffmpegData.data() + 1 * frameSize;
+                const uint8_t* rawY = rawSource.data() + 1 * frameSize;
 
                 uint64_t sse = 0;
                 for (uint32_t r = 0; r < h; ++r)
@@ -328,7 +328,7 @@ TEST_CASE("P-frame: reference frame data integrity check")
 TEST_CASE("P-frame: chroma MC verification for skip MB")
 {
     // Manually compute expected chroma MC output for a skip MB and compare
-    // with decoder output. The IDR chroma is pixel-perfect vs ffmpeg, so
+    // with decoder output. The IDR chroma matches raw source closely, so
     // any error must be in the P-frame chroma MC path.
     auto data = getFixture("scrolling_texture.h264");
     REQUIRE_FALSE(data.empty());

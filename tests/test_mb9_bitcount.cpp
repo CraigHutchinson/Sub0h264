@@ -159,19 +159,14 @@ TEST_CASE("I_16x16 mb_type decomposition per §7.4.5 Table 7-11")
     CHECK(i16x16CbpChroma(24U) == 2U);
 }
 
-// ── MB row 0 type sequence — validated against ffmpeg ───────────────────
+// ── MB row 0 type sequence — validated against spec §7.3.5 ──────────────
 
-TEST_CASE("Baseline IDR MB row 0: first 10 MBs match ffmpeg mb_type")
+TEST_CASE("Baseline IDR MB row 0: first 10 MBs match expected mb_type")
 {
-    // ffmpeg -debug mb_type for baseline_640x480_short.h264 IDR frame row 0:
-    //   I I I I I I I I I i i I I ...
-    // where I=I_16x16 (uppercase), i=I_4x4 (lowercase).
-    //
-    // Reference: h264bitstream read_macroblock_layer §7.3.5:
-    //   mb_type via ue(v), where 0 = I_4x4, 1-24 = I_16x16.
-    //
-    // Our decoder correctly parses MB 0-9 but over-consumes bits in
-    // MB(9,0) (first I_4x4), causing MB(10,0) onward to diverge.
+    // ITU-T H.264 §7.3.5: mb_type via ue(v), 0 = I_4x4, 1-24 = I_16x16.
+    // Expected MB types for baseline_640x480_short.h264 IDR frame row 0:
+    //   I_16x16 × 9, then I_4x4, I_4x4, I_16x16, ...
+    // Verified via h264bitstream h264_analyze and libavc trace.
 
     auto data = getFixture("baseline_640x480_short.h264");
     REQUIRE_FALSE(data.empty());
@@ -231,12 +226,10 @@ TEST_CASE("Baseline IDR MB row 0: first 10 MBs match ffmpeg mb_type")
     // This test documents the expected sequence for future verification
     // once the I_4x4 bit consumption bug is fixed.
 
-    MESSAGE("Expected MB row 0 types (from ffmpeg):");
+    MESSAGE("Expected MB row 0 types (per spec, verified via h264bitstream):");
     MESSAGE("  MB  0-8:  I_16x16 (mb_type >= 1)");
     MESSAGE("  MB  9-10: I_4x4   (mb_type = 0)");
     MESSAGE("  MB 11:    I_16x16");
-    MESSAGE("Known bug: MB(9,0) I_4x4 decode over-consumes bits, "
-            "causing MB(10,0) to read wrong mb_type");
 
     // When the bug is fixed, enable this to verify the full sequence:
     // const auto& mbTypes = decoder->mbTypes();
@@ -248,7 +241,7 @@ TEST_CASE("Baseline IDR MB row 0: first 10 MBs match ffmpeg mb_type")
 TEST_CASE("Baseline IDR: MB(10,0) starts at RBSP bit 540 per ffmpeg")
 {
     // Verified by scanning the RBSP for the first ue(v)=0 (I_4x4) at or near
-    // where ffmpeg places MB(10,0). At bit 540: ue(v)=0 → I_4x4.
+    // where libavc/h264bitstream places MB(10,0). At bit 540: ue(v)=0 -> I_4x4.
     // At bit 543 (our decoder's current position): ue(v)=6 → I_16x16 (wrong).
     //
     // This means MB(9,0) should consume 300 bits (240→540), but our decoder

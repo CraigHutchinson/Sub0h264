@@ -8,7 +8,7 @@
  *  values are snapshots of our decoder's output at a point in time. When we
  *  fix a decoding bug, these CRC values WILL change and need updating.
  *  Spec-referenced quality tests are in test_synthetic_quality.cpp (PSNR vs
- *  raw source) and test_pframe.cpp (pixel-exact vs ffmpeg).
+ *  raw uncompressed source) and test_pframe.cpp (PSNR vs raw source).
  *
  *  SPDX-License-Identifier: MIT
  */
