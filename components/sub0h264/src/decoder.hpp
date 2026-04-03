@@ -1891,22 +1891,51 @@ private:
         trace_.onMbEnd(mbX, mbY, static_cast<uint32_t>(br.bitOffset()));
     }
 
-    /** Decode an intra MB within a P-slice (mb_type offset already applied). */
+    /** Decode an intra MB within a P-slice (mb_type offset already applied).
+     *
+     *  NOTE: The I-MB decode functions write to currentFrame_. For P-slices,
+     *  the decode target is a separate DPB entry. We copy the decoded MB
+     *  from currentFrame_ → target after decode. §7.3.5
+     */
     bool decodeIntraMbInPSlice(BitReader& br, const Sps& sps, const Pps& pps,
                                 const SliceHeader& sh, int32_t& mbQp,
                                 uint32_t mbTypeRaw, Frame& target,
                                 uint32_t mbX, uint32_t mbY) noexcept
     {
-        (void)sh; (void)target;
+        (void)sh;
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
         setMbMotion(mbIdx, {0, 0}, -1);
 
-        if (mbTypeRaw == 25U) return true;
+        if (mbTypeRaw == 25U) return true; // I_PCM
 
+        bool ok;
         if (isI16x16(static_cast<uint8_t>(mbTypeRaw)))
-            return decodeI16x16Mb(br, sps, pps, mbTypeRaw, mbQp, mbX, mbY);
+            ok = decodeI16x16Mb(br, sps, pps, mbTypeRaw, mbQp, mbX, mbY);
         else
-            return decodeI4x4Mb(br, sps, pps, mbQp, mbX, mbY);
+            ok = decodeI4x4Mb(br, sps, pps, mbQp, mbX, mbY);
+
+        // Copy decoded intra MB from currentFrame_ → P-frame target.
+        // The I-MB decoders write to currentFrame_; P-slice target is separate.
+        if (ok && &target != &currentFrame_)
+        {
+            uint32_t yStride = target.yStride();
+            uint32_t uvStride = target.uvStride();
+            for (uint32_t r = 0; r < cMbSize; ++r)
+                std::memcpy(target.yMb(mbX, mbY) + r * yStride,
+                            currentFrame_.yMb(mbX, mbY) + r * currentFrame_.yStride(),
+                            cMbSize);
+            for (uint32_t r = 0; r < cChromaBlockSize; ++r)
+            {
+                std::memcpy(target.uMb(mbX, mbY) + r * uvStride,
+                            currentFrame_.uMb(mbX, mbY) + r * currentFrame_.uvStride(),
+                            cChromaBlockSize);
+                std::memcpy(target.vMb(mbX, mbY) + r * uvStride,
+                            currentFrame_.vMb(mbX, mbY) + r * currentFrame_.uvStride(),
+                            cChromaBlockSize);
+            }
+        }
+
+        return ok;
     }
 
     // ── CABAC-specific MB decode methods ────────────────────────────────

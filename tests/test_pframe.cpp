@@ -557,6 +557,42 @@ TEST_CASE("P-frame: chroma MC verification for skip MB")
 
 // ── MV prediction helpers (confirmed correct via unit test) ─────────────
 
+TEST_CASE("P-frame 2: check MB(19,3) decode - zero-output investigation")
+{
+    auto data = getFixture("scrolling_texture.h264");
+    REQUIRE_FALSE(data.empty());
+
+    auto decoder = std::make_unique<H264Decoder>();
+    std::vector<NalBounds> bounds;
+    findNalUnits(data.data(), static_cast<uint32_t>(data.size()), bounds);
+
+    uint32_t fc = 0;
+    for (const auto& b : bounds)
+    {
+        NalUnit nal;
+        if (!parseNalUnit(data.data() + b.offset, b.size, nal)) continue;
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
+        {
+            if (fc == 2) // Frame 2
+            {
+                const Frame* frame = decoder->currentFrame();
+                REQUIRE(frame != nullptr);
+                // MB(19,3): should have luma ~122, not 0
+                uint8_t y00 = frame->y(19*16, 3*16);
+                MESSAGE("Frame 2 MB(19,3) y(304,48) = " << (int)y00);
+                CHECK(y00 > 50); // Should be ~122, catches all-zero bug
+
+                // Check MV at MB(19,3)
+                auto mi = decoder->motionAt4x4(19*4, 3*4);
+                MESSAGE("Frame 2 MB(19,3) MV=(" << mi.mv.x << "," << mi.mv.y
+                        << ") ref=" << (int)mi.refIdx << " avail=" << mi.available);
+                break;
+            }
+            ++fc;
+        }
+    }
+}
+
 TEST_CASE("median3: spec-compliant median-of-three §8.4.1.3.1")
 {
     CHECK(median3(1, 2, 3) == 2);

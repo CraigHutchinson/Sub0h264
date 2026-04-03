@@ -154,25 +154,28 @@ static double decodeAndMeasurePsnr(const char* h264Fixture, const char* rawFixtu
             if (frameIdx < 3U)
                 MESSAGE("  Frame " << frameIdx << ": PSNR=" << psnr << " dB");
 
-            // Dump frame 1 YUV for visual comparison
-            if (frameIdx == 1U && w == 320U)
+            // Dump P-frame YUV for visual comparison
+            if ((frameIdx == 1U || frameIdx == 2U) && w == 320U)
             {
-                const char* dumpPaths[] = { "build/our_pframe1.yuv",
-                                             "../build/our_pframe1.yuv" };
-                for (const char* dp : dumpPaths)
+                char dumpPath[64];
+                std::snprintf(dumpPath, sizeof(dumpPath),
+                              "build/our_pframe%u.yuv", frameIdx);
+                FILE* df = std::fopen(dumpPath, "wb");
+                if (!df)
                 {
-                    FILE* df = std::fopen(dp, "wb");
-                    if (df)
-                    {
-                        for (uint32_t r = 0; r < h; ++r)
-                            std::fwrite(frame->yRow(r), 1, w, df);
-                        for (uint32_t r = 0; r < h/2; ++r)
-                            std::fwrite(frame->uRow(r), 1, w/2, df);
-                        for (uint32_t r = 0; r < h/2; ++r)
-                            std::fwrite(frame->vRow(r), 1, w/2, df);
-                        std::fclose(df);
-                        break;
-                    }
+                    std::snprintf(dumpPath, sizeof(dumpPath),
+                                  "../build/our_pframe%u.yuv", frameIdx);
+                    df = std::fopen(dumpPath, "wb");
+                }
+                if (df)
+                {
+                    for (uint32_t r = 0; r < h; ++r)
+                        std::fwrite(frame->yRow(r), 1, w, df);
+                    for (uint32_t r = 0; r < h/2; ++r)
+                        std::fwrite(frame->uRow(r), 1, w/2, df);
+                    for (uint32_t r = 0; r < h/2; ++r)
+                        std::fwrite(frame->vRow(r), 1, w/2, df);
+                    std::fclose(df);
                 }
             }
 
