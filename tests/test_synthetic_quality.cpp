@@ -151,11 +151,11 @@ static double decodeAndMeasurePsnr(const char* h264Fixture, const char* rawFixtu
             if (psnr < minPsnr) minPsnr = psnr;
             totalPsnr += psnr;
 
-            if (frameIdx < 3U)
+            if (frameIdx < 3U || psnr < 50.0)
                 MESSAGE("  Frame " << frameIdx << ": PSNR=" << psnr << " dB");
 
             // Dump P-frame YUV for visual comparison
-            if ((frameIdx == 1U || frameIdx == 2U) && w == 320U)
+            if ((frameIdx == 1U || frameIdx == 2U || frameIdx == 8U) && w == 320U)
             {
                 char dumpPath[64];
                 std::snprintf(dumpPath, sizeof(dumpPath),
