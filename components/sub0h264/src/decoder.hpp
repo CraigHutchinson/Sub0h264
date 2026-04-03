@@ -2129,7 +2129,7 @@ private:
             uint32_t rasterIdx = cLuma4x4ToRaster[blkIdx];
 
             int16_t coeffs[16] = {};
-            // Hadamard output is in raster order
+            // Hadamard output is in raster order — DC already dequantized above
             coeffs[0] = dcCoeffs[rasterIdx];
 
             if (cbpLuma)
@@ -2138,10 +2138,14 @@ private:
                 cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), acCoeffs, 15U, 1U);
                 for (uint32_t i = 1U; i < 16U; ++i)
                     coeffs[i] = acCoeffs[i - 1U];
-                nnzLuma_[mbIdx * 16U + rasterIdx] = 1U;
+                nnzLuma_[mbIdx * 16U + rasterIdx] = 1U; // TODO: actual NNZ from CABAC
             }
 
+            // Save DC (already dequantized via Hadamard path), dequant AC, restore DC.
+            // §8.5.12.1: DC was scaled above; inverseQuantize4x4 would re-dequant it.
+            int16_t savedDc = coeffs[0];
             inverseQuantize4x4(coeffs, qp);
+            coeffs[0] = savedDc;
             uint8_t* predPtr = lumaPred + blkY * 16U + blkX;
             uint8_t* outPtr = mbLuma + blkY * yStride + blkX;
             inverseDct4x4AddPred(coeffs, predPtr, 16U, outPtr, yStride);
@@ -2270,10 +2274,16 @@ private:
                 int16_t acCb[16] = {}, acCr[16] = {};
                 cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), acCb, 15U, 4U);
                 for (uint32_t i = 1U; i < 16U; ++i) cbCoeffs[i] = acCb[i - 1U];
+                // Save DC (already dequantized via Hadamard), dequant AC, restore DC.
+                // §8.5.12.1: DC was scaled in the Hadamard dequant above.
+                int16_t savedDcCb = cbCoeffs[0];
                 inverseQuantize4x4(cbCoeffs, chromaQp);
+                cbCoeffs[0] = savedDcCb;
                 cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), acCr, 15U, 4U);
                 for (uint32_t i = 1U; i < 16U; ++i) crCoeffs[i] = acCr[i - 1U];
+                int16_t savedDcCr = crCoeffs[0];
                 inverseQuantize4x4(crCoeffs, chromaQp);
+                crCoeffs[0] = savedDcCr;
             }
 
             inverseDct4x4AddPred(cbCoeffs, predU + blkY * 8U + blkX, 8U, target.uMb(mbX, mbY) + blkY * uvStride + blkX, uvStride);
@@ -2326,10 +2336,16 @@ private:
                 int16_t acCb[16] = {}, acCr[16] = {};
                 cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), acCb, 15U, 4U);
                 for (uint32_t i = 1U; i < 16U; ++i) cbCoeffs[i] = acCb[i - 1U];
+                // Save DC (already dequantized via Hadamard), dequant AC, restore DC.
+                // §8.5.12.1: DC was scaled in the Hadamard dequant above.
+                int16_t savedDcCb = cbCoeffs[0];
                 inverseQuantize4x4(cbCoeffs, chromaQp);
+                cbCoeffs[0] = savedDcCb;
                 cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), acCr, 15U, 4U);
                 for (uint32_t i = 1U; i < 16U; ++i) crCoeffs[i] = acCr[i - 1U];
+                int16_t savedDcCr = crCoeffs[0];
                 inverseQuantize4x4(crCoeffs, chromaQp);
+                crCoeffs[0] = savedDcCr;
             }
 
             inverseDct4x4AddPred(cbCoeffs, predU + blkY * 8U + blkX, 8U, mbU + blkY * uvStride + blkX, uvStride);
