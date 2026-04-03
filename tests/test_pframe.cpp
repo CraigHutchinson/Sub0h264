@@ -599,6 +599,47 @@ TEST_CASE("P-frame 2: check MB(19,3) decode - zero-output investigation")
     }
 }
 
+TEST_CASE("CABAC: scrolling_texture_high IDR MB(0,0) DC coefficients")
+{
+    auto data = getFixture("scrolling_texture_high.h264");
+    if (data.empty()) { MESSAGE("Skipping: fixture not found"); return; }
+
+    std::vector<int16_t> dcCoeffs;
+    auto decoder = std::make_unique<H264Decoder>();
+    decoder->trace().setCallback([&](const TraceEvent& e) {
+        // Capture luma DC via ChromaDcDequant event (reused for diagnostic)
+        if (e.type == TraceEventType::ChromaDcDequant && e.mbX == 0 && e.mbY == 0
+            && e.a == 0 && e.data && e.dataLen >= 4 && dcCoeffs.empty())
+        {
+            dcCoeffs.assign(e.data, e.data + 4); // First 4 of 16 DC coeffs
+        }
+    });
+
+    std::vector<NalBounds> bounds;
+    findNalUnits(data.data(), static_cast<uint32_t>(data.size()), bounds);
+    for (const auto& b : bounds)
+    {
+        NalUnit nal;
+        if (!parseNalUnit(data.data() + b.offset, b.size, nal)) continue;
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
+        {
+            if (!dcCoeffs.empty())
+            {
+                MESSAGE("CABAC IDR MB(0,0) raw DC (pre-Hadamard, first 4):");
+                for (uint32_t i = 0; i < dcCoeffs.size(); ++i)
+                    MESSAGE("  dc[" << i << "] = " << dcCoeffs[i]);
+                // The raw source is ~122 everywhere. With QP~20, the DC coefficients
+                // should be moderate values (not zero, not huge). If all zeros or
+                // wildly varying, the CABAC coefficient decode is wrong.
+                bool allZero = true;
+                for (auto c : dcCoeffs) if (c != 0) { allZero = false; break; }
+                CHECK_FALSE(allZero);
+            }
+            break;
+        }
+    }
+}
+
 TEST_CASE("P-frame: scrolling_texture frame 8 partition check")
 {
     auto data = getFixture("scrolling_texture.h264");

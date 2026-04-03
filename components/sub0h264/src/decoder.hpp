@@ -2104,6 +2104,11 @@ private:
         // Decode DC block via CABAC (category 0 = Luma DC)
         int16_t dcCoeffs[16] = {};
         cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), dcCoeffs, 16U, 0U);
+
+        // Trace raw CABAC DC coefficients for first MB via chroma DC event (reuse)
+        if (mbX == 0U && mbY == 0U)
+            trace_.onChromaDcDequant(mbX, mbY, dcCoeffs, dcCoeffs + 8);
+
         inverseHadamard4x4(dcCoeffs);
 
         int32_t qpDiv6 = qp / 6;
