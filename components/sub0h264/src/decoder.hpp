@@ -1335,7 +1335,6 @@ private:
         uint32_t dx = static_cast<uint32_t>(skipMv.x) & 3U;
         uint32_t dy = static_cast<uint32_t>(skipMv.y) & 3U;
 
-        // Luma
         lumaMotionComp(ref, refX, refY, dx, dy, cMbSize, cMbSize,
                         target.yMb(mbX, mbY), target.yStride());
 

@@ -685,6 +685,15 @@ TEST_CASE("P-frame: MB(1,0) per-block CAVLC bit consumption vs libavc")
     // Use blocks trace to find coded MB bit starts from the main trace
     // (The bit offset test above already showed these)
     CHECK(totalBitsMb1 > 0); // Sanity: MB(1,0) has residual
+
+    // Check reference frame integrity at MB(0,2) — blk97 diagnostic
+    for (const auto& bl : blocks)
+    {
+        if (bl.blkIdx == 97U)
+            MESSAGE("MB(" << bl.mbX << "," << bl.mbY << ") ref_diag: ref.y(0,32)="
+                    << bl.nC << " ref.y(1,32)=" << bl.tc
+                    << " skipMV=(" << (bl.bits & 0xFFFF) << "," << (bl.bits >> 16) << ")");
+    }
 }
 
 TEST_CASE("P-frame MV trace: scrolling_texture first P-frame MV dump")
