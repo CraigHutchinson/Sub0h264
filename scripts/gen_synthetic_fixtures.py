@@ -191,6 +191,55 @@ def compute_raw_crcs(raw_path, w, h, nframes):
     return crcs
 
 
+def gen_pan_direction(outdir, name, dx, dy, intra_only=False):
+    """Pan in any direction at specified speed. Exercises negative MVs,
+    vertical-only motion, fast diagonal, etc.
+    dx, dy: pixels per frame of camera pan (positive = content moves left/up).
+    Reference: tests MV prediction §8.4.1.3, MC §8.4.2, skip MV §8.4.1.1."""
+    print(f"Generating {name} (dx={dx}, dy={dy})...")
+    # Create oversized texture that wraps
+    tex_w = W + abs(dx) * NUM_FRAMES + 32
+    tex_h = H + abs(dy) * NUM_FRAMES + 32
+    texture = make_checkerboard_texture(tex_w, tex_h, block_size=16)
+
+    raw_path = os.path.join(outdir, f"{name}_raw.yuv")
+    h264_path = os.path.join(outdir, f"{name}.h264")
+
+    with open(raw_path, "wb") as f:
+        for frame_idx in range(NUM_FRAMES):
+            ox = max(0, frame_idx * dx) if dx >= 0 else max(0, -frame_idx * dx)
+            oy = max(0, frame_idx * dy) if dy >= 0 else max(0, -frame_idx * dy)
+            # Clamp to valid region
+            ox = min(ox, tex_w - W)
+            oy = min(oy, tex_h - H)
+            crop = texture[oy:oy+H, ox:ox+W]
+            f.write(rgb_to_yuv420(crop))
+
+    encode_yuv_to_h264(raw_path, h264_path, W, H, NUM_FRAMES, intra_only=intra_only)
+    print(f"  Raw: {raw_path} ({os.path.getsize(raw_path)} bytes)")
+    print(f"  H264: {h264_path} ({os.path.getsize(h264_path)} bytes)")
+    return name
+
+
+def gen_static_scene(outdir, name="static_scene", intra_only=False):
+    """Static scene: no motion. Tests skip MV=(0,0) derivation §8.4.1.1,
+    zero-MV MC, and residual-only coding with no motion compensation."""
+    print(f"Generating {name}...")
+    texture = make_checkerboard_texture(W, H, block_size=24)
+
+    raw_path = os.path.join(outdir, f"{name}_raw.yuv")
+    h264_path = os.path.join(outdir, f"{name}.h264")
+
+    with open(raw_path, "wb") as f:
+        for _ in range(NUM_FRAMES):
+            f.write(rgb_to_yuv420(texture))
+
+    encode_yuv_to_h264(raw_path, h264_path, W, H, NUM_FRAMES, intra_only=intra_only)
+    print(f"  Raw: {raw_path} ({os.path.getsize(raw_path)} bytes)")
+    print(f"  H264: {h264_path} ({os.path.getsize(h264_path)} bytes)")
+    return name
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -205,6 +254,21 @@ def main():
     fixtures.append(gen_scrolling_texture(args.outdir))
     fixtures.append(gen_bouncing_ball(args.outdir))
     fixtures.append(gen_gradient_pan(args.outdir))
+
+    # Diverse pan directions and speeds — exercises all MV sign/magnitude combos
+    # Pan right (positive x): default scrolling_texture already covers this
+    # Pan left (negative x): tests negative horizontal MVs
+    fixtures.append(gen_pan_direction(args.outdir, "pan_left", dx=-4, dy=0))
+    # Pan up (negative y): tests negative vertical MVs
+    fixtures.append(gen_pan_direction(args.outdir, "pan_up", dx=0, dy=-3))
+    # Pan down (positive y): tests positive vertical-only MVs
+    fixtures.append(gen_pan_direction(args.outdir, "pan_down", dx=0, dy=3))
+    # Fast diagonal: large MVs, exercises wide MV range and diagonal MC
+    fixtures.append(gen_pan_direction(args.outdir, "pan_fast_diag", dx=7, dy=5))
+    # Slow sub-pixel pan: fractional-pel MV dominant, tests half/quarter-pel MC
+    fixtures.append(gen_pan_direction(args.outdir, "pan_slow", dx=1, dy=1))
+    # Static scene: tests zero-MV skip derivation §8.4.1.1
+    fixtures.append(gen_static_scene(args.outdir))
 
     # I-frame-only versions (every frame is IDR)
     fixtures.append(gen_scrolling_texture(args.outdir, name="scrolling_texture_ionly",

@@ -155,7 +155,7 @@ static double decodeAndMeasurePsnr(const char* h264Fixture, const char* rawFixtu
                 MESSAGE("  Frame " << frameIdx << ": PSNR=" << psnr << " dB");
 
             // Dump P-frame YUV for visual comparison
-            if ((frameIdx == 1U || frameIdx == 2U || frameIdx == 8U) && w == 320U)
+            if ((frameIdx <= 2U || frameIdx == 8U || frameIdx == 16U) && w == 320U)
             {
                 char dumpPath[64];
                 std::snprintf(dumpPath, sizeof(dumpPath),
@@ -254,5 +254,62 @@ TEST_CASE("Quality I+P: gradient pan vs raw source")
     double minPsnr = decodeAndMeasurePsnr(
         "gradient_pan.h264", "gradient_pan_raw.yuv",
         320U, 240U, 30U);
+    CHECK(minPsnr >= cIPFrameMinPsnrDb);
+}
+
+// ── Diverse pan directions — exercises all MV sign/magnitude combos ──────
+
+TEST_CASE("Quality I+P: pan left (negative horizontal MV)")
+{
+    // Pan left: content moves right, MVs are negative horizontal.
+    // Tests §8.4.1.3 MV prediction with negative MV components and
+    // §8.4.2.2.1 luma MC with negative fractional offsets.
+    double minPsnr = decodeAndMeasurePsnr(
+        "pan_left.h264", "pan_left_raw.yuv", 320U, 240U, 30U);
+    CHECK(minPsnr >= cIPFrameMinPsnrDb);
+}
+
+TEST_CASE("Quality I+P: pan up (negative vertical MV)")
+{
+    // Pure vertical motion: dx=0, dy=-3. Tests vertical-only MC paths
+    // and skip MV derivation with vertical-dominant neighbors. §8.4.2
+    double minPsnr = decodeAndMeasurePsnr(
+        "pan_up.h264", "pan_up_raw.yuv", 320U, 240U, 30U);
+    CHECK(minPsnr >= cIPFrameMinPsnrDb);
+}
+
+TEST_CASE("Quality I+P: pan down (positive vertical MV)")
+{
+    // Pure downward motion: tests positive vertical-only MVs.
+    double minPsnr = decodeAndMeasurePsnr(
+        "pan_down.h264", "pan_down_raw.yuv", 320U, 240U, 30U);
+    CHECK(minPsnr >= cIPFrameMinPsnrDb);
+}
+
+TEST_CASE("Quality I+P: fast diagonal pan (large MVs)")
+{
+    // dx=7, dy=5: large MVs per frame. Tests wide MV range,
+    // diagonal MC (all 16 fractional positions §8.4.2.2.1),
+    // and high-motion skip derivation.
+    double minPsnr = decodeAndMeasurePsnr(
+        "pan_fast_diag.h264", "pan_fast_diag_raw.yuv", 320U, 240U, 30U);
+    CHECK(minPsnr >= cIPFrameMinPsnrDb);
+}
+
+TEST_CASE("Quality I+P: slow sub-pixel pan")
+{
+    // dx=1, dy=1: sub-pixel dominant motion. Exercises half-pel and
+    // quarter-pel interpolation accuracy §8.4.2.2.1.
+    double minPsnr = decodeAndMeasurePsnr(
+        "pan_slow.h264", "pan_slow_raw.yuv", 320U, 240U, 30U);
+    CHECK(minPsnr >= cIPFrameMinPsnrDb);
+}
+
+TEST_CASE("Quality I+P: static scene (zero motion)")
+{
+    // No motion: all P-frames should use skip with MV=(0,0) per §8.4.1.1.
+    // Tests zero-MV MC (full-pel copy) and skip-dominated decode.
+    double minPsnr = decodeAndMeasurePsnr(
+        "static_scene.h264", "static_scene_raw.yuv", 320U, 240U, 30U);
     CHECK(minPsnr >= cIPFrameMinPsnrDb);
 }
