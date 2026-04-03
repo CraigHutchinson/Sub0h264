@@ -1355,11 +1355,6 @@ private:
         uint32_t cdy = static_cast<uint32_t>(skipMv.y) & 7U;
 
         // Diagnostic: verify ref frame chroma at MC position for debugging
-        if (mbX == 0U && mbY == 0U && skipMv.y != 0)
-            trace_.onBlockResidual(mbX, mbY, 96U,
-                                    ref.u(0, std::max(0, chromaRefY)),
-                                    ref.u(0, std::max(0, chromaRefY + 1)),
-                                    static_cast<uint32_t>(chromaRefY) | (cdy << 16));
         chromaMotionComp(ref, chromaRefX, chromaRefY, cdx, cdy,
                          cChromaBlockSize, cChromaBlockSize, true,
                          target.uMb(mbX, mbY), target.uvStride());

@@ -159,12 +159,12 @@ static double decodeAndMeasurePsnr(const char* h264Fixture, const char* rawFixtu
             {
                 char dumpPath[64];
                 std::snprintf(dumpPath, sizeof(dumpPath),
-                              "build/our_pframe%u.yuv", frameIdx);
+                              "build/our_pframe%lu.yuv", (unsigned long)frameIdx);
                 FILE* df = std::fopen(dumpPath, "wb");
                 if (!df)
                 {
                     std::snprintf(dumpPath, sizeof(dumpPath),
-                                  "../build/our_pframe%u.yuv", frameIdx);
+                                  "../build/our_pframe%lu.yuv", (unsigned long)frameIdx);
                     df = std::fopen(dumpPath, "wb");
                 }
                 if (df)

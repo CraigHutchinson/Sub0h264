@@ -686,7 +686,8 @@ TEST_CASE("P-frame: pan_up frame 16 MV and chroma check")
                 MESSAGE("pan_up f16 U(0,0)=" << (int)frame->u(0,0)
                         << " numRefIdxL0Active=" << numRefActive);
                 // Show bit offsets for first few coded MBs
-                for (uint32_t i = 0; i < std::min(static_cast<uint32_t>(mbStarts.size()), 5U); ++i)
+                uint32_t mbStartCount = static_cast<uint32_t>(mbStarts.size());
+                for (uint32_t i = 0; i < (mbStartCount < 5U ? mbStartCount : 5U); ++i)
                     MESSAGE("  MB(" << mbStarts[i].mbX << "," << mbStarts[i].mbY
                             << ") type=" << mbStarts[i].type << " bit=" << mbStarts[i].bit);
                 // Show MV prediction trace for MB(0,0) partitions
@@ -955,17 +956,6 @@ TEST_CASE("P-frame: MB(1,0) per-block CAVLC bit consumption vs libavc")
     // libavc P-frame 1 (NAL-relative): MB(0)=28, MB(1)=272, MB(2)=594, MB(3)=625, MB(4)=634
     // Our RBSP offsets + 8 (NAL header) should match.
     // If all 5 match, bitstream alignment is correct.
-    // Note: positions are mb_type start (after skip_run consumed).
-    MESSAGE("Checking coded MB positions vs libavc (NAL-relative):");
-    uint32_t libavcPositions[] = {28, 272, 594, 625, 634};
-    uint32_t codedIdx = 0;
-    for (const auto& e : ends)
-    {
-        // MbEnd with bitOff in start range = pre-CBP markers
-        // We need the MbStart markers for coded MBs
-    }
-    // Use blocks trace to find coded MB bit starts from the main trace
-    // (The bit offset test above already showed these)
     CHECK(totalBitsMb1 > 0); // Sanity: MB(1,0) has residual
 
     // Check reference frame integrity at MB(0,2) — blk97 diagnostic
