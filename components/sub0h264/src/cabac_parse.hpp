@@ -71,20 +71,19 @@ inline uint32_t cabacDecodeMbTypeI(CabacEngine& engine, CabacCtx* ctx,
     if (engine.decodeTerminate() == 1U)
         return 25U; // I_PCM
 
-    // I_16x16 variants: 3 more bins determine pred mode + cbp
-    uint32_t bin1 = engine.decodeBin(ctx[cCtxMbTypeI + 3U]);
-    uint32_t bin2 = engine.decodeBin(ctx[cCtxMbTypeI + 4U]);
-    (void)bin2; // Side-effect: consumes bin. Value used in full I_16x16 decode.
+    // I_16x16 binarization — ITU-T H.264 Table 9-34:
+    //   bin[1] (ctx+3): cbpChroma > 0
+    //   bin[2] (ctx+4): cbpChroma == 2 (only if bin[1] == 1)
+    //   bin[3] (ctx+5): cbpLuma > 0
+    //   bin[4:5] (ctx+6, ctx+7): predMode (2 bins)
+    uint32_t cbpChromaFlag = engine.decodeBin(ctx[cCtxMbTypeI + 3U]);
+    uint32_t cbpChroma = 0U;
+    if (cbpChromaFlag != 0U)
+        cbpChroma = engine.decodeBin(ctx[cCtxMbTypeI + 4U]) == 0U ? 1U : 2U;
 
-    uint32_t cbpChroma;
-    if (bin1 == 0U)
-        cbpChroma = 0U;
-    else
-        cbpChroma = engine.decodeBin(ctx[cCtxMbTypeI + 5U]) == 0U ? 1U : 2U;
-
-    uint32_t cbpLuma = engine.decodeBin(ctx[cCtxMbTypeI + 6U]);
-    uint32_t predMode = (engine.decodeBin(ctx[cCtxMbTypeI + 7U]) << 1U) |
-                         engine.decodeBin(ctx[cCtxMbTypeI + 8U]);
+    uint32_t cbpLuma = engine.decodeBin(ctx[cCtxMbTypeI + 5U]);
+    uint32_t predMode = (engine.decodeBin(ctx[cCtxMbTypeI + 6U]) << 1U) |
+                         engine.decodeBin(ctx[cCtxMbTypeI + 7U]);
 
     // mb_type = 1 + predMode + cbpChroma*4 + cbpLuma*12
     return 1U + predMode + cbpChroma * 4U + cbpLuma * 12U;
