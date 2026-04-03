@@ -599,6 +599,59 @@ TEST_CASE("P-frame 2: check MB(19,3) decode - zero-output investigation")
     }
 }
 
+TEST_CASE("P-frame: pan_up frame 16 MV and chroma check")
+{
+    auto data = getFixture("pan_up.h264");
+    if (data.empty()) { MESSAGE("Skipping: pan_up.h264 not found"); return; }
+
+    struct DiagInfo { uint32_t refU0, refU1, chromaRefY, cdy; };
+    std::vector<DiagInfo> diags;
+    uint32_t fc = 0;
+
+    auto decoder = std::make_unique<H264Decoder>();
+    decoder->trace().setCallback([&](const TraceEvent& e) {
+        if (fc == 16 && e.type == TraceEventType::BlockResidual && e.a == 96U)
+            diags.push_back({e.b, e.c, e.d & 0xFFFF, e.d >> 16});
+    });
+
+    std::vector<NalBounds> bounds;
+    findNalUnits(data.data(), static_cast<uint32_t>(data.size()), bounds);
+
+    for (const auto& b : bounds)
+    {
+        NalUnit nal;
+        if (!parseNalUnit(data.data() + b.offset, b.size, nal)) continue;
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
+        {
+            if (fc == 16)
+            {
+                auto mi = decoder->motionAt4x4(0, 0);
+                MESSAGE("pan_up f16 MB(0,0) MV=(" << mi.mv.x << "," << mi.mv.y
+                        << ") ref=" << (int)mi.refIdx);
+                const Frame* frame = decoder->currentFrame();
+                REQUIRE(frame != nullptr);
+                MESSAGE("pan_up f16 U(0,0)=" << (int)frame->u(0,0));
+                if (!diags.empty())
+                {
+                    auto& d = diags[0];
+                    MESSAGE("  ref.u(0," << d.chromaRefY << ")=" << d.refU0
+                            << " ref.u(0," << (d.chromaRefY+1) << ")=" << d.refU1
+                            << " cdy=" << d.cdy);
+                }
+                // Check MB(0,1) — where errors start
+                auto mi3 = decoder->motionAt4x4(0, 4);
+                MESSAGE("  MB(0,1) MV=(" << mi3.mv.x << "," << mi3.mv.y
+                        << ") ref=" << (int)mi3.refIdx);
+                MESSAGE("  MB(0,1) U(0,8)=" << (int)frame->u(0,8));
+                // MB(0,0) should be 164 (verified), MB(0,1) should also be correct
+                CHECK(frame->u(0,0) > 130);
+                break;
+            }
+            ++fc;
+        }
+    }
+}
+
 TEST_CASE("median3: spec-compliant median-of-three §8.4.1.3.1")
 {
     CHECK(median3(1, 2, 3) == 2);
