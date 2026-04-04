@@ -2247,10 +2247,6 @@ private:
         for (uint32_t i = 0U; i < 16U; ++i)
             dcCoeffs[cZigzag4x4[i]] = dcScan[i];
 
-        // Trace raw CABAC DC coefficients for first MB
-        if (mbX == 0U && mbY == 0U)
-            trace_.onChromaDcDequant(mbX, mbY, dcCoeffs, dcCoeffs + 8);
-
         inverseHadamard4x4(dcCoeffs);
 
         int32_t qpDiv6 = qp / 6;
