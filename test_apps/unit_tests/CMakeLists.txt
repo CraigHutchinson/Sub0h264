@@ -30,6 +30,33 @@ project(unit_tests CXX C ASM)
 idf_project_init()
 idf_project_default()
 
+# ── Smartflash: differential flash using esptool --diff-with ─────────────
+# Only flashes sectors that changed since last flash. For a 6.3 MB binary
+# where only C++ code changed (~50KB), reduces flash from ~7 min to ~30s.
+#
+# Usage: cmake --build --preset esp32p4 --target smartflash
+set(_smartflash_cmake "${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/smartflash.cmake")
+if(EXISTS "${_smartflash_cmake}")
+    if(DEFINED ENV{IDF_PYTHON_ENV_PATH})
+        set(_sf_python "$ENV{IDF_PYTHON_ENV_PATH}/Scripts/python")
+    elseif(DEFINED ENV{IDF_TOOLS_PATH})
+        set(_sf_python "$ENV{IDF_TOOLS_PATH}/python/master/venv/Scripts/python")
+    else()
+        set(_sf_python "python")
+    endif()
+
+    add_custom_target(smartflash
+        COMMAND "${CMAKE_COMMAND}"
+            -D "BUILD_DIR=${CMAKE_BINARY_DIR}"
+            -D "FLASH_PORT=$ENV{ESPPORT}"
+            -D "PYTHON_EXE=${_sf_python}"
+            -P "${_smartflash_cmake}"
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+        COMMENT "Differential flash to ESP32-P4"
+        DEPENDS ${PROJECT_NAME}.elf
+    )
+endif()
+
 # ── CTest integration: flash + serial capture + result parsing ───────────
 # Invokes cmake/esp32p4_flash_and_test.cmake which handles:
 #   1. Parse flasher_args.json for flash offsets (CMake-native)
