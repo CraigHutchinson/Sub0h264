@@ -575,13 +575,14 @@ private:
             if (profile_) profile_->deblockUs += sub0h264TimerUs() - dbT0;
         }
 
-        // Sync frames: I-slice decodes into currentFrame_, P-slice into decodeTarget.
-        // TODO: eliminate these copies by making currentFrame_ a pointer into the DPB
-        // frame pool. This would save ~920KB/frame of memcpy for 640x480 content.
+        // Sync frames: I-slice decodes into currentFrame_, needs copy to DPB.
+        // P-slice decodes directly into DPB (decodeTarget), and currentFrame()
+        // returns the DPB frame — no copy needed for P-slices.
         int64_t syncT0 = profile_ ? sub0h264TimerUs() : 0;
         if (sh.sliceType_ == SliceType::I && decodeTarget->isAllocated())
         {
-            // Copy currentFrame_ → decodeTarget so DPB has the I-frame
+            // I-slice: intra decoders wrote to currentFrame_ → copy to DPB
+            // TODO: decode I-slice directly into DPB to eliminate this copy
             std::memcpy(decodeTarget->yData(), currentFrame_.yData(),
                         currentFrame_.yStride() * currentFrame_.height());
             std::memcpy(decodeTarget->uData(), currentFrame_.uData(),
@@ -589,16 +590,7 @@ private:
             std::memcpy(decodeTarget->vData(), currentFrame_.vData(),
                         currentFrame_.uvStride() * (currentFrame_.height() / 2U));
         }
-        else if (decodeTarget->isAllocated())
-        {
-            // Copy decodeTarget → currentFrame_ for public API access
-            std::memcpy(currentFrame_.yData(), decodeTarget->yData(),
-                        currentFrame_.yStride() * currentFrame_.height());
-            std::memcpy(currentFrame_.uData(), decodeTarget->uData(),
-                        currentFrame_.uvStride() * (currentFrame_.height() / 2U));
-            std::memcpy(currentFrame_.vData(), decodeTarget->vData(),
-                        currentFrame_.uvStride() * (currentFrame_.height() / 2U));
-        }
+        // P-slice: no copy needed — currentFrame() returns DPB frame directly
 
         if (profile_) profile_->overheadUs += sub0h264TimerUs() - syncT0;
 
@@ -1949,17 +1941,51 @@ private:
 
         // The I-MB decoders read prediction neighbors from and write output to
         // currentFrame_. For P-slices, the correct pixels are in *decodeTarget.
-        // Sync the neighborhood from target → currentFrame_ before decode,
-        // then copy the result back after decode.
+        // Copy only the MB neighborhood (left column + top row) instead of
+        // the entire frame. This reduces the copy from ~460KB to ~96 bytes.
         if (&target != &currentFrame_)
         {
-            // Sync entire frame from target so intra prediction reads correct pixels.
-            std::memcpy(currentFrame_.yData(), target.yData(),
-                        currentFrame_.yStride() * currentFrame_.height());
-            std::memcpy(currentFrame_.uData(), target.uData(),
-                        currentFrame_.uvStride() * (currentFrame_.height() / 2U));
-            std::memcpy(currentFrame_.vData(), target.vData(),
-                        currentFrame_.uvStride() * (currentFrame_.height() / 2U));
+            // Copy top row of this MB (16 pixels + 1 top-left) from target
+            if (mbY > 0U)
+            {
+                uint32_t topRow = mbY * cMbSize - 1U;
+                uint32_t startX = (mbX > 0U) ? (mbX * cMbSize - 1U) : 0U;
+                uint32_t copyW = cMbSize + (mbX > 0U ? 1U : 0U) + 1U;
+                if (startX + copyW > target.width()) copyW = target.width() - startX;
+                std::memcpy(currentFrame_.yRow(topRow) + startX,
+                            target.yRow(topRow) + startX, copyW);
+            }
+            // Copy left column of this MB (16 pixels) from target
+            if (mbX > 0U)
+            {
+                uint32_t leftCol = mbX * cMbSize - 1U;
+                for (uint32_t r = 0U; r < cMbSize; ++r)
+                    currentFrame_.y(leftCol, mbY * cMbSize + r) =
+                        target.y(leftCol, mbY * cMbSize + r);
+            }
+            // Copy chroma neighborhood
+            if (mbY > 0U)
+            {
+                uint32_t cTopRow = mbY * cChromaBlockSize - 1U;
+                uint32_t cStartX = (mbX > 0U) ? (mbX * cChromaBlockSize - 1U) : 0U;
+                uint32_t cCopyW = cChromaBlockSize + 2U;
+                if (cStartX + cCopyW > target.width() / 2U) cCopyW = target.width() / 2U - cStartX;
+                std::memcpy(currentFrame_.uRow(cTopRow) + cStartX,
+                            target.uRow(cTopRow) + cStartX, cCopyW);
+                std::memcpy(currentFrame_.vRow(cTopRow) + cStartX,
+                            target.vRow(cTopRow) + cStartX, cCopyW);
+            }
+            if (mbX > 0U)
+            {
+                uint32_t cLeftCol = mbX * cChromaBlockSize - 1U;
+                for (uint32_t r = 0U; r < cChromaBlockSize; ++r)
+                {
+                    currentFrame_.u(cLeftCol, mbY * cChromaBlockSize + r) =
+                        target.u(cLeftCol, mbY * cChromaBlockSize + r);
+                    currentFrame_.v(cLeftCol, mbY * cChromaBlockSize + r) =
+                        target.v(cLeftCol, mbY * cChromaBlockSize + r);
+                }
+            }
         }
 
         bool ok;
