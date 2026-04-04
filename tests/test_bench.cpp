@@ -129,5 +129,7 @@ TEST_CASE("Profile: Baseline CAVLC 640x480" * doctest::test_suite("bench"))
 
 TEST_CASE("Profile: Scrolling texture 320x240" * doctest::test_suite("bench"))
 {
+    auto data = getFixture("scrolling_texture.h264");
+    if (data.empty()) { MESSAGE("scrolling_texture.h264 not embedded — skipping"); return; }
     profileStream("Scrolling texture", "scrolling_texture.h264");
 }
