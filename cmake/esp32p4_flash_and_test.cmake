@@ -115,7 +115,7 @@ execute_process(
     RESULT_VARIABLE _flash_rc
     OUTPUT_VARIABLE _flash_out
     ERROR_VARIABLE _flash_err
-    TIMEOUT 60
+    TIMEOUT 600  # 10 min: 6+ MB binary at ~135 kbit/s takes ~7 min
 )
 
 if(NOT _flash_rc EQUAL 0)
