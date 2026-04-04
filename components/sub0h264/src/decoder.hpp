@@ -1031,8 +1031,11 @@ private:
             }
             if (absX > 0U)
             {
+                // Use stride arithmetic instead of per-row y(x,y) multiply.
+                const uint8_t* leftPtr = activeFrame_->yRow(absY) + (absX - 1U);
+                uint32_t leftStride = activeFrame_->yStride();
                 for (uint32_t i = 0U; i < 4U; ++i)
-                    leftBuf[i] = activeFrame_->y(absX - 1U, absY + i);
+                    leftBuf[i] = leftPtr[i * leftStride];
                 left = leftBuf;
             }
             if (absX > 0U && absY > 0U)

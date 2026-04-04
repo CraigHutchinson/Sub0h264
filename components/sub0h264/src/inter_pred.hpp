@@ -116,18 +116,28 @@ inline void lumaMotionComp(const Frame& ref,
             refX + static_cast<int32_t>(width) <= static_cast<int32_t>(ref.width()) &&
             refY + static_cast<int32_t>(height) + 3 <= static_cast<int32_t>(ref.height()))
         {
+            // Cache 6 row pointers for the filter tap window.
+            // On ESP32-P4 with PSRAM, each yRow() call touches a different
+            // cache line. Pre-caching the pointers ensures the address
+            // arithmetic happens once, not per-column.
             uint32_t stride = ref.yStride();
+            uint32_t ux = static_cast<uint32_t>(refX);
+            const uint8_t* baseRow = ref.yRow(static_cast<uint32_t>(refY) - 2U) + ux;
             for (uint32_t row = 0U; row < height; ++row)
             {
-                const uint8_t* col0 = ref.yRow(static_cast<uint32_t>(refY + row) - 2U)
-                                     + static_cast<uint32_t>(refX);
+                const uint8_t* r0 = baseRow;
+                const uint8_t* r1 = r0 + stride;
+                const uint8_t* r2 = r1 + stride;
+                const uint8_t* r3 = r2 + stride;
+                const uint8_t* r4 = r3 + stride;
+                const uint8_t* r5 = r4 + stride;
                 for (uint32_t col = 0U; col < width; ++col)
                 {
-                    const uint8_t* p = col0 + col;
-                    int32_t sum = p[0] - 5*p[stride] + 20*p[2*stride] + 20*p[3*stride]
-                                - 5*p[4*stride] + p[5*stride];
+                    int32_t sum = r0[col] - 5*r1[col] + 20*r2[col]
+                                + 20*r3[col] - 5*r4[col] + r5[col];
                     dst[row * dstStride + col] = static_cast<uint8_t>(clipU8((sum + 16) >> 5));
                 }
+                baseRow += stride;
             }
         }
         else
@@ -353,17 +363,41 @@ inline void chromaMotionComp(const Frame& ref,
     uint32_t w01 = (8U - dx) * dy;
     uint32_t w11 = dx * dy;
 
-    for (uint32_t row = 0U; row < height; ++row)
+    // Fast path: block + 1-pixel margin fully within chroma plane bounds.
+    // Eliminates 4×6 branches per pixel (getSample clamping).
+    if (refX >= 0 && refY >= 0 &&
+        refX + static_cast<int32_t>(width) + 1 <= static_cast<int32_t>(chromaW) &&
+        refY + static_cast<int32_t>(height) + 1 <= static_cast<int32_t>(chromaH))
     {
-        for (uint32_t col = 0U; col < width; ++col)
+        uint32_t uvStride = ref.uvStride();
+        for (uint32_t row = 0U; row < height; ++row)
         {
-            uint32_t a = getSample(refX + col, refY + row);
-            uint32_t b = getSample(refX + col + 1, refY + row);
-            uint32_t c = getSample(refX + col, refY + row + 1);
-            uint32_t d = getSample(refX + col + 1, refY + row + 1);
+            const uint8_t* r0 = isU
+                ? (ref.uRow(static_cast<uint32_t>(refY + row)) + static_cast<uint32_t>(refX))
+                : (ref.vRow(static_cast<uint32_t>(refY + row)) + static_cast<uint32_t>(refX));
+            const uint8_t* r1 = r0 + uvStride;
+            for (uint32_t col = 0U; col < width; ++col)
+            {
+                uint32_t val = (w00 * r0[col] + w10 * r0[col + 1U]
+                              + w01 * r1[col] + w11 * r1[col + 1U] + 32U) >> 6U;
+                dst[row * dstStride + col] = static_cast<uint8_t>(val);
+            }
+        }
+    }
+    else
+    {
+        for (uint32_t row = 0U; row < height; ++row)
+        {
+            for (uint32_t col = 0U; col < width; ++col)
+            {
+                uint32_t a = getSample(refX + col, refY + row);
+                uint32_t b = getSample(refX + col + 1, refY + row);
+                uint32_t c = getSample(refX + col, refY + row + 1);
+                uint32_t d = getSample(refX + col + 1, refY + row + 1);
 
-            uint32_t val = (w00 * a + w10 * b + w01 * c + w11 * d + 32U) >> 6U;
-            dst[row * dstStride + col] = static_cast<uint8_t>(val);
+                uint32_t val = (w00 * a + w10 * b + w01 * c + w11 * d + 32U) >> 6U;
+                dst[row * dstStride + col] = static_cast<uint8_t>(val);
+            }
         }
     }
 }
