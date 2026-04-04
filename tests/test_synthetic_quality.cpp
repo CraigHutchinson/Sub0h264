@@ -154,18 +154,28 @@ static double decodeAndMeasurePsnr(const char* h264Fixture, const char* rawFixtu
             if (frameIdx < 3U || psnr < 50.0)
                 MESSAGE("  Frame " << frameIdx << ": PSNR=" << psnr << " dB");
 
-            // Dump P-frame YUV for visual comparison
+            // Dump decoded YUV for visual comparison — uses fixture name to avoid collisions
             if ((frameIdx <= 2U || frameIdx == 8U || frameIdx == 15U || frameIdx == 16U) && w == 320U)
             {
-                char dumpPath[64];
-                std::snprintf(dumpPath, sizeof(dumpPath),
-                              "build/our_pframe%lu.yuv", (unsigned long)frameIdx);
-                FILE* df = std::fopen(dumpPath, "wb");
-                if (!df)
+                // Derive short name: strip path and .h264 extension
+                const char* baseName = h264Fixture;
+                for (const char* p = h264Fixture; *p; ++p)
+                    if (*p == '/' || *p == '\\') baseName = p + 1;
+                char shortName[64] = {};
+                std::snprintf(shortName, sizeof(shortName), "%s", baseName);
+                char* dot = std::strrchr(shortName, '.');
+                if (dot) *dot = '\0';
+
+                // Try multiple paths — CTest CWD varies
+                char dumpPath[128];
+                FILE* df = nullptr;
+                static const char* const dirs[] = {"build/", "../build/", ""};
+                for (const char* dir : dirs)
                 {
                     std::snprintf(dumpPath, sizeof(dumpPath),
-                                  "../build/our_pframe%lu.yuv", (unsigned long)frameIdx);
+                                  "%s%s_frame%lu.yuv", dir, shortName, (unsigned long)frameIdx);
                     df = std::fopen(dumpPath, "wb");
+                    if (df) break;
                 }
                 if (df)
                 {
