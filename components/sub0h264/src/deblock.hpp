@@ -339,29 +339,32 @@ inline void deblockMb(Frame& frame, uint32_t mbX, uint32_t mbY,
             edgeCBeta   = cBetaTable[clampQpIdx(cQpAvg + betaOffset)];
         }
 
+        // Precompute BS for 4 block rows on this edge (one per 4x4 block pair).
+        // BS only changes at 4-row boundaries, so we compute 4 values and reuse.
+        uint8_t edgeBs[4];
+        {
+            uint32_t mbIdxP = (edge == 0U) ? (mbY * widthInMbs + mbX - 1U) : mbIdx;
+            for (uint32_t blkRow = 0U; blkRow < 4U; ++blkRow)
+            {
+                uint32_t blkQ = edge + blkRow * 4U;
+                uint32_t blkP = (edge == 0U) ? 3U + blkRow * 4U : blkQ - 1U;
+                bool isIntraP = (edge == 0U)
+                    ? (mbMotion[mbIdxP * 16U + blkP].refIdx == -1) : isIntra;
+                edgeBs[blkRow] = computeBs(isIntraP, isIntra, edge == 0U,
+                    nnzLuma[mbIdxP * 16U + blkP] > 0U,
+                    nnzLuma[mbIdx * 16U + blkQ] > 0U,
+                    mbMotion[mbIdxP * 16U + blkP].mv.x,
+                    mbMotion[mbIdxP * 16U + blkP].mv.y,
+                    mbMotion[mbIdx * 16U + blkQ].mv.x,
+                    mbMotion[mbIdx * 16U + blkQ].mv.y,
+                    mbMotion[mbIdxP * 16U + blkP].refIdx,
+                    mbMotion[mbIdx * 16U + blkQ].refIdx);
+            }
+        }
+
         for (uint32_t row = 0U; row < 16U; ++row)
         {
-            uint32_t blkQ = edge + (row / 4U) * 4U;
-            uint32_t blkP = (edge == 0U) ? 3U + (row / 4U) * 4U : blkQ - 1U;
-            uint32_t mbIdxP = (edge == 0U) ? (mbY * widthInMbs + mbX - 1U) : mbIdx;
-
-            bool isIntraP = (edge == 0U)
-                ? (mbMotion[mbIdxP * 16U + blkP].refIdx == -1)
-                : isIntra;
-            bool hasCoeffP = (nnzLuma[mbIdxP * 16U + blkP] > 0U);
-            bool hasCoeffQ = (nnzLuma[mbIdx * 16U + blkQ] > 0U);
-
-            int16_t mvPx = mbMotion[mbIdxP * 16U + blkP].mv.x;
-            int16_t mvPy = mbMotion[mbIdxP * 16U + blkP].mv.y;
-            int16_t mvQx = mbMotion[mbIdx * 16U + blkQ].mv.x;
-            int16_t mvQy = mbMotion[mbIdx * 16U + blkQ].mv.y;
-
-            uint8_t bs = computeBs(isIntraP, isIntra, edge == 0U,
-                                    hasCoeffP, hasCoeffQ,
-                                    mvPx, mvPy, mvQx, mvQy,
-                                    mbMotion[mbIdxP * 16U + blkP].refIdx,
-                                    mbMotion[mbIdx * 16U + blkQ].refIdx);
-
+            uint8_t bs = edgeBs[row >> 2U];
             if (bs == 0U) continue;
 
             uint8_t* yPtr = frame.yRow(pixY + row) + edgeX;
@@ -468,28 +471,31 @@ inline void deblockMb(Frame& frame, uint32_t mbX, uint32_t mbY,
             edgeCBeta   = cBetaTable[clampQpIdx(cQpAvg + betaOffset)];
         }
 
+        // Precompute BS for 4 block columns on this horizontal edge.
+        uint8_t hEdgeBs[4];
+        {
+            uint32_t mbIdxP = (edge == 0U) ? ((mbY - 1U) * widthInMbs + mbX) : mbIdx;
+            for (uint32_t blkCol = 0U; blkCol < 4U; ++blkCol)
+            {
+                uint32_t blkQ = blkCol + edge * 4U;
+                uint32_t blkP = (edge == 0U) ? blkCol + 12U : blkQ - 4U;
+                bool isIntraP = (edge == 0U)
+                    ? (mbMotion[mbIdxP * 16U + blkP].refIdx == -1) : isIntra;
+                hEdgeBs[blkCol] = computeBs(isIntraP, isIntra, edge == 0U,
+                    nnzLuma[mbIdxP * 16U + blkP] > 0U,
+                    nnzLuma[mbIdx * 16U + blkQ] > 0U,
+                    mbMotion[mbIdxP * 16U + blkP].mv.x,
+                    mbMotion[mbIdxP * 16U + blkP].mv.y,
+                    mbMotion[mbIdx * 16U + blkQ].mv.x,
+                    mbMotion[mbIdx * 16U + blkQ].mv.y,
+                    mbMotion[mbIdxP * 16U + blkP].refIdx,
+                    mbMotion[mbIdx * 16U + blkQ].refIdx);
+            }
+        }
+
         for (uint32_t col = 0U; col < 16U; ++col)
         {
-            uint32_t blkQ = (col / 4U) + edge * 4U;
-            uint32_t blkP = (edge == 0U)
-                ? (col / 4U) + 12U
-                : blkQ - 4U;
-            uint32_t mbIdxP = (edge == 0U)
-                ? ((mbY - 1U) * widthInMbs + mbX)
-                : mbIdx;
-
-            bool isIntraP = (edge == 0U)
-                ? (mbMotion[mbIdxP * 16U + blkP].refIdx == -1)
-                : isIntra;
-            bool hasCoeffP = (nnzLuma[mbIdxP * 16U + blkP] > 0U);
-            bool hasCoeffQ = (nnzLuma[mbIdx * 16U + blkQ] > 0U);
-
-            uint8_t bs = computeBs(isIntraP, isIntra, edge == 0U,
-                                    hasCoeffP, hasCoeffQ,
-                                    mbMotion[mbIdxP * 16U + blkP].mv.x, mbMotion[mbIdxP * 16U + blkP].mv.y,
-                                    mbMotion[mbIdx * 16U + blkQ].mv.x, mbMotion[mbIdx * 16U + blkQ].mv.y,
-                                    mbMotion[mbIdxP * 16U + blkP].refIdx, mbMotion[mbIdx * 16U + blkQ].refIdx);
-
+            uint8_t bs = hEdgeBs[col >> 2U];
             if (bs == 0U) continue;
 
             uint8_t* yQ = frame.yRow(edgeY) + pixX + col;
