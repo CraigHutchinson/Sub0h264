@@ -1004,8 +1004,8 @@ private:
             uint32_t absX = mbX * cMbSize + blkX;
             uint32_t absY = mbY * cMbSize + blkY;
 
-            uint8_t topBuf[8] = {};
-            uint8_t leftBuf[4] = {};
+            uint8_t topBuf[8];  // filled below from yRow if absY>0
+            uint8_t leftBuf[4]; // filled below from y() if absX>0
             uint8_t topLeftVal = cDefaultPredValue;
             const uint8_t* top = nullptr;
             const uint8_t* topRight = nullptr;
