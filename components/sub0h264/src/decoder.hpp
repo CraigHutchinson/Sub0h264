@@ -413,6 +413,9 @@ private:
 
                 if (useCabac)
                 {
+                    // Trace per-MB CABAC bit position for alignment debugging
+                    trace_.onMbStart(mbX, mbY, 200U,
+                                     static_cast<uint32_t>(cabacEngine_.bitPosition()));
                     if (!decodeCabacIntraMb(br, *sps, *pps, sh, mbQp, mbX, mbY))
                         break;
                 }
