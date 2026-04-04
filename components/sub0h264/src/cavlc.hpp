@@ -195,9 +195,32 @@ inline CoeffToken decodeCoeffToken(BitReader& br, int32_t nC) noexcept
 inline int32_t decodeLevel(BitReader& br, uint32_t suffixLen) noexcept
 {
     /// Count leading zeros → level_prefix — ITU-T H.264 §9.2.2.1, Table 9-6.
-    uint32_t prefix = 0U;
-    while (prefix < 32U && br.readBit() == 0U)
-        ++prefix;
+    /// Use CLZ on peeked bits to avoid per-bit loop.
+    uint32_t remaining = br.totalBits() - br.bitOffset();
+    uint32_t peekN = (remaining < 32U) ? remaining : 32U;
+    uint32_t bits = br.peekBits(peekN);
+    uint32_t prefix;
+    if (bits == 0U)
+    {
+        prefix = peekN;
+        br.skipBits(peekN);
+    }
+    else
+    {
+        bits <<= (32U - peekN); // left-align for CLZ
+#if defined(__GNUC__) || defined(__clang__)
+        prefix = static_cast<uint32_t>(__builtin_clz(bits));
+#elif defined(_MSC_VER)
+        unsigned long idx;
+        _BitScanReverse(&idx, bits);
+        prefix = 31U - idx;
+#else
+        prefix = 0U;
+        uint32_t tmp = bits;
+        while ((tmp & 0x80000000U) == 0U) { ++prefix; tmp <<= 1U; }
+#endif
+        br.skipBits(prefix + 1U); // skip zeros + the '1' bit
+    }
 
     /// Compute levelSuffixSize — ITU-T H.264 §9.2.2.
     ///   Normal:            levelSuffixSize = suffixLength
