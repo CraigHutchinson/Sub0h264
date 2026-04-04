@@ -31,6 +31,7 @@ commit, platform, and fps for the standard benchmark fixtures.
 | 2026-04-04 | 3879dd0 | 14.6 fps | 30.9 fps | — | 14.1 fps | +MC fast-path, +deblock BS precompute, +activeFrame_ |
 | 2026-04-04 | dd954c7 | 15.1 fps | 33.6 fps | 11.4 fps | 16.9 fps | +BitReader cache, +CLZ UEV, +smartflash |
 | 2026-04-04 | 3a7af28 | 15.0 fps | 33.8 fps | 11.3 fps | 16.8 fps | +CLZ level_prefix (marginal on ESP32) |
+| 2026-04-05 | ebd41d0 | 17.2 fps | 36.6 fps | 11.8 fps | 19.6 fps | +chroma MC fast-path, +MC row cache, +intra stride |
 
 ## Key observations
 
