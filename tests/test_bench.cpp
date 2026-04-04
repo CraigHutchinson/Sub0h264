@@ -75,9 +75,12 @@ TEST_CASE("Bench: Baseline CAVLC 640x480 (short)" * doctest::test_suite("bench")
     benchStream("Baseline CAVLC (short)", "baseline_640x480_short.h264");
 }
 
-TEST_CASE("Bench: High CABAC 640x480" * doctest::test_suite("bench"))
+TEST_CASE("Bench: High CABAC 640x480 (I+B, partial decode)" * doctest::test_suite("bench"))
 {
-    benchStream("High CABAC", "high_640x480.h264");
+    // NOTE: high_640x480 has 180/195 B-frames which we can't decode.
+    // This benchmark is NOT representative of CABAC performance.
+    // Use scrolling_texture_high for CABAC I+P performance.
+    benchStream("High CABAC (I+B partial)", "high_640x480.h264");
 }
 
 TEST_CASE("Bench: Flat black 640x480" * doctest::test_suite("bench"))
@@ -132,4 +135,17 @@ TEST_CASE("Profile: Scrolling texture 320x240" * doctest::test_suite("bench"))
     auto data = getFixture("scrolling_texture.h264");
     if (data.empty()) { MESSAGE("scrolling_texture.h264 not embedded — skipping"); return; }
     profileStream("Scrolling texture", "scrolling_texture.h264");
+}
+
+TEST_CASE("Profile: High CABAC 640x480 (I+B, partial)" * doctest::test_suite("bench"))
+{
+    // Most frames are B-slices (unsupported) — NOT representative of CABAC cost
+    profileStream("High CABAC (I+B partial)", "high_640x480.h264");
+}
+
+TEST_CASE("Profile: High CABAC 320x240 (I+P only)" * doctest::test_suite("bench"))
+{
+    auto data = getFixture("scrolling_texture_high.h264");
+    if (data.empty()) { MESSAGE("scrolling_texture_high.h264 not available — skipping"); return; }
+    profileStream("CABAC I+P 320x240", "scrolling_texture_high.h264");
 }
