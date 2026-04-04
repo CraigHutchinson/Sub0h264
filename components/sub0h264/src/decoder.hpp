@@ -155,6 +155,7 @@ private:
     SectionProfile* profile_ = nullptr;
     ParamSets paramSets_;
     Frame currentFrame_;
+    Frame* activeFrame_ = nullptr; ///< Frame being decoded into (DPB target or currentFrame_)
     Dpb dpb_;
     uint32_t frameCount_ = 0U;
     bool dpbInitialized_ = false;
@@ -406,6 +407,15 @@ private:
             std::fill(mbCbp_.begin(), mbCbp_.end(), static_cast<uint8_t>(0x2FU));
         }
 
+        // Set active frame: decode directly into DPB target when possible.
+        // Both I-slices and P-slices decode into the DPB target, eliminating
+        // the ~460KB frame copy. For intra-in-P, neighbourhood pixels are
+        // already in decodeTarget from previous inter MBs.
+        if (decodeTarget && decodeTarget->isAllocated())
+            activeFrame_ = decodeTarget;
+        else
+            activeFrame_ = &currentFrame_;
+
         // Decode macroblocks
         if (sh.sliceType_ == SliceType::I)
         {
@@ -558,7 +568,8 @@ private:
             int32_t alphaOff = sh.sliceAlphaC0Offset_;
             int32_t betaOff = sh.sliceBetaOffset_;
 
-            Frame& dbFrame = (sh.sliceType_ == SliceType::I) ? currentFrame_ : *decodeTarget;
+            // activeFrame_ always points to the frame where all MBs were decoded.
+            Frame& dbFrame = *activeFrame_;
 
             for (uint32_t my = 0U; my < heightInMbs_; ++my)
             {
@@ -575,22 +586,20 @@ private:
             if (profile_) profile_->deblockUs += sub0h264TimerUs() - dbT0;
         }
 
-        // Sync frames: I-slice decodes into currentFrame_, needs copy to DPB.
-        // P-slice decodes directly into DPB (decodeTarget), and currentFrame()
-        // returns the DPB frame — no copy needed for P-slices.
+        // Frame sync: only needed if activeFrame_ differs from decodeTarget.
+        // With the activeFrame_ refactor, I-slices decode directly into DPB
+        // when possible, eliminating the ~460KB copy.
         int64_t syncT0 = profile_ ? sub0h264TimerUs() : 0;
-        if (sh.sliceType_ == SliceType::I && decodeTarget->isAllocated())
+        if (activeFrame_ != decodeTarget && decodeTarget->isAllocated())
         {
-            // I-slice: intra decoders wrote to currentFrame_ → copy to DPB
-            // TODO: decode I-slice directly into DPB to eliminate this copy
-            std::memcpy(decodeTarget->yData(), currentFrame_.yData(),
-                        currentFrame_.yStride() * currentFrame_.height());
-            std::memcpy(decodeTarget->uData(), currentFrame_.uData(),
-                        currentFrame_.uvStride() * (currentFrame_.height() / 2U));
-            std::memcpy(decodeTarget->vData(), currentFrame_.vData(),
-                        currentFrame_.uvStride() * (currentFrame_.height() / 2U));
+            // Fallback: activeFrame_ was currentFrame_ → copy to DPB
+            std::memcpy(decodeTarget->yData(), activeFrame_->yData(),
+                        activeFrame_->yStride() * activeFrame_->height());
+            std::memcpy(decodeTarget->uData(), activeFrame_->uData(),
+                        activeFrame_->uvStride() * (activeFrame_->height() / 2U));
+            std::memcpy(decodeTarget->vData(), activeFrame_->vData(),
+                        activeFrame_->uvStride() * (activeFrame_->height() / 2U));
         }
-        // P-slice: no copy needed — currentFrame() returns DPB frame directly
 
         if (profile_) profile_->overheadUs += sub0h264TimerUs() - syncT0;
 
@@ -699,7 +708,7 @@ private:
         // 1. Generate 16x16 luma prediction
         uint8_t lumaPred[256];
         intraPred16x16(static_cast<Intra16x16Mode>(predMode),
-                       currentFrame_, mbX, mbY, lumaPred);
+                       *activeFrame_, mbX, mbY, lumaPred);
 
 #if SUB0H264_TRACE
         if (mbY == 0U && (mbX == 7U || mbX == 8U))
@@ -768,8 +777,8 @@ private:
 #endif
 
         // 3. Decode and reconstruct each 4x4 luma sub-block
-        uint8_t* mbLuma = currentFrame_.yMb(mbX, mbY);
-        uint32_t yStride = currentFrame_.yStride();
+        uint8_t* mbLuma = activeFrame_->yMb(mbX, mbY);
+        uint32_t yStride = activeFrame_->yStride();
 
         for (uint32_t blkIdx = 0U; blkIdx < 16U; ++blkIdx)
         {
@@ -968,8 +977,8 @@ private:
         }
 
         // Decode and reconstruct each 4x4 luma block
-        uint8_t* mbLuma = currentFrame_.yMb(mbX, mbY);
-        uint32_t yStride = currentFrame_.yStride();
+        uint8_t* mbLuma = activeFrame_->yMb(mbX, mbY);
+        uint32_t yStride = activeFrame_->yStride();
 
         for (uint32_t blkIdx = 0U; blkIdx < 16U; ++blkIdx)
         {
@@ -995,12 +1004,12 @@ private:
 
             if (absY > 0U)
             {
-                const uint8_t* row = currentFrame_.yRow(absY - 1U);
+                const uint8_t* row = activeFrame_->yRow(absY - 1U);
                 for (uint32_t i = 0U; i < 4U; ++i) topBuf[i] = row[absX + i];
                 top = topBuf;
 
                 // Top-right availability — ITU-T H.264 §6.4.11.
-                bool topRightAvailable = (absX + 4U < currentFrame_.width());
+                bool topRightAvailable = (absX + 4U < activeFrame_->width());
                 if (cTopRightUnavailScan[blkIdx])
                     topRightAvailable = false;
 
@@ -1013,12 +1022,12 @@ private:
             if (absX > 0U)
             {
                 for (uint32_t i = 0U; i < 4U; ++i)
-                    leftBuf[i] = currentFrame_.y(absX - 1U, absY + i);
+                    leftBuf[i] = activeFrame_->y(absX - 1U, absY + i);
                 left = leftBuf;
             }
             if (absX > 0U && absY > 0U)
             {
-                topLeftVal = currentFrame_.y(absX - 1U, absY - 1U);
+                topLeftVal = activeFrame_->y(absX - 1U, absY - 1U);
                 topLeft = &topLeftVal;
             }
 
@@ -1122,8 +1131,8 @@ private:
 
         // Generate chroma predictions (8x8 for each plane)
         uint8_t predU[64], predV[64];
-        intraPredChroma8x8(chromaMode, currentFrame_, mbX, mbY, true, predU);
-        intraPredChroma8x8(chromaMode, currentFrame_, mbX, mbY, false, predV);
+        intraPredChroma8x8(chromaMode, *activeFrame_, mbX, mbY, true, predU);
+        intraPredChroma8x8(chromaMode, *activeFrame_, mbX, mbY, false, predV);
 
         // Chroma QP
         int32_t chromaQpIdx = qp + pps.chromaQpIndexOffset_;
@@ -1238,9 +1247,9 @@ private:
         }
 
         // Reconstruct chroma 4x4 blocks using buffered coefficients.
-        uint8_t* mbU = currentFrame_.uMb(mbX, mbY);
-        uint8_t* mbV = currentFrame_.vMb(mbX, mbY);
-        uint32_t uvStride = currentFrame_.uvStride();
+        uint8_t* mbU = activeFrame_->uMb(mbX, mbY);
+        uint8_t* mbV = activeFrame_->vMb(mbX, mbY);
+        uint32_t uvStride = activeFrame_->uvStride();
 
         for (uint32_t blkIdx = 0U; blkIdx < 4U; ++blkIdx)
         {
@@ -1933,86 +1942,22 @@ private:
                                 uint32_t mbTypeRaw, Frame& target,
                                 uint32_t mbX, uint32_t mbY) noexcept
     {
-        (void)sh;
+        (void)sh; (void)target;
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
         setMbMotion(mbIdx, {0, 0}, -1);
 
         if (mbTypeRaw == 25U) return true; // I_PCM
 
-        // The I-MB decoders read prediction neighbors from and write output to
-        // currentFrame_. For P-slices, the correct pixels are in *decodeTarget.
-        // Copy only the MB neighborhood (left column + top row) instead of
-        // the entire frame. This reduces the copy from ~460KB to ~96 bytes.
-        if (&target != &currentFrame_)
-        {
-            // Copy top row of this MB (16 pixels + 1 top-left) from target
-            if (mbY > 0U)
-            {
-                uint32_t topRow = mbY * cMbSize - 1U;
-                uint32_t startX = (mbX > 0U) ? (mbX * cMbSize - 1U) : 0U;
-                uint32_t copyW = cMbSize + (mbX > 0U ? 1U : 0U) + 1U;
-                if (startX + copyW > target.width()) copyW = target.width() - startX;
-                std::memcpy(currentFrame_.yRow(topRow) + startX,
-                            target.yRow(topRow) + startX, copyW);
-            }
-            // Copy left column of this MB (16 pixels) from target
-            if (mbX > 0U)
-            {
-                uint32_t leftCol = mbX * cMbSize - 1U;
-                for (uint32_t r = 0U; r < cMbSize; ++r)
-                    currentFrame_.y(leftCol, mbY * cMbSize + r) =
-                        target.y(leftCol, mbY * cMbSize + r);
-            }
-            // Copy chroma neighborhood
-            if (mbY > 0U)
-            {
-                uint32_t cTopRow = mbY * cChromaBlockSize - 1U;
-                uint32_t cStartX = (mbX > 0U) ? (mbX * cChromaBlockSize - 1U) : 0U;
-                uint32_t cCopyW = cChromaBlockSize + 2U;
-                if (cStartX + cCopyW > target.width() / 2U) cCopyW = target.width() / 2U - cStartX;
-                std::memcpy(currentFrame_.uRow(cTopRow) + cStartX,
-                            target.uRow(cTopRow) + cStartX, cCopyW);
-                std::memcpy(currentFrame_.vRow(cTopRow) + cStartX,
-                            target.vRow(cTopRow) + cStartX, cCopyW);
-            }
-            if (mbX > 0U)
-            {
-                uint32_t cLeftCol = mbX * cChromaBlockSize - 1U;
-                for (uint32_t r = 0U; r < cChromaBlockSize; ++r)
-                {
-                    currentFrame_.u(cLeftCol, mbY * cChromaBlockSize + r) =
-                        target.u(cLeftCol, mbY * cChromaBlockSize + r);
-                    currentFrame_.v(cLeftCol, mbY * cChromaBlockSize + r) =
-                        target.v(cLeftCol, mbY * cChromaBlockSize + r);
-                }
-            }
-        }
+        // With activeFrame_ pointing to the DPB target, intra decoders write
+        // directly into the correct frame. No neighbourhood copy needed since
+        // previous MBs (inter or intra) already wrote their pixels there.
+        // No copy-back needed since activeFrame_ IS the target.
 
         bool ok;
         if (isI16x16(static_cast<uint8_t>(mbTypeRaw)))
             ok = decodeI16x16Mb(br, sps, pps, mbTypeRaw, mbQp, mbX, mbY);
         else
             ok = decodeI4x4Mb(br, sps, pps, mbQp, mbX, mbY);
-
-        // Copy decoded intra MB from currentFrame_ → P-frame target.
-        if (ok && &target != &currentFrame_)
-        {
-            uint32_t yStride = target.yStride();
-            uint32_t uvStride = target.uvStride();
-            for (uint32_t r = 0; r < cMbSize; ++r)
-                std::memcpy(target.yMb(mbX, mbY) + r * yStride,
-                            currentFrame_.yMb(mbX, mbY) + r * currentFrame_.yStride(),
-                            cMbSize);
-            for (uint32_t r = 0; r < cChromaBlockSize; ++r)
-            {
-                std::memcpy(target.uMb(mbX, mbY) + r * uvStride,
-                            currentFrame_.uMb(mbX, mbY) + r * currentFrame_.uvStride(),
-                            cChromaBlockSize);
-                std::memcpy(target.vMb(mbX, mbY) + r * uvStride,
-                            currentFrame_.vMb(mbX, mbY) + r * currentFrame_.uvStride(),
-                            cChromaBlockSize);
-            }
-        }
 
         return ok;
     }
@@ -2146,8 +2091,8 @@ private:
         }
 
         // Decode luma residual — §7.3.5.3
-        uint8_t* mbLuma = currentFrame_.yMb(mbX, mbY);
-        uint32_t yStride = currentFrame_.yStride();
+        uint8_t* mbLuma = activeFrame_->yMb(mbX, mbY);
+        uint32_t yStride = activeFrame_->yStride();
 
         if (use8x8Transform)
         {
@@ -2167,7 +2112,7 @@ private:
                 uint8_t mode8x8 = predModes[c8x8TopLeft[blk8]];
                 uint8_t pred8x8[64];
                 intraPred8x8Luma(static_cast<Intra4x4Mode>(mode8x8),
-                                  currentFrame_, absX, absY, pred8x8);
+                                  *activeFrame_, absX, absY, pred8x8);
 
                 int16_t coeffs[64] = {};
                 if (hasResidual)
@@ -2205,9 +2150,9 @@ private:
                 uint8_t pred4x4[16];
                 uint8_t topBuf[8] = {}, leftBuf[4] = {}, topLeftVal = cDefaultPredValue;
                 const uint8_t *top = nullptr, *topRight = nullptr, *left = nullptr, *topLeft = nullptr;
-                if (absY > 0U) { const uint8_t* row = currentFrame_.yRow(absY - 1U); for (uint32_t i = 0U; i < 4U; ++i) topBuf[i] = row[absX + i]; top = topBuf; if (absX + 4U < currentFrame_.width() && !cTopRightUnavailScan[blkIdx]) { for (uint32_t i = 0U; i < 4U; ++i) topBuf[4+i] = row[absX+4U+i]; topRight = topBuf+4U; } }
-                if (absX > 0U) { for (uint32_t i = 0U; i < 4U; ++i) leftBuf[i] = currentFrame_.y(absX-1U, absY+i); left = leftBuf; }
-                if (absX > 0U && absY > 0U) { topLeftVal = currentFrame_.y(absX-1U, absY-1U); topLeft = &topLeftVal; }
+                if (absY > 0U) { const uint8_t* row = activeFrame_->yRow(absY - 1U); for (uint32_t i = 0U; i < 4U; ++i) topBuf[i] = row[absX + i]; top = topBuf; if (absX + 4U < currentFrame_.width() && !cTopRightUnavailScan[blkIdx]) { for (uint32_t i = 0U; i < 4U; ++i) topBuf[4+i] = row[absX+4U+i]; topRight = topBuf+4U; } }
+                if (absX > 0U) { for (uint32_t i = 0U; i < 4U; ++i) leftBuf[i] = activeFrame_->y(absX-1U, absY+i); left = leftBuf; }
+                if (absX > 0U && absY > 0U) { topLeftVal = activeFrame_->y(absX-1U, absY-1U); topLeft = &topLeftVal; }
 
                 intraPred4x4(static_cast<Intra4x4Mode>(predModes[rasterIdx]), top, topRight, left, topLeft, pred4x4);
 
@@ -2278,7 +2223,7 @@ private:
 
         // Generate 16x16 prediction
         uint8_t lumaPred[256];
-        intraPred16x16(static_cast<Intra16x16Mode>(predMode), currentFrame_, mbX, mbY, lumaPred);
+        intraPred16x16(static_cast<Intra16x16Mode>(predMode), *activeFrame_, mbX, mbY, lumaPred);
 
         // Decode DC block via CABAC (category 0 = Luma DC)
         // CABAC outputs in scan order; reorder to raster for Hadamard.
@@ -2304,8 +2249,8 @@ private:
         }
 
         // Decode AC blocks (spec scan order §6.4.3)
-        uint8_t* mbLuma = currentFrame_.yMb(mbX, mbY);
-        uint32_t yStride = currentFrame_.yStride();
+        uint8_t* mbLuma = activeFrame_->yMb(mbX, mbY);
+        uint32_t yStride = activeFrame_->yStride();
 
         for (uint32_t blkIdx = 0U; blkIdx < 16U; ++blkIdx)
         {
@@ -2513,8 +2458,8 @@ private:
     {
         auto chromaMode = static_cast<IntraChromaMode>(chromaPredMode);
         uint8_t predU[64], predV[64];
-        intraPredChroma8x8(chromaMode, currentFrame_, mbX, mbY, true, predU);
-        intraPredChroma8x8(chromaMode, currentFrame_, mbX, mbY, false, predV);
+        intraPredChroma8x8(chromaMode, *activeFrame_, mbX, mbY, true, predU);
+        intraPredChroma8x8(chromaMode, *activeFrame_, mbX, mbY, false, predV);
 
         int32_t chromaQpIdx = clampQpIdx(qp + pps.chromaQpIndexOffset_);
         int32_t chromaQp = cChromaQpTable[chromaQpIdx];
@@ -2536,9 +2481,9 @@ private:
             }
         }
 
-        uint8_t* mbU = currentFrame_.uMb(mbX, mbY);
-        uint8_t* mbV = currentFrame_.vMb(mbX, mbY);
-        uint32_t uvStride = currentFrame_.uvStride();
+        uint8_t* mbU = activeFrame_->uMb(mbX, mbY);
+        uint8_t* mbV = activeFrame_->vMb(mbX, mbY);
+        uint32_t uvStride = activeFrame_->uvStride();
         for (uint32_t blkIdx = 0U; blkIdx < 4U; ++blkIdx)
         {
             uint32_t blkX = (blkIdx & 1U) * 4U;
