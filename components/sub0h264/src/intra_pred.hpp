@@ -603,17 +603,123 @@ inline void intraPred8x8Luma(Intra4x4Mode mode, const Frame& frame,
         break;
     }
 
-    default:
-        // Modes 5-8 (VR, HD, VL, HU): fall back to DC for now.
-        // TODO §8.3.2.2.7-8.3.2.2.10: implement remaining directional modes.
-        {
-            uint32_t sum = 0U, count = 0U;
-            if (hasTop)  { for (uint32_t c = 0U; c < 8U; ++c) { sum += ft[c]; ++count; } }
-            if (hasLeft) { for (uint32_t r = 0U; r < 8U; ++r) { sum += fl[r]; ++count; } }
-            uint8_t dc = (count > 0U)
-                ? static_cast<uint8_t>((sum + count / 2U) / count) : cDefaultPredValue;
-            std::memset(pred, dc, 64U);
-        }
+    case Intra4x4Mode::DiagDownLeft: // §8.3.2.2.5
+        for (uint32_t r = 0U; r < 8U; ++r)
+            for (uint32_t c = 0U; c < 8U; ++c)
+            {
+                uint32_t idx = r + c;
+                pred[r * 8U + c] = (idx == 14U)
+                    ? filt121(ft[14], ft[15], ft[15])
+                    : filt121(ft[idx], ft[idx + 1U], ft[idx + 2U]);
+            }
+        break;
+
+    case Intra4x4Mode::DiagDownRight: // §8.3.2.2.6
+        // pred[r][c] where d = c - r:
+        //   d > 0: filt121(ft[d-2], ft[d-1], ft[d])  — use ftl for ft[-1]
+        //   d == 0: filt121(fl[0], ftl, ft[0])
+        //   d < 0: filt121(fl[-d-2], fl[-d-1], fl[-d]) — use ftl for fl[-1]...fl[0]
+        for (uint32_t r = 0U; r < 8U; ++r)
+            for (uint32_t c = 0U; c < 8U; ++c)
+            {
+                int32_t d = static_cast<int32_t>(c) - static_cast<int32_t>(r);
+                if (d > 0)
+                {
+                    uint8_t a = (d >= 2) ? ft[d - 2] : (d == 1 ? ftl : fl[0]);
+                    pred[r * 8U + c] = filt121(a, ft[d - 1], ft[d]);
+                }
+                else if (d == 0)
+                    pred[r * 8U + c] = filt121(fl[0], ftl, ft[0]);
+                else // d < 0, i.e. r > c
+                {
+                    uint32_t md = static_cast<uint32_t>(-d);
+                    uint8_t a = (md >= 2U) ? fl[md - 2U] : ftl;
+                    uint8_t b = fl[md - 1U];
+                    pred[r * 8U + c] = filt121(a, b, md < 8U ? fl[md] : fl[7]);
+                }
+            }
+        break;
+
+    case Intra4x4Mode::VerticalRight: // §8.3.2.2.7
+    {
+        // Build extended reference: p[-1..7] = {ftl, ft[0..6]}
+        // and left reference: fl[0..7]
+        uint8_t extTop[9] = {ftl, ft[0], ft[1], ft[2], ft[3], ft[4], ft[5], ft[6], ft[7]};
+        for (uint32_t r = 0U; r < 8U; ++r)
+            for (uint32_t c = 0U; c < 8U; ++c)
+            {
+                int32_t zVR = 2 * static_cast<int32_t>(c) - static_cast<int32_t>(r);
+                if (zVR >= 0 && (zVR & 1) == 0)
+                    pred[r * 8U + c] = filt11(extTop[c - (r >> 1)], extTop[c - (r >> 1) + 1U]);
+                else if (zVR >= 0)
+                    pred[r * 8U + c] = filt121(extTop[c - (r >> 1) - 1U + 1U],
+                                                extTop[c - (r >> 1) + 1U - 1U],
+                                                extTop[c - (r >> 1) + 1U]);
+                else if (zVR == -1)
+                    pred[r * 8U + c] = filt121(fl[r - 1U], ftl, ft[0]);
+                else
+                {
+                    uint32_t ri = static_cast<uint32_t>(-1 - zVR) >> 1;
+                    uint8_t b = (ri >= 1U) ? fl[ri - 1U] : ftl;
+                    uint8_t cv = (ri >= 2U) ? fl[ri - 2U] : ftl;
+                    pred[r * 8U + c] = filt121(fl[ri < 7U ? ri : 7U], b, cv);
+                }
+            }
+        break;
+    }
+
+    case Intra4x4Mode::HorizontalDown: // §8.3.2.2.8
+    {
+        // Mirror of VerticalRight with r/c swapped
+        uint8_t extLeft[9] = {ftl, fl[0], fl[1], fl[2], fl[3], fl[4], fl[5], fl[6], fl[7]};
+        for (uint32_t r = 0U; r < 8U; ++r)
+            for (uint32_t c = 0U; c < 8U; ++c)
+            {
+                int32_t zHD = 2 * static_cast<int32_t>(r) - static_cast<int32_t>(c);
+                if (zHD >= 0 && (zHD & 1) == 0)
+                    pred[r * 8U + c] = filt11(extLeft[r - (c >> 1)], extLeft[r - (c >> 1) + 1U]);
+                else if (zHD >= 0)
+                    pred[r * 8U + c] = filt121(extLeft[r - (c >> 1) - 1U + 1U],
+                                                extLeft[r - (c >> 1) + 1U - 1U],
+                                                extLeft[r - (c >> 1) + 1U]);
+                else if (zHD == -1)
+                    pred[r * 8U + c] = filt121(ft[c - 1U], ftl, fl[0]);
+                else
+                {
+                    uint32_t ci = static_cast<uint32_t>(-1 - zHD) >> 1;
+                    pred[r * 8U + c] = filt121(ft[ci], ci > 0 ? ft[ci - 1U] : ftl,
+                                                ci > 1 ? ft[ci - 2U] : ftl);
+                }
+            }
+        break;
+    }
+
+    case Intra4x4Mode::VerticalLeft: // §8.3.2.2.9
+        for (uint32_t r = 0U; r < 8U; ++r)
+            for (uint32_t c = 0U; c < 8U; ++c)
+            {
+                uint32_t idx = c + (r >> 1);
+                if ((r & 1U) == 0U)
+                    pred[r * 8U + c] = filt11(ft[idx], ft[idx + 1U]);
+                else
+                    pred[r * 8U + c] = filt121(ft[idx], ft[idx + 1U], ft[idx + 2U]);
+            }
+        break;
+
+    case Intra4x4Mode::HorizontalUp: // §8.3.2.2.10
+        for (uint32_t r = 0U; r < 8U; ++r)
+            for (uint32_t c = 0U; c < 8U; ++c)
+            {
+                uint32_t zHU = r + 2U * c;
+                if (zHU < 14U && (zHU & 1U) == 0U)
+                    pred[r * 8U + c] = filt11(fl[zHU >> 1U], fl[(zHU >> 1U) + 1U]);
+                else if (zHU < 14U) // odd
+                    pred[r * 8U + c] = filt121(fl[zHU >> 1U], fl[(zHU >> 1U) + 1U], fl[(zHU >> 1U) + 2U]);
+                else if (zHU == 14U)
+                    pred[r * 8U + c] = filt121(fl[6], fl[7], fl[7]);
+                else
+                    pred[r * 8U + c] = fl[7];
+            }
         break;
     }
 }
