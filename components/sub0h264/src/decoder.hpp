@@ -176,6 +176,7 @@ private:
     std::array<CabacCtx, cNumCabacCtx> cabacCtx_ = {};
     std::vector<bool> mbIsSkip_;   // [mbIdx] — for CABAC skip context
     std::vector<bool> mbIsI4x4_;   // [mbIdx] — for CABAC mb_type context (I_NxN flag)
+    std::vector<uint8_t> mbCbp_;   // [mbIdx] — for CABAC CBP context (4 luma bits + 2 chroma)
 
     uint16_t widthInMbs_ = 0U;
     uint16_t heightInMbs_ = 0U;
@@ -391,11 +392,13 @@ private:
             // Initialize arithmetic engine — §9.3.1.2
             cabacEngine_.init(br);
 
-            // Resize skip tracking
+            // Resize per-MB CABAC tracking vectors
             mbIsSkip_.resize(totalMbs, false);
             std::fill(mbIsSkip_.begin(), mbIsSkip_.end(), false);
             mbIsI4x4_.resize(totalMbs, false);
             std::fill(mbIsI4x4_.begin(), mbIsI4x4_.end(), false);
+            mbCbp_.resize(totalMbs, 0U);
+            std::fill(mbCbp_.begin(), mbCbp_.end(), static_cast<uint8_t>(0x2FU));
         }
 
         // Decode macroblocks
@@ -2081,11 +2084,15 @@ private:
         uint32_t chromaPredMode = cabacDecodeIntraChromaMode(cabacEngine_, cabacCtx_.data(),
                                                               leftIntra, topIntra);
 
-        // CBP via CABAC
+        // CBP via CABAC — §9.3.3.1.4 with actual neighbor CBP for context
+        uint8_t leftCbp = (mbX > 0U) ? mbCbp_[mbIdx - 1U] : 0x2FU;
+        uint8_t topCbp = (mbY > 0U) ? mbCbp_[mbIdx - widthInMbs_] : 0x2FU;
         uint8_t cbp = cabacDecodeCbp(cabacEngine_, cabacCtx_.data(),
-                                      true, true, false, false);
+                                      (leftCbp & 0x0FU) != 0U, (topCbp & 0x0FU) != 0U,
+                                      ((leftCbp >> 4U) & 3U) != 0U, ((topCbp >> 4U) & 3U) != 0U);
         uint8_t cbpLuma = cbp & 0x0FU;
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
+        mbCbp_[mbIdx] = cbp;
 
         // QP delta
         if (cbp > 0U)
@@ -2219,6 +2226,7 @@ private:
         uint8_t cbpChroma = i16x16CbpChroma(static_cast<uint8_t>(mbTypeRaw));
 
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
+        mbCbp_[mbIdx] = cbpLuma | (cbpChroma << 4U); // Store for neighbor context
         bool leftIntra = (mbX == 0U) || (mbMotion_[(mbIdx - 1U) * 16U + 15U].refIdx == -1);
         bool topIntra = (mbY == 0U) || (mbMotion_[(mbIdx - widthInMbs_) * 16U + 12U].refIdx == -1);
         uint32_t chromaPredMode = cabacDecodeIntraChromaMode(cabacEngine_, cabacCtx_.data(),
@@ -2358,11 +2366,18 @@ private:
         chromaMotionComp(ref, chromaRefX, chromaRefY, cdx, cdy,
                          cChromaBlockSize, cChromaBlockSize, false, predV, cChromaBlockSize);
 
-        // CBP via CABAC
-        uint8_t cbp = cabacDecodeCbp(cabacEngine_, cabacCtx_.data(),
-                                      true, true, false, false);
+        // CBP via CABAC — §9.3.3.1.4 with actual neighbor CBP
+        uint8_t cbp;
+        {
+            uint8_t lCbp = (mbX > 0U) ? mbCbp_[mbIdx - 1U] : 0x2FU;
+            uint8_t tCbp = (mbY > 0U) ? mbCbp_[mbIdx - widthInMbs_] : 0x2FU;
+            cbp = cabacDecodeCbp(cabacEngine_, cabacCtx_.data(),
+                                 (lCbp & 0x0FU) != 0U, (tCbp & 0x0FU) != 0U,
+                                 ((lCbp >> 4U) & 3U) != 0U, ((tCbp >> 4U) & 3U) != 0U);
+        }
         uint8_t cbpLuma = cbp & 0x0FU;
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
+        mbCbp_[mbIdx] = cbp;
 
         // §7.3.5: For inter MBs with transform_8x8_mode_flag AND cbp != 0,
         // decode transform_size_8x8_flag after CBP.
