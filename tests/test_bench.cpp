@@ -84,3 +84,50 @@ TEST_CASE("Bench: Flat black 640x480" * doctest::test_suite("bench"))
 {
     benchStream("Flat black", "flat_black_640x480.h264");
 }
+
+/** Run a profiled decode: measures per-section timing breakdown. */
+static void profileStream(const char* name, const char* fixture)
+{
+    auto data = getFixture(fixture);
+    REQUIRE_FALSE(data.empty());
+
+    SectionProfile profile = {};
+    auto dec = std::make_unique<H264Decoder>();
+    dec->setProfile(&profile);
+
+    int64_t t0 = sub0h264TimerUs();
+    int32_t frames = dec->decodeStream(data.data(), static_cast<uint32_t>(data.size()));
+    int64_t totalUs = sub0h264TimerUs() - t0;
+
+    REQUIRE(frames > 0);
+
+    // Compute non-profiled time (entropy + intra + inter + transform)
+    int64_t profiledUs = profile.deblockUs + profile.overheadUs;
+    int64_t unprofiled = totalUs - profiledUs;
+
+    char buf[512];
+    std::snprintf(buf, sizeof(buf),
+        "PROFILE %s: %ld frames in %lld us (%.1f fps)\n"
+        "    Deblock:    %8lld us  (%5.1f%%)\n"
+        "    FrameSync:  %8lld us  (%5.1f%%)\n"
+        "    MB decode:  %8lld us  (%5.1f%%)",
+        name, (long)frames, (long long)totalUs,
+        (totalUs > 0) ? (frames * 1e6 / totalUs) : 0.0,
+        (long long)profile.deblockUs,
+        (totalUs > 0) ? (100.0 * profile.deblockUs / totalUs) : 0.0,
+        (long long)profile.overheadUs,
+        (totalUs > 0) ? (100.0 * profile.overheadUs / totalUs) : 0.0,
+        (long long)unprofiled,
+        (totalUs > 0) ? (100.0 * unprofiled / totalUs) : 0.0);
+    MESSAGE(buf);
+}
+
+TEST_CASE("Profile: Baseline CAVLC 640x480" * doctest::test_suite("bench"))
+{
+    profileStream("Baseline CAVLC", "baseline_640x480_short.h264");
+}
+
+TEST_CASE("Profile: Scrolling texture 320x240" * doctest::test_suite("bench"))
+{
+    profileStream("Scrolling texture", "scrolling_texture.h264");
+}

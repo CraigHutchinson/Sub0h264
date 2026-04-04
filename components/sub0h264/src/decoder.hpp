@@ -15,6 +15,7 @@
 #include "cabac_parse.hpp"
 #include "cavlc.hpp"
 #include "deblock.hpp"
+#include "decode_timing.hpp"
 #include "decode_trace.hpp"
 #include "dpb.hpp"
 #include "frame.hpp"
@@ -139,6 +140,9 @@ public:
     /** Access trace for setting callbacks from tests. */
     DecodeTrace& trace() noexcept { return trace_; }
 
+    /** Enable per-section profiling. Pass nullptr to disable. */
+    void setProfile(SectionProfile* profile) noexcept { profile_ = profile; }
+
     /** Read MV at a specific 4x4 block position (absolute 4x4 grid coords).
      *  Public for test inspection of internal MV state. */
     MbMotionInfo motionAt4x4(int32_t blk4x, int32_t blk4y) const noexcept
@@ -148,6 +152,7 @@ public:
 
 private:
     DecodeTrace trace_;
+    SectionProfile* profile_ = nullptr;
     ParamSets paramSets_;
     Frame currentFrame_;
     Dpb dpb_;
@@ -549,6 +554,7 @@ private:
         if (pps->deblockingFilterControlPresent_ == 0U ||
             sh.disableDeblockingFilter_ != 1U)
         {
+            int64_t dbT0 = profile_ ? sub0h264TimerUs() : 0;
             int32_t alphaOff = sh.sliceAlphaC0Offset_;
             int32_t betaOff = sh.sliceBetaOffset_;
 
@@ -566,9 +572,13 @@ private:
                               widthInMbs_, heightInMbs_);
                 }
             }
+            if (profile_) profile_->deblockUs += sub0h264TimerUs() - dbT0;
         }
 
-        // Sync frames: I-slice decodes into currentFrame_, P-slice into decodeTarget
+        // Sync frames: I-slice decodes into currentFrame_, P-slice into decodeTarget.
+        // TODO: eliminate these copies by making currentFrame_ a pointer into the DPB
+        // frame pool. This would save ~920KB/frame of memcpy for 640x480 content.
+        int64_t syncT0 = profile_ ? sub0h264TimerUs() : 0;
         if (sh.sliceType_ == SliceType::I && decodeTarget->isAllocated())
         {
             // Copy currentFrame_ → decodeTarget so DPB has the I-frame
@@ -590,11 +600,14 @@ private:
                         currentFrame_.uvStride() * (currentFrame_.height() / 2U));
         }
 
+        if (profile_) profile_->overheadUs += sub0h264TimerUs() - syncT0;
+
         // Mark as reference for future P-frames
         if (nal.refIdc != 0U)
             dpb_.markAsReference(sh.frameNum_);
 
         ++frameCount_;
+        if (profile_) ++profile_->frameCount;
         return DecodeStatus::FrameDecoded;
     }
 

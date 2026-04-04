@@ -41,6 +41,43 @@ struct FrameTiming
     uint32_t frameIdx = 0U;
 };
 
+/// Per-section timing for profiling decode hot paths.
+/// Updated by the decoder when enabled; zero-cost when not used.
+struct SectionProfile
+{
+    int64_t entropyUs = 0;   ///< CAVLC/CABAC bin decode + coefficient extraction
+    int64_t intraPredUs = 0; ///< Intra prediction (4x4, 8x8, 16x16, chroma)
+    int64_t interPredUs = 0; ///< Motion compensation (luma + chroma MC)
+    int64_t transformUs = 0; ///< IDCT + dequant (4x4 and 8x8)
+    int64_t deblockUs = 0;   ///< Deblocking filter
+    int64_t overheadUs = 0;  ///< NAL parsing, slice header, DPB management
+    uint32_t frameCount = 0U;
+
+    void print() const noexcept
+    {
+        int64_t total = entropyUs + intraPredUs + interPredUs + transformUs
+                      + deblockUs + overheadUs;
+        if (total <= 0) return;
+        std::printf("  Section profile (%lu frames, %lld us total):\n",
+                    (unsigned long)frameCount, (long long)total);
+        std::printf("    Entropy:    %8lld us  (%5.1f%%)\n",
+                    (long long)entropyUs, 100.0 * entropyUs / total);
+        std::printf("    Intra pred: %8lld us  (%5.1f%%)\n",
+                    (long long)intraPredUs, 100.0 * intraPredUs / total);
+        std::printf("    Inter pred: %8lld us  (%5.1f%%)\n",
+                    (long long)interPredUs, 100.0 * interPredUs / total);
+        std::printf("    Transform:  %8lld us  (%5.1f%%)\n",
+                    (long long)transformUs, 100.0 * transformUs / total);
+        std::printf("    Deblock:    %8lld us  (%5.1f%%)\n",
+                    (long long)deblockUs, 100.0 * deblockUs / total);
+        std::printf("    Overhead:   %8lld us  (%5.1f%%)\n",
+                    (long long)overheadUs, 100.0 * overheadUs / total);
+        double fps = (frameCount > 0 && total > 0)
+            ? (frameCount * 1e6 / total) : 0.0;
+        std::printf("    Effective:  %.1f fps\n", fps);
+    }
+};
+
 /// Accumulated timing across all frames in a stream.
 struct StreamTiming
 {
