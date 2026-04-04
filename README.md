@@ -59,9 +59,10 @@ See [docs/performance_log.md](docs/performance_log.md) for historical tracking.
 
 | Stream | Desktop (x86) | ESP32-P4 (360 MHz) |
 |--------|---------------|---------------------|
-| CAVLC 640x480 I+P (50 frames) | 1048 fps | 13.9 fps |
-| CAVLC 320x240 I+P (30 frames) | 2019 fps | 30.9 fps |
-| CABAC 320x240 I+P (30 frames) | 584 fps | 10.9 fps |
+| CAVLC 640x480 I+P (50 frames) | 1697 fps | 17.2 fps |
+| CAVLC 320x240 I+P (30 frames) | 1977 fps | 36.6 fps |
+| CABAC 320x240 I+P (30 frames) | ~600 fps | 11.8 fps |
+| Flat black 640x480 (250 frames) | 1956 fps | 19.6 fps |
 
 ## Build
 
