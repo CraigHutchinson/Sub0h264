@@ -27,7 +27,7 @@ Header-only C++23 library with zero external dependencies.
 | **P-slice (CABAC)** | Partial | Arithmetic engine correct, context adaptation incomplete |
 | **B-slice** | Not implemented | Slice header parsed, decode rejected |
 | **Intra 4x4 prediction** | Complete | All 9 directional modes per §8.3.1.2 |
-| **Intra 8x8 prediction** | Partial | V, H, DC modes. Diagonal modes fallback to DC |
+| **Intra 8x8 prediction** | Complete | All 9 modes per §8.3.2 (V, H, DC, DDL, DDR, VR, HD, VL, HU) |
 | **Intra 16x16 prediction** | Complete | All 4 modes (V, H, DC, Plane) |
 | **Chroma prediction** | Complete | All 4 modes (DC, H, V, Plane) |
 | **Luma MC (6-tap)** | Complete | All 16 fractional positions per §8.4.2.2.1 |
