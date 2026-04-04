@@ -88,6 +88,16 @@ TEST_CASE("Bench: Flat black 640x480" * doctest::test_suite("bench"))
     benchStream("Flat black", "flat_black_640x480.h264");
 }
 
+TEST_CASE("Bench: CAVLC 320x240 I+P" * doctest::test_suite("bench"))
+{
+    benchStream("CAVLC 320x240 I+P", "scrolling_texture.h264");
+}
+
+TEST_CASE("Bench: CABAC 320x240 I+P" * doctest::test_suite("bench"))
+{
+    benchStream("CABAC 320x240 I+P", "scrolling_texture_high.h264");
+}
+
 /** Run a profiled decode: measures per-section timing breakdown. */
 static void profileStream(const char* name, const char* fixture)
 {

@@ -17,31 +17,69 @@
 #ifdef ESP_PLATFORM
 
 // ── ESP32: Embedded binary data (linked by target_add_binary_data) ──────
+// All *.h264 fixtures from tests/fixtures/ are auto-embedded via CMake glob.
+// Each fixture needs an extern declaration and a lookup entry below.
 
-extern const uint8_t flat_black_640x480_h264_start[] asm("_binary_flat_black_640x480_h264_start");
-extern const uint8_t flat_black_640x480_h264_end[]   asm("_binary_flat_black_640x480_h264_end");
+#define DECLARE_FIXTURE(name) \
+    extern const uint8_t _binary_##name##_h264_start[] asm("_binary_" #name "_h264_start"); \
+    extern const uint8_t _binary_##name##_h264_end[]   asm("_binary_" #name "_h264_end");
 
-extern const uint8_t baseline_640x480_short_h264_start[] asm("_binary_baseline_640x480_short_h264_start");
-extern const uint8_t baseline_640x480_short_h264_end[]   asm("_binary_baseline_640x480_short_h264_end");
+DECLARE_FIXTURE(baseline_640x480)
+DECLARE_FIXTURE(baseline_640x480_short)
+DECLARE_FIXTURE(bouncing_ball)
+DECLARE_FIXTURE(bouncing_ball_ionly)
+DECLARE_FIXTURE(cabac_flat_main)
+DECLARE_FIXTURE(cabac_idr_only)
+DECLARE_FIXTURE(flat_black_640x480)
+DECLARE_FIXTURE(gradient_pan)
+DECLARE_FIXTURE(gradient_pan_high)
+DECLARE_FIXTURE(gradient_pan_ionly)
+DECLARE_FIXTURE(high_640x480)
+DECLARE_FIXTURE(pan_down)
+DECLARE_FIXTURE(pan_fast_diag)
+DECLARE_FIXTURE(pan_left)
+DECLARE_FIXTURE(pan_slow)
+DECLARE_FIXTURE(pan_up)
+DECLARE_FIXTURE(scrolling_texture)
+DECLARE_FIXTURE(scrolling_texture_high)
+DECLARE_FIXTURE(scrolling_texture_ionly)
+DECLARE_FIXTURE(static_scene)
 
-extern const uint8_t high_640x480_h264_start[] asm("_binary_high_640x480_h264_start");
-extern const uint8_t high_640x480_h264_end[]   asm("_binary_high_640x480_h264_end");
+#undef DECLARE_FIXTURE
 
 /** Get test fixture data by name. Returns pointer + size for embedded data. */
 inline std::vector<uint8_t> getFixture(const char* name)
 {
-    // Match by fixture name (filename without path)
     const char* n = name;
-    // Skip any path prefix
     for (const char* p = name; *p; ++p)
         if (*p == '/' || *p == '\\') n = p + 1;
 
-    if (std::strcmp(n, "flat_black_640x480.h264") == 0)
-        return {flat_black_640x480_h264_start, flat_black_640x480_h264_end};
-    if (std::strcmp(n, "baseline_640x480_short.h264") == 0)
-        return {baseline_640x480_short_h264_start, baseline_640x480_short_h264_end};
-    if (std::strcmp(n, "high_640x480.h264") == 0)
-        return {high_640x480_h264_start, high_640x480_h264_end};
+#define MATCH_FIXTURE(fname) \
+    if (std::strcmp(n, #fname ".h264") == 0) \
+        return {_binary_##fname##_h264_start, _binary_##fname##_h264_end};
+
+    MATCH_FIXTURE(baseline_640x480)
+    MATCH_FIXTURE(baseline_640x480_short)
+    MATCH_FIXTURE(bouncing_ball)
+    MATCH_FIXTURE(bouncing_ball_ionly)
+    MATCH_FIXTURE(cabac_flat_main)
+    MATCH_FIXTURE(cabac_idr_only)
+    MATCH_FIXTURE(flat_black_640x480)
+    MATCH_FIXTURE(gradient_pan)
+    MATCH_FIXTURE(gradient_pan_high)
+    MATCH_FIXTURE(gradient_pan_ionly)
+    MATCH_FIXTURE(high_640x480)
+    MATCH_FIXTURE(pan_down)
+    MATCH_FIXTURE(pan_fast_diag)
+    MATCH_FIXTURE(pan_left)
+    MATCH_FIXTURE(pan_slow)
+    MATCH_FIXTURE(pan_up)
+    MATCH_FIXTURE(scrolling_texture)
+    MATCH_FIXTURE(scrolling_texture_high)
+    MATCH_FIXTURE(scrolling_texture_ionly)
+    MATCH_FIXTURE(static_scene)
+
+#undef MATCH_FIXTURE
 
     return {}; // Unknown fixture
 }
