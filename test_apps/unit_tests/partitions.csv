@@ -1,5 +1,5 @@
 # test_apps/unit_tests/partitions.csv
-# Large factory partition for embedded test vectors + decoder code.
+# 16 MB flash: large factory partition for embedded test vectors + decoder code.
 # Name,   Type, SubType,  Offset,   Size,   Flags
 nvs,      data, nvs,      0x9000,   0x4000,
-factory,  app,  factory,  0x10000,  0x600000,
+factory,  app,  factory,  0x10000,  0xF00000,
