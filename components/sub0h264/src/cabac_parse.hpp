@@ -470,10 +470,11 @@ inline uint32_t cabacDecodeResidual8x8(CabacEngine& engine, CabacCtx* ctx,
     /// Maximum number of coefficients in an 8x8 block.
     static constexpr uint32_t cMaxCoeff8x8 = 64U;
 
-    // coded_block_flag — §9.3.3.1.1.1 Table 9-34.
-    // ctxBlockCat=5 uses High profile extension context at ctxIdx 1012+cbfCtxInc.
-    if (engine.decodeBin(ctx[cCtxCbf8x8 + cbfCtxInc]) == 0U)
-        return 0U; // coded_block_flag = 0: no coefficients
+    // §9.3.3.1.1.1: coded_block_flag is NOT decoded for ctxBlockCat=5 (8x8 luma).
+    // Per the spec residual_block_cabac() pseudo-code, coded_block_flag applies
+    // to categories 0-4 only. For 8x8 blocks, the significant map is always decoded.
+    // (Confirmed by libavc ih264d_read_coeff8x8_cabac which skips cbf for 8x8.)
+    (void)cbfCtxInc;
 
     // Decode significant coefficient map — §9.3.3.1.3 residual_block_cabac()
     // 8x8 blocks use non-linear context mapping per Table 9-43.

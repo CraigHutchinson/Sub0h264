@@ -403,10 +403,16 @@ inline void inverseQuantize8x8(int16_t* coeffs, int32_t qp) noexcept
         int32_t scale = cDequantScale8x8[qpMod6][posClass];
         int32_t val = static_cast<int32_t>(coeffs[i]) * scale;
 
-        // 8x8 residual blocks: ITU-T H.264 §8.5.12.1.
-        // d[i][j] = c[i][j] * LevelScale8x8[m][i][j] << floor(QP/6)
-        // The 8x8 IDCT then applies >> 6 normalization at the output.
-        val <<= qpDiv6;
+        // ITU-T H.264 §8.5.12.1 with default flat scaling list (all 16):
+        //   d = c * normAdjust8x8 * 16 << (qP/6 - 6)
+        //     = c * normAdjust8x8 << (qP/6 - 2)
+        // The IDCT applies >> 6 normalization at output, matching the 4x4 convention.
+        // Note: 4x4 uses << qP/6 because 4x4 spec shift is (qP/6 - 4) and
+        // 16 * 2^(qP/6-4) = 2^(qP/6). For 8x8: 16 * 2^(qP/6-6) = 2^(qP/6-2).
+        if (qpDiv6 >= 2)
+            val <<= (qpDiv6 - 2);
+        else
+            val = (val + (1 << (1 - qpDiv6))) >> (2 - qpDiv6);
 
         coeffs[i] = static_cast<int16_t>(val);
     }
