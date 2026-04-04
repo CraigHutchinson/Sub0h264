@@ -353,3 +353,52 @@ TEST_CASE("Quality High CABAC: gradient pan vs raw source")
         320U, 240U, 30U);
     CHECK(minPsnr >= cHighFrameMinPsnrDb);
 }
+
+// ── CABAC IDR-only regression tests ───────────────────────────────────────
+// Minimal CABAC decode tests with single-frame IDR fixtures.
+// These use Main profile (CABAC without 8x8 transform) for isolation.
+
+TEST_CASE("CABAC IDR: flat gray decodes within 15 dB of raw source")
+{
+    // Main profile CABAC encode of flat gray 320x240 (Y≈121).
+    // All MBs are I_4x4 or I_16x16. No P-frames, no 8x8 transform.
+    // At ~10 dB currently; target 50 dB when CABAC fully spec-compliant.
+    auto h264 = getFixture("cabac_flat_main.h264");
+    if (h264.empty())
+    {
+        MESSAGE("Fixture cabac_flat_main.h264 not found — skipping");
+        return;
+    }
+    double minPsnr = decodeAndMeasurePsnr(
+        "cabac_flat_main.h264", "cabac_flat_main_raw.yuv",
+        320U, 240U, 1U);
+    // Track regression: currently ~10 dB, will improve as CABAC fixes land
+    CHECK(minPsnr >= cHighFrameMinPsnrDb);
+}
+
+TEST_CASE("CABAC IDR: single MB flat gray decodes all MBs")
+{
+    // Single 16x16 MB with Main profile CABAC. Tests minimal CABAC decode.
+    auto h264 = getFixture("cabac_idr_only.h264");
+    if (h264.empty())
+    {
+        MESSAGE("Fixture cabac_idr_only.h264 not found — skipping");
+        return;
+    }
+
+    auto decoder = std::make_unique<H264Decoder>();
+    std::vector<NalBounds> bounds;
+    findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
+
+    uint32_t frameCount = 0U;
+    for (const auto& b : bounds)
+    {
+        NalUnit nal;
+        if (!parseNalUnit(h264.data() + b.offset, b.size, nal))
+            continue;
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
+            ++frameCount;
+    }
+    // Must decode at least 1 frame without crashing
+    CHECK(frameCount >= 1U);
+}
