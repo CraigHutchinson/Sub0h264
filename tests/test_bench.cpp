@@ -109,24 +109,30 @@ static void profileStream(const char* name, const char* fixture)
 
     REQUIRE(frames > 0);
 
-    // Compute non-profiled time (entropy + intra + inter + transform)
-    int64_t profiledUs = profile.deblockUs + profile.overheadUs;
-    int64_t unprofiled = totalUs - profiledUs;
+    int64_t profiledUs = profile.deblockUs + profile.overheadUs
+                       + profile.intraPredUs + profile.interPredUs;
+    int64_t entropyAndTransform = totalUs - profiledUs;
 
-    char buf[512];
+    char buf[768];
     std::snprintf(buf, sizeof(buf),
         "PROFILE %s: %ld frames in %lld us (%.1f fps)\n"
+        "    Intra MB:   %8lld us  (%5.1f%%)\n"
+        "    Inter MB:   %8lld us  (%5.1f%%)\n"
         "    Deblock:    %8lld us  (%5.1f%%)\n"
         "    FrameSync:  %8lld us  (%5.1f%%)\n"
-        "    MB decode:  %8lld us  (%5.1f%%)",
+        "    Other:      %8lld us  (%5.1f%%)",
         name, (long)frames, (long long)totalUs,
         (totalUs > 0) ? (frames * 1e6 / totalUs) : 0.0,
+        (long long)profile.intraPredUs,
+        (totalUs > 0) ? (100.0 * profile.intraPredUs / totalUs) : 0.0,
+        (long long)profile.interPredUs,
+        (totalUs > 0) ? (100.0 * profile.interPredUs / totalUs) : 0.0,
         (long long)profile.deblockUs,
         (totalUs > 0) ? (100.0 * profile.deblockUs / totalUs) : 0.0,
         (long long)profile.overheadUs,
         (totalUs > 0) ? (100.0 * profile.overheadUs / totalUs) : 0.0,
-        (long long)unprofiled,
-        (totalUs > 0) ? (100.0 * unprofiled / totalUs) : 0.0);
+        (long long)entropyAndTransform,
+        (totalUs > 0) ? (100.0 * entropyAndTransform / totalUs) : 0.0);
     MESSAGE(buf);
 }
 

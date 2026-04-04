@@ -428,16 +428,19 @@ private:
 
                 if (useCabac)
                 {
-                    // Trace per-MB CABAC bit position for alignment debugging
                     trace_.onMbStart(mbX, mbY, 200U,
                                      static_cast<uint32_t>(cabacEngine_.bitPosition()));
+                    int64_t cT0 = profile_ ? sub0h264TimerUs() : 0;
                     if (!decodeCabacIntraMb(br, *sps, *pps, sh, mbQp, mbX, mbY))
                         break;
+                    if (profile_) profile_->intraPredUs += sub0h264TimerUs() - cT0;
                 }
                 else
                 {
+                    int64_t intraT0 = profile_ ? sub0h264TimerUs() : 0;
                     if (!decodeIntraMb(br, *sps, *pps, sh, mbQp, mbX, mbY))
                         break;
+                    if (profile_) profile_->intraPredUs += sub0h264TimerUs() - intraT0;
                 }
                 // Store accumulated QP for deblocking pass — ITU-T H.264 §8.7.2.2.
                 mbQps_[mbAddr] = mbQp;
@@ -469,8 +472,10 @@ private:
                     if (skipFlag)
                     {
                         mbIsSkip_[mbAddr] = true;
-                        mbIsI4x4_[mbAddr] = false; // skip is inter, not I_NxN
+                        mbIsI4x4_[mbAddr] = false;
+                        int64_t skipT0 = profile_ ? sub0h264TimerUs() : 0;
                         decodePSkipMb(*decodeTarget, *refFrame, mbX, mbY);
+                        if (profile_) profile_->interPredUs += sub0h264TimerUs() - skipT0;
                         // Skip MBs inherit QP — no mb_qp_delta per §7.4.5.
                     }
                     else
@@ -494,10 +499,11 @@ private:
                         }
                         else
                         {
-                            mbIsI4x4_[mbAddr] = false; // inter, not I_NxN
-                            // CABAC inter MB: use CABAC for MVD + residual
+                            mbIsI4x4_[mbAddr] = false;
+                            int64_t ciT0 = profile_ ? sub0h264TimerUs() : 0;
                             decodeCabacPInterMb(br, *sps, *pps, mbQp,
                                                 mbTypeRaw, *decodeTarget, *refFrame, mbX, mbY);
+                            if (profile_) profile_->interPredUs += sub0h264TimerUs() - ciT0;
                         }
                     }
                     // Store accumulated QP for deblocking pass — §8.7.2.2.
@@ -525,7 +531,9 @@ private:
                     if (mbSkipRun > 0U)
                     {
                         trace_.onMbStart(mbX, mbY, 99U, static_cast<uint32_t>(br.bitOffset()));
+                        int64_t mcT0 = profile_ ? sub0h264TimerUs() : 0;
                         decodePSkipMb(*decodeTarget, *refFrame, mbX, mbY);
+                        if (profile_) profile_->interPredUs += sub0h264TimerUs() - mcT0;
                         --mbSkipRun;
                         // §7.3.4: after skip_run exhausted, next MB is coded
                         // (mb_type follows, NOT another skip_run).
@@ -547,9 +555,11 @@ private:
                         }
                         else
                         {
+                            int64_t interT0 = profile_ ? sub0h264TimerUs() : 0;
                             decodePInterMb(br, *sps, *pps, mbQp,
                                            mbTypeRaw, *decodeTarget, mbX, mbY,
                                            sh.numRefIdxActiveL0_);
+                            if (profile_) profile_->interPredUs += sub0h264TimerUs() - interT0;
                         }
                     }
                     // Store accumulated QP for deblocking pass — §8.7.2.2.
