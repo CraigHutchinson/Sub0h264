@@ -19,8 +19,19 @@
 
 namespace sub0h264 {
 
-/// Number of CABAC context models — ITU-T H.264 Table 9-11 through 9-23.
-inline constexpr uint32_t cNumCabacCtx = 460U;
+/// Number of CABAC context models for Baseline/Main profile — ITU-T H.264
+/// Tables 9-12 through 9-23 define 460 contexts (indices 0-459).
+inline constexpr uint32_t cNumCabacCtxBase = 460U;
+
+/// Number of CABAC context models including High profile 8x8 extensions.
+/// High profile adds contexts 460-1023 for ctxBlockCat 5-13 (8x8 blocks).
+/// Layout per ITU-T H.264 §9.3.3.1.1.3 Table 9-42:
+///   460-472:  significant_coeff_flag    ctxBlockCat 5 (frame, 10 + 3 extra)
+///   472-483:  last_significant_coeff_flag ctxBlockCat 5 (frame)
+///   484-493:  coeff_abs_level_minus1    ctxBlockCat 5
+///   1012-1015: coded_block_flag         ctxBlockCat 5
+/// Total allocation: 1024 contexts covers all High profile extensions.
+inline constexpr uint32_t cNumCabacCtx = 1024U;
 
 /// Maximum QP value.
 inline constexpr int32_t cMaxQp = 51;
@@ -234,7 +245,7 @@ public:
      */
     uint32_t decodeBin(CabacCtx& ctx) noexcept
     {
-        uint32_t state = ctx.mpsState & 0x7FU; // combined state = (pStateIdx << 1) | mps
+        uint32_t state = ctx.mpsState & 0x7FU; // combined state = pStateIdx | (mps << 6)
         uint32_t qRange = (codIRange_ >> 6U) & 3U;
 
         uint32_t tableEntry = cCabacTable[state][qRange];
@@ -412,12 +423,22 @@ inline void initCabacContexts(CabacCtx* ctx, uint32_t sliceType,
     uint32_t idc = (sliceType == 2U) ? cISliceInitIdc : cabacInitIdc;
     if (idc > 3U) idc = 0U;
 
-    for (uint32_t i = 0U; i < cNumCabacCtx; ++i)
+    // Initialize base 460 contexts from (m, n) tables — Tables 9-12..9-23.
+    for (uint32_t i = 0U; i < cNumCabacCtxBase; ++i)
     {
         int32_t m = cCabacInitMN[idc][i][0];
         int32_t n = cCabacInitMN[idc][i][1];
         ctx[i].mpsState = computeCabacInitState(m, n, sliceQpY);
     }
+
+    // High profile extension contexts (460-1023) — §9.3.1.1.
+    // These are initialized to equiprobable state (pStateIdx=0, MPS=0).
+    // The spec defines separate (m, n) tables for these contexts
+    // (Table 9-24 through 9-30), but many implementations start them
+    // at the equiprobable state and rely on adaptation. We zero-init
+    // to match the spec's preCtxState=63 default (state 0, MPS=0).
+    for (uint32_t i = cNumCabacCtxBase; i < cNumCabacCtx; ++i)
+        ctx[i].mpsState = 0U;
 }
 
 } // namespace sub0h264

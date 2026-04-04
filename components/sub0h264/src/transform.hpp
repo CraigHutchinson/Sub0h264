@@ -289,6 +289,322 @@ inline void inverseQuantize4x4(int16_t* coeffs, int32_t qp, bool isDc = false) n
     }
 }
 
+// ── 8x8 Default dequantization scaling — ITU-T H.264 §8.5.12.1 ────────
+
+/// Default 8x8 scaling matrix for intra blocks — ITU-T H.264 Table 7-3.
+/// Flat (all 16) is the default when no scaling list is signalled.
+/// Row-major 8x8 layout; indexed as [row * 8 + col].
+inline constexpr std::array<uint8_t, 64> cDefaultScalingList8x8Intra = {
+     6, 10, 10, 13, 11, 13, 16, 16,
+    16, 16, 18, 18, 18, 18, 18, 23,
+    23, 23, 23, 23, 23, 25, 25, 25,
+    25, 25, 25, 25, 27, 27, 27, 27,
+    27, 27, 27, 27, 29, 29, 29, 29,
+    29, 29, 29, 31, 31, 31, 31, 31,
+    31, 33, 33, 33, 33, 33, 36, 36,
+    36, 36, 38, 38, 38, 40, 40, 42,
+};
+
+/// Default 8x8 scaling matrix for inter blocks — ITU-T H.264 Table 7-4.
+inline constexpr std::array<uint8_t, 64> cDefaultScalingList8x8Inter = {
+     9, 13, 13, 15, 13, 15, 17, 17,
+    17, 17, 19, 19, 19, 19, 19, 21,
+    21, 21, 21, 21, 21, 22, 22, 22,
+    22, 22, 22, 22, 24, 24, 24, 24,
+    24, 24, 24, 24, 25, 25, 25, 25,
+    25, 25, 25, 27, 27, 27, 27, 27,
+    27, 28, 28, 28, 28, 28, 30, 30,
+    30, 30, 32, 32, 32, 33, 33, 35,
+};
+
+/// Dequantization scale factors for 8x8 blocks — ITU-T H.264 §8.5.12.1.
+/// v[qp%6][j] where j is the position class derived from (row%4, col%4).
+/// 8x8 blocks have 6 position classes, corresponding to the normAdjust8x8
+/// matrix entries. Reference: Table 8-16 (normAdjust8x8).
+///
+/// Position classes (row%4, col%4):
+///   class 0: (0,0)           → both divisible by 4
+///   class 1: (0,even!=0)     → row div-by-4, col even but not div-by-4
+///   class 2: (even!=0,0)     → col div-by-4, row even but not div-by-4
+///   class 3: (even,even)     → both even, neither div-by-4
+///   class 4: (odd,even)/(even,odd) → one odd, one even
+///   class 5: (odd,odd)       → both odd
+inline constexpr std::array<std::array<int32_t, 6>, 6> cDequantScale8x8 = {{
+    {{ 20, 18, 18, 16, 15, 13 }},  // qp%6 = 0
+    {{ 22, 20, 20, 18, 17, 14 }},  // qp%6 = 1
+    {{ 26, 23, 23, 20, 19, 16 }},  // qp%6 = 2
+    {{ 28, 25, 25, 22, 21, 18 }},  // qp%6 = 3
+    {{ 32, 28, 28, 25, 24, 20 }},  // qp%6 = 4
+    {{ 36, 32, 32, 28, 27, 23 }},  // qp%6 = 5
+}};
+
+/// Position class for each raster position in an 8x8 block — §8.5.12.1.
+/// Derived from (row%4, col%4) parity following the normAdjust8x8 table.
+inline constexpr std::array<uint8_t, 64> cDequantPosClass8x8 = []() constexpr
+{
+    std::array<uint8_t, 64> t{};
+    for (uint32_t i = 0U; i < 64U; ++i)
+    {
+        uint32_t row = i / 8U;
+        uint32_t col = i % 8U;
+        uint32_t rowMod4 = row % 4U;
+        uint32_t colMod4 = col % 4U;
+
+        if (rowMod4 == 0U && colMod4 == 0U)
+            t[i] = 0U; // Both divisible by 4
+        else if (rowMod4 == 0U && (colMod4 % 2U == 0U))
+            t[i] = 1U; // Row div-by-4, col even
+        else if ((rowMod4 % 2U == 0U) && colMod4 == 0U)
+            t[i] = 2U; // Col div-by-4, row even
+        else if ((rowMod4 % 2U == 0U) && (colMod4 % 2U == 0U))
+            t[i] = 3U; // Both even, neither div-by-4
+        else if ((rowMod4 % 2U == 1U) && (colMod4 % 2U == 1U))
+            t[i] = 5U; // Both odd
+        else
+            t[i] = 4U; // One odd, one even
+    }
+    return t;
+}();
+
+// Compile-time spot-checks — ITU-T H.264 §8.5.12.1.
+static_assert(cDequantPosClass8x8[0]  == 0U, "pos(0,0) → class 0 (both div-by-4)");
+static_assert(cDequantPosClass8x8[2]  == 1U, "pos(0,2) → class 1 (row div-by-4, col even)");
+static_assert(cDequantPosClass8x8[16] == 2U, "pos(2,0) → class 2 (col div-by-4, row even)");
+static_assert(cDequantPosClass8x8[18] == 3U, "pos(2,2) → class 3 (both even)");
+static_assert(cDequantPosClass8x8[1]  == 4U, "pos(0,1) → class 4 (mixed parity)");
+static_assert(cDequantPosClass8x8[9]  == 5U, "pos(1,1) → class 5 (both odd)");
+static_assert(cDequantScale8x8[0][0] == 20, "qp%6=0, class0 = 20 per Table 8-16");
+static_assert(cDequantScale8x8[0][5] == 13, "qp%6=0, class5 = 13 per Table 8-16");
+
+// ── 8x8 Inverse Quantization — ITU-T H.264 §8.5.12.1 ─────────────────
+
+/** Inverse quantize an 8x8 block of coefficients (default flat scaling).
+ *
+ *  Uses the normAdjust8x8 scale factors from Table 8-16 with no custom
+ *  scaling matrix (flat_4x4_16/flat_8x8_16). For custom scaling matrices,
+ *  the caller should multiply by the scaling list entries.
+ *
+ *  @param[in,out] coeffs  64 coefficients in raster order, dequantized in-place
+ *  @param qp              Quantization parameter [0-51]
+ */
+inline void inverseQuantize8x8(int16_t* coeffs, int32_t qp) noexcept
+{
+    // Ensure QP is in valid range [0, 51] — protects against bitstream errors.
+    qp = ((qp % 52) + 52) % 52;
+    int32_t qpDiv6 = qp / 6;
+    int32_t qpMod6 = qp % 6;
+
+    for (uint32_t i = 0U; i < 64U; ++i)
+    {
+        if (coeffs[i] == 0)
+            continue;
+
+        int32_t posClass = cDequantPosClass8x8[i];
+        int32_t scale = cDequantScale8x8[qpMod6][posClass];
+        int32_t val = static_cast<int32_t>(coeffs[i]) * scale;
+
+        // 8x8 residual blocks: ITU-T H.264 §8.5.12.1.
+        // d[i][j] = c[i][j] * LevelScale8x8[m][i][j] << floor(QP/6)
+        // The 8x8 IDCT then applies >> 6 normalization at the output.
+        val <<= qpDiv6;
+
+        coeffs[i] = static_cast<int16_t>(val);
+    }
+}
+
+/** Inverse quantize an 8x8 block using a custom scaling list.
+ *
+ *  @param[in,out] coeffs       64 coefficients in raster order
+ *  @param qp                   Quantization parameter [0-51]
+ *  @param scalingList          64-entry scaling list (raster order)
+ */
+inline void inverseQuantize8x8Scaled(int16_t* coeffs, int32_t qp,
+                                      const int16_t* scalingList) noexcept
+{
+    qp = ((qp % 52) + 52) % 52;
+    int32_t qpDiv6 = qp / 6;
+    int32_t qpMod6 = qp % 6;
+
+    for (uint32_t i = 0U; i < 64U; ++i)
+    {
+        if (coeffs[i] == 0)
+            continue;
+
+        int32_t posClass = cDequantPosClass8x8[i];
+        int32_t scale = cDequantScale8x8[qpMod6][posClass];
+        // §8.5.12.1: with scaling list, scale factor is
+        // LevelScale8x8[m][i][j] = normAdjust8x8[m][i][j] * scalingList[i][j]
+        int32_t val = static_cast<int32_t>(coeffs[i]) * scale * scalingList[i];
+
+        // Right-shift by 4 to compensate for scaling list normalization,
+        // then left-shift by qpDiv6. Combined: << (qpDiv6 - 4) when qpDiv6>=4,
+        // else >> (4 - qpDiv6) with rounding.
+        if (qpDiv6 >= 4)
+            val <<= (qpDiv6 - 4);
+        else
+            val = (val + (1 << (3 - qpDiv6))) >> (4 - qpDiv6);
+
+        coeffs[i] = static_cast<int16_t>(val);
+    }
+}
+
+// ── 8x8 Inverse Integer DCT — ITU-T H.264 §8.5.12 ────────────────────
+
+/** Apply inverse 8x8 integer DCT and add to prediction, storing result.
+ *
+ *  Implements the 8x8 butterfly in ITU-T H.264 §8.5.12.2.
+ *  The transform uses the even/odd decomposition with half-pel accuracy
+ *  coefficients {8, 10, 12} and quarter-pel {3, 6, 9, 10}.
+ *
+ *  The >> 6 normalization is absorbed from the dequant scaling,
+ *  matching the 4x4 convention used elsewhere in this codebase.
+ *
+ *  @param coeffs     Input: 64 dequantized coefficients in raster order
+ *  @param pred       Input: 8x8 prediction block (stride = predStride)
+ *  @param predStride Stride of prediction buffer
+ *  @param out        Output: 8x8 reconstructed block (stride = outStride)
+ *  @param outStride  Stride of output buffer
+ */
+inline void inverseDct8x8AddPred(const int16_t* coeffs,
+                                  const uint8_t* pred, uint32_t predStride,
+                                  uint8_t* out, uint32_t outStride) noexcept
+{
+    int32_t tmp[64];
+
+    // Horizontal 1-D 8-point inverse transform (for each row).
+    // ITU-T H.264 §8.5.12.2: the 8-point butterfly uses coefficients
+    // a=8, b=10, c=9, d=6, e=3 (after normalization).
+    // Factored butterfly per spec:
+    //   e0=s0+s4, e1=s0-s4, e2=(s2>>1)-s6, e3=s2+(s6>>1)
+    //   f0=s1-s7-s3-(s3>>1), f1=s1+s7-s5-(s5>>1)
+    //   f2=s3-s7+s5+(s5>>1), f3=s1+s7+s3+(s3>>1)
+    // Then odd-half scaling:
+    //   g0=f0, g1=f1, g2=f2, g3=f3
+    //   h0=(g3>>2)+g0, h1=(g2>>2)+g1, h2=g1-(g2>>2 [correction]), h3=g0-(g3>>2 [correction])
+    // (Exact implementation per spec equations 8-325 through 8-333.)
+    for (uint32_t i = 0U; i < 8U; ++i)
+    {
+        const int16_t* row = coeffs + i * 8;
+        int32_t s0 = row[0];
+        int32_t s1 = row[1];
+        int32_t s2 = row[2];
+        int32_t s3 = row[3];
+        int32_t s4 = row[4];
+        int32_t s5 = row[5];
+        int32_t s6 = row[6];
+        int32_t s7 = row[7];
+
+        // Even part — §8.5.12.2 Equations 8-325..8-328
+        int32_t a0 = s0 + s4;
+        int32_t a2 = s0 - s4;
+        int32_t a4 = (s2 >> 1) - s6;
+        int32_t a6 = s2 + (s6 >> 1);
+
+        int32_t e0 = a0 + a6;
+        int32_t e1 = a2 + a4;
+        int32_t e2 = a2 - a4;
+        int32_t e3 = a0 - a6;
+
+        // Odd part — §8.5.12.2 Equations 8-329..8-333
+        int32_t b0 = -s3 + s5 - s7 - (s7 >> 1);
+        int32_t b1 =  s1 + s7 - s3 - (s3 >> 1);
+        int32_t b2 = -s1 + s7 + s5 + (s5 >> 1);
+        int32_t b3 =  s1 + s3 + s5 + (s7 >> 1);
+
+        int32_t o0 = b0 + (b3 >> 2);
+        int32_t o1 = b1 + (b2 >> 2);
+        int32_t o2 = b2 - (b1 >> 2);
+        int32_t o3 = b3 - (b0 >> 2);
+
+        // Combine even + odd → output row
+        tmp[i * 8 + 0] = e0 + o3;
+        tmp[i * 8 + 1] = e1 + o2;
+        tmp[i * 8 + 2] = e2 + o1;
+        tmp[i * 8 + 3] = e3 + o0;
+        tmp[i * 8 + 4] = e3 - o0;
+        tmp[i * 8 + 5] = e2 - o1;
+        tmp[i * 8 + 6] = e1 - o2;
+        tmp[i * 8 + 7] = e0 - o3;
+    }
+
+    // Vertical 1-D 8-point inverse transform (for each column) + pred + clip.
+    /// Rounding bias for >>12 normalization (6-bit transform + 6-bit dequant).
+    static constexpr int32_t cRoundBias8x8 = 32;
+    for (uint32_t j = 0U; j < 8U; ++j)
+    {
+        int32_t s0 = tmp[0 * 8 + j];
+        int32_t s1 = tmp[1 * 8 + j];
+        int32_t s2 = tmp[2 * 8 + j];
+        int32_t s3 = tmp[3 * 8 + j];
+        int32_t s4 = tmp[4 * 8 + j];
+        int32_t s5 = tmp[5 * 8 + j];
+        int32_t s6 = tmp[6 * 8 + j];
+        int32_t s7 = tmp[7 * 8 + j];
+
+        // Even part
+        int32_t a0 = s0 + s4;
+        int32_t a2 = s0 - s4;
+        int32_t a4 = (s2 >> 1) - s6;
+        int32_t a6 = s2 + (s6 >> 1);
+
+        int32_t e0 = a0 + a6;
+        int32_t e1 = a2 + a4;
+        int32_t e2 = a2 - a4;
+        int32_t e3 = a0 - a6;
+
+        // Odd part
+        int32_t b0 = -s3 + s5 - s7 - (s7 >> 1);
+        int32_t b1 =  s1 + s7 - s3 - (s3 >> 1);
+        int32_t b2 = -s1 + s7 + s5 + (s5 >> 1);
+        int32_t b3 =  s1 + s3 + s5 + (s7 >> 1);
+
+        int32_t o0 = b0 + (b3 >> 2);
+        int32_t o1 = b1 + (b2 >> 2);
+        int32_t o2 = b2 - (b1 >> 2);
+        int32_t o3 = b3 - (b0 >> 2);
+
+        // Combine, scale down by 64 (>>6), and add prediction.
+        // The total normalization is >>12 (6 bits from horizontal, 6 from vertical)
+        // but our dequant already includes the proper scaling, so only >>6 here.
+        int32_t r0 = (e0 + o3 + cRoundBias8x8) >> 6;
+        int32_t r1 = (e1 + o2 + cRoundBias8x8) >> 6;
+        int32_t r2 = (e2 + o1 + cRoundBias8x8) >> 6;
+        int32_t r3 = (e3 + o0 + cRoundBias8x8) >> 6;
+        int32_t r4 = (e3 - o0 + cRoundBias8x8) >> 6;
+        int32_t r5 = (e2 - o1 + cRoundBias8x8) >> 6;
+        int32_t r6 = (e1 - o2 + cRoundBias8x8) >> 6;
+        int32_t r7 = (e0 - o3 + cRoundBias8x8) >> 6;
+
+        out[0 * outStride + j] = static_cast<uint8_t>(clipU8(pred[0 * predStride + j] + r0));
+        out[1 * outStride + j] = static_cast<uint8_t>(clipU8(pred[1 * predStride + j] + r1));
+        out[2 * outStride + j] = static_cast<uint8_t>(clipU8(pred[2 * predStride + j] + r2));
+        out[3 * outStride + j] = static_cast<uint8_t>(clipU8(pred[3 * predStride + j] + r3));
+        out[4 * outStride + j] = static_cast<uint8_t>(clipU8(pred[4 * predStride + j] + r4));
+        out[5 * outStride + j] = static_cast<uint8_t>(clipU8(pred[5 * predStride + j] + r5));
+        out[6 * outStride + j] = static_cast<uint8_t>(clipU8(pred[6 * predStride + j] + r6));
+        out[7 * outStride + j] = static_cast<uint8_t>(clipU8(pred[7 * predStride + j] + r7));
+    }
+}
+
+/** DC-only fast path for 8x8: add constant DC value to prediction.
+ *  Used when only the DC coefficient is non-zero in an 8x8 block.
+ */
+inline void inverseDcOnly8x8AddPred(int16_t dcCoeff,
+                                     const uint8_t* pred, uint32_t predStride,
+                                     uint8_t* out, uint32_t outStride) noexcept
+{
+    int32_t dcVal = (dcCoeff + 32) >> 6;
+
+    for (uint32_t row = 0U; row < 8U; ++row)
+    {
+        for (uint32_t col = 0U; col < 8U; ++col)
+        {
+            out[row * outStride + col] = static_cast<uint8_t>(
+                clipU8(pred[row * predStride + col] + dcVal));
+        }
+    }
+}
+
 } // namespace sub0h264
 
 #endif // CROG_SUB0H264_TRANSFORM_HPP

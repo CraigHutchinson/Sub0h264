@@ -62,10 +62,13 @@ Follow `STYLE_GUIDE.md` and `docs/ai-guides/coding-style.md` for all C++ code. K
 - Prefer full words over abbreviations (see permitted list in coding-style.md)
 
 ### Spec References
+- **The ITU-T H.264 specification is the authoritative source** — always audit code against the spec, not against reference implementations. ffmpeg and libavc are interpretations we use as guides/references, but the spec defines correct behavior.
 - **Always cite ITU-T H.264 spec sections** in code comments where the logic implements a spec formula, table, or algorithm (e.g., `// ITU-T H.264 §8.5.12.1 Table 8-15`)
 - Include section (§), table, equation, or figure numbers for traceability
 - When fixing bugs, reference the spec section that defines the correct behavior
-- Cross-reference libavc (Android Open Source Project) function names when validating against a known-good implementation
+- **Prefer spec-based code audit over reference-based comparison** — when debugging, trace the code flow against the spec's pseudo-code and syntax tables rather than comparing against libavc/ffmpeg output. This ensures correctness for ALL streams, not just the ones the reference implementation happens to handle.
+- Cross-reference libavc/ffmpeg only as secondary validation after verifying against the spec
+- **Track unimplemented spec sections** — clearly document which spec sections are not yet implemented (e.g., `// TODO §7.3.3.2: pred_weight_table()`), so missing support is visible and discoverable
 
 ### Tests
 - All new features must have corresponding tests in `tests/`

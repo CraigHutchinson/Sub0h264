@@ -391,7 +391,8 @@ static_assert(cProfileMain == 77, "Main profile_idc = 77");
 static_assert(cProfileHigh == 100, "High profile_idc = 100");
 
 // cabac.hpp
-static_assert(cNumCabacCtx == 460, "CABAC context count = 460");
+static_assert(cNumCabacCtxBase == 460, "CABAC base context count = 460");
+static_assert(cNumCabacCtx == 1024, "CABAC total context count = 1024 (incl. High 8x8)");
 static_assert(cMaxQp == 51, "Maximum QP = 51");
 
 // cavlc.hpp

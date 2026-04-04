@@ -171,22 +171,35 @@ static uint32_t verifyStreamCrcs(const char* fixture,
     return strictFails;
 }
 
-TEST_CASE("Verify: flat_black_640x480 per-frame CRC")
+// ── CRC regression tests ───────────────────────────────────────────────
+// These verify against stored CRC snapshots of OUR output, NOT spec-conformant
+// reference values. They detect regressions but don't validate correctness.
+// For correctness validation, use synthetic PSNR tests (test_synthetic_quality.cpp)
+// which compare decoded output against raw uncompressed ground truth.
+//
+// Real-device recordings (NestNinja/Tapo) don't have ground-truth raw source,
+// so CRC is the only regression check available. To create quality tests from
+// real content: transcode to raw YUV, re-encode, and PSNR against the raw.
+
+TEST_CASE("CRC regression: flat_black_640x480")
 {
     uint32_t mismatches = verifyStreamCrcs("flat_black_640x480.h264",
                                             cRefCrcFlatBlack, cRefCrcFlatBlackCount);
     CHECK(mismatches == 0U);
 }
 
-TEST_CASE("Verify: baseline_640x480_short per-frame CRC")
+TEST_CASE("CRC regression: baseline_640x480_short")
 {
     uint32_t mismatches = verifyStreamCrcs("baseline_640x480_short.h264",
                                             cRefCrcBaseline, cRefCrcBaselineCount);
     CHECK(mismatches == 0U);
 }
 
-TEST_CASE("Verify: high_640x480 per-frame CRC (first 5)")
+TEST_CASE("CRC regression: high_640x480 (frames 2-4 only, B-frames unsupported)")
 {
+    // NOTE: Frames 0-1 CRCs are 0 (skipped). Frames 2-4 are B-frames that our
+    // decoder produces default output for — these CRCs are NOT validated against
+    // a reference decoder. This test only catches regressions in our current behavior.
     uint32_t mismatches = verifyStreamCrcs("high_640x480.h264",
                                             cRefCrcHigh, cRefCrcHighCount);
     CHECK(mismatches == 0U);

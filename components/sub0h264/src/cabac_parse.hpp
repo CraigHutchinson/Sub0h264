@@ -37,6 +37,30 @@ inline constexpr uint32_t cCtxTransform8x8  = 399U;
 inline constexpr uint32_t cCtxPrevIntra4x4  = 68U;
 inline constexpr uint32_t cCtxRemIntra4x4   = 69U;
 
+// ── High profile 8x8 block context offsets — ITU-T H.264 Table 9-42 ───
+//
+// ctxBlockCat 5 (8x8 luma blocks) uses separate context ranges beyond the
+// base 460 contexts. Offsets per ITU-T H.264 Table 9-42 (frame coding):
+
+/// significant_coeff_flag for ctxBlockCat=5 — base context index.
+/// 63 positions use non-linear mapping via cSigCtxInc8x8Frame.
+/// ITU-T H.264 Table 9-42: ctxIdxOffset = 402 for frame coding.
+inline constexpr uint32_t cCtxSigCoeff8x8      = 402U;
+
+/// last_significant_coeff_flag for ctxBlockCat=5 — base context index.
+/// 63 positions use non-linear mapping via cLastSigCtxInc8x8Frame.
+/// ITU-T H.264 Table 9-42: ctxIdxOffset = 417 for frame coding.
+inline constexpr uint32_t cCtxLastSigCoeff8x8   = 417U;
+
+/// coeff_abs_level_minus1 for ctxBlockCat=5 — base context index.
+/// ITU-T H.264 Table 9-42: ctxIdxOffset = 426.
+inline constexpr uint32_t cCtxCoeffAbsLevel8x8  = 426U;
+
+/// coded_block_flag for ctxBlockCat=5 — High profile extension range.
+/// ITU-T H.264 Table 9-42: ctxIdxOffset = 1012 for 8x8 luma blocks.
+/// Requires context array expanded to 1024 entries.
+inline constexpr uint32_t cCtxCbf8x8            = 1012U;
+
 // ── mb_skip_flag (P-slice) — §9.3.3.1.1 ────────────────────────────────
 
 /** Decode mb_skip_flag for P-slice.
@@ -56,12 +80,18 @@ inline uint32_t cabacDecodeMbSkipP(CabacEngine& engine, CabacCtx* ctx,
 // ── mb_type (I-slice) — §9.3.3.1.2 ─────────────────────────────────────
 
 /** Decode mb_type for I-slice (CABAC).
+ *  §9.3.3.1.2: condTermFlagN = 0 when neighbor is I_NxN (I_4x4),
+ *  = 1 when neighbor is NOT I_NxN (I_16x16, inter, or unavailable).
+ *  @param leftIsI4x4  true when left neighbor is I_NxN (I_4x4)
+ *  @param topIsI4x4   true when top neighbor is I_NxN (I_4x4)
  *  @return mb_type raw value [0=I_4x4, 1-24=I_16x16 variants, 25=I_PCM]
  */
 inline uint32_t cabacDecodeMbTypeI(CabacEngine& engine, CabacCtx* ctx,
-                                    bool leftIsIntra, bool topIsIntra) noexcept
+                                    bool leftIsI4x4, bool topIsI4x4) noexcept
 {
-    uint32_t ctxInc = (leftIsIntra ? 0U : 1U) + (topIsIntra ? 0U : 1U);
+    // §9.3.3.1.2: ctxIdxInc = condTermFlagA + condTermFlagB
+    // condTermFlagN = 0 when I_NxN, 1 otherwise
+    uint32_t ctxInc = (leftIsI4x4 ? 0U : 1U) + (topIsI4x4 ? 0U : 1U);
 
     // bin[0]: ctxInc
     if (engine.decodeBin(ctx[cCtxMbTypeI + ctxInc]) == 0U)
@@ -92,10 +122,13 @@ inline uint32_t cabacDecodeMbTypeI(CabacEngine& engine, CabacCtx* ctx,
 // ── mb_type (P-slice, inter) — §9.3.3.1.2 ──────────────────────────────
 
 /** Decode mb_type for P-slice (CABAC).
+ *  @param leftIsI4x4  true when left neighbor is I_NxN (for intra suffix context)
+ *  @param topIsI4x4   true when top neighbor is I_NxN (for intra suffix context)
  *  @return mb_type raw: 0=P_L0_16x16, 1=P_L0_L0_16x8, 2=P_L0_L0_8x16,
  *          3=P_8x8, 4=P_8x8ref0, 5-30=Intra (offset by 5)
  */
-inline uint32_t cabacDecodeMbTypeP(CabacEngine& engine, CabacCtx* ctx) noexcept
+inline uint32_t cabacDecodeMbTypeP(CabacEngine& engine, CabacCtx* ctx,
+                                    bool leftIsI4x4, bool topIsI4x4) noexcept
 {
     // bin[0]
     if (engine.decodeBin(ctx[cCtxMbTypeP + 0U]) == 0U)
@@ -110,8 +143,8 @@ inline uint32_t cabacDecodeMbTypeP(CabacEngine& engine, CabacCtx* ctx) noexcept
         return engine.decodeBin(ctx[cCtxMbTypeP + 3U]) == 0U ? 1U : 2U;
     }
 
-    // Intra MB within P-slice — decode I-slice mb_type + offset
-    return 5U + cabacDecodeMbTypeI(engine, ctx, true, true);
+    // Intra MB within P-slice — decode I-slice mb_type suffix §9.3.3.1.2
+    return 5U + cabacDecodeMbTypeI(engine, ctx, leftIsI4x4, topIsI4x4);
 }
 
 // ── coded_block_pattern — §9.3.3.1.4 ───────────────────────────────────
@@ -275,10 +308,11 @@ inline uint32_t cabacDecodeResidual4x4(CabacEngine& engine, CabacCtx* ctx,
     uint32_t lastOffset  = cLastOffsets[ctxBlockCat];
     uint32_t levelOffset = cLevelOffsets[ctxBlockCat];
 
-    // Decode significant coefficient map
+    // Decode significant coefficient map — §9.3.3.1.3 residual_block_cabac()
     uint8_t sigMap[16] = {};
     uint32_t numSig = 0U;
     int32_t lastSigIdx = -1;
+    bool foundLast = false;
 
     for (uint32_t i = 0U; i < maxCoeff - 1U; ++i)
     {
@@ -290,20 +324,22 @@ inline uint32_t cabacDecodeResidual4x4(CabacEngine& engine, CabacCtx* ctx,
 
             // Check last_significant_coeff_flag
             if (engine.decodeBin(ctx[lastOffset + i]) == 1U)
+            {
+                foundLast = true;
                 break;
+            }
         }
     }
 
-    // §9.3.3.1.3: If loop exhausted without last_significant_coeff_flag=1,
-    // position maxCoeff-1 is implicitly significant.
-    if (lastSigIdx < static_cast<int32_t>(maxCoeff - 1U))
+    // §9.3.3.1.3: Position maxCoeff-1 is implicitly significant ONLY when
+    // the loop exhausted without last_significant_coeff_flag=1.
+    // If last_flag was set (foundLast=true), the last significant position
+    // is already recorded in lastSigIdx — do NOT add the implicit position.
+    if (!foundLast)
     {
-        // Either: no significant flags found at all (numSig==0, and we never
-        // broke out), or we found some but none was "last". In both cases,
-        // if numSig==0 after the full loop, there are truly no coefficients.
         if (numSig == 0U)
             return 0U;
-        // Otherwise: last position is implicitly significant
+        // Loop exhausted: position maxCoeff-1 is implicitly significant
         sigMap[maxCoeff - 1U] = 1U;
         lastSigIdx = static_cast<int32_t>(maxCoeff - 1U);
         ++numSig;
@@ -329,8 +365,10 @@ inline uint32_t cabacDecodeResidual4x4(CabacEngine& engine, CabacCtx* ctx,
         if (engine.decodeBin(ctx[levelOffset + ctxInc]) == 1U)
         {
             ++prefix;
-            uint32_t nextCtx = 5U + (numLarger > 0U ? 1U : 0U);
-            if (nextCtx > 9U) nextCtx = 9U;
+            // §9.3.3.1.3: bins k>=1 use ctxIdxInc = 5 + min(numDecodAbsLevelGt1,
+            //   4 - (ctxBlockCat == 3 ? 1 : 0))
+            uint32_t maxInc = (ctxBlockCat == 3U) ? 3U : 4U;
+            uint32_t nextCtx = 5U + (numLarger < maxInc ? numLarger : maxInc);
             while (prefix < 14U)
             {
                 if (engine.decodeBin(ctx[levelOffset + nextCtx]) == 0U)
@@ -358,6 +396,177 @@ inline uint32_t cabacDecodeResidual4x4(CabacEngine& engine, CabacCtx* ctx,
         uint32_t sign = engine.decodeBypass();
         // Output in SCAN ORDER — caller applies zigzag reordering.
         coeffs[i] = sign ? static_cast<int16_t>(-absLevel) : static_cast<int16_t>(absLevel);
+
+        // Update context tracking
+        if (absLevel == 1)
+            ++numT1;
+        else
+            ++numLarger;
+    }
+
+    return numSig;
+}
+
+// ── 8x8 block context increment mapping — ITU-T H.264 Table 9-43 ──────
+
+/// Context index increment mapping for significant_coeff_flag ctxBlockCat=5.
+/// Non-linear mapping per ITU-T H.264 Table 9-43 (frame coded blocks).
+/// Index i (0..62) maps to the ctxIdxInc added to cCtxSigCoeff8x8.
+inline constexpr std::array<uint8_t, 63> cSigCtxInc8x8Frame = {
+     0,  1,  2,  3,  4,  5,  5,  4,
+     4,  3,  3,  4,  4,  4,  5,  5,
+     4,  4,  4,  4,  3,  3,  6,  7,
+     7,  7,  8,  9, 10,  9,  8,  7,
+     7,  6, 11, 12, 13, 11,  6,  7,
+     8,  9, 14, 10,  9,  8,  6, 11,
+    12, 13, 11,  6,  9, 14, 10,  9,
+    11, 12, 13, 11, 14, 10, 12,
+};
+
+/// Context index increment mapping for last_significant_coeff_flag ctxBlockCat=5.
+/// Non-linear mapping per ITU-T H.264 Table 9-43 (frame coded blocks).
+/// Index i (0..62) maps to the ctxIdxInc added to cCtxLastSigCoeff8x8.
+inline constexpr std::array<uint8_t, 63> cLastSigCtxInc8x8Frame = {
+    0, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1,
+    2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2,
+    3, 3, 3, 3, 3, 3, 3, 3,
+    4, 4, 4, 4, 4, 4, 4, 4,
+    5, 5, 5, 5, 6, 6, 6, 6,
+    7, 7, 7, 7, 8, 8, 8,
+};
+
+// Compile-time spot-checks — ITU-T H.264 Table 9-43.
+static_assert(cSigCtxInc8x8Frame[0]  ==  0U, "sig[0]=0 per Table 9-43");
+static_assert(cSigCtxInc8x8Frame[6]  ==  5U, "sig[6]=5 per Table 9-43");
+static_assert(cSigCtxInc8x8Frame[22] ==  6U, "sig[22]=6 per Table 9-43");
+static_assert(cSigCtxInc8x8Frame[42] == 14U, "sig[42]=14 per Table 9-43");
+static_assert(cSigCtxInc8x8Frame[62] == 12U, "sig[62]=12 per Table 9-43");
+static_assert(cLastSigCtxInc8x8Frame[0]  == 0U, "last[0]=0 per Table 9-43");
+static_assert(cLastSigCtxInc8x8Frame[16] == 2U, "last[16]=2 per Table 9-43");
+static_assert(cLastSigCtxInc8x8Frame[40] == 4U, "last[40]=4 per Table 9-43");
+static_assert(cLastSigCtxInc8x8Frame[62] == 8U, "last[62]=8 per Table 9-43");
+
+// ── 8x8 CABAC residual decode — ITU-T H.264 §9.3.3.1.1 ───────────────
+
+/** Decode a 8x8 residual block via CABAC — High profile §9.3.3.1.1.
+ *
+ *  Uses ctxBlockCat=5 with non-linear context mapping per Table 9-43.
+ *  Decodes coded_block_flag, 63 significant/last positions, and levels
+ *  for a full 64-coefficient 8x8 block.
+ *
+ *  @param engine     CABAC engine
+ *  @param ctx        Context array (1024 entries for High profile)
+ *  @param[out] coeffs Output 64 coefficients in scan order (caller applies
+ *                     zigzag reordering via cZigzag8x8)
+ *  @param cbfCtxInc  Context increment for coded_block_flag (0-3).
+ *                    Derived from neighbor NNZ per §9.3.3.1.1.3.
+ *  @return Number of non-zero coefficients
+ */
+inline uint32_t cabacDecodeResidual8x8(CabacEngine& engine, CabacCtx* ctx,
+                                        int16_t* coeffs, uint32_t cbfCtxInc = 0U) noexcept
+{
+    /// Maximum number of coefficients in an 8x8 block.
+    static constexpr uint32_t cMaxCoeff8x8 = 64U;
+
+    // coded_block_flag — §9.3.3.1.1.1 Table 9-34.
+    // ctxBlockCat=5 uses High profile extension context at ctxIdx 1012+cbfCtxInc.
+    if (engine.decodeBin(ctx[cCtxCbf8x8 + cbfCtxInc]) == 0U)
+        return 0U; // coded_block_flag = 0: no coefficients
+
+    // Decode significant coefficient map — §9.3.3.1.3 residual_block_cabac()
+    // 8x8 blocks use non-linear context mapping per Table 9-43.
+    uint8_t sigMap[cMaxCoeff8x8] = {};
+    uint32_t numSig = 0U;
+    int32_t lastSigIdx = -1;
+    bool foundLast = false;
+
+    for (uint32_t i = 0U; i < cMaxCoeff8x8 - 1U; ++i)
+    {
+        uint32_t sigCtx = cCtxSigCoeff8x8 + cSigCtxInc8x8Frame[i];
+        if (engine.decodeBin(ctx[sigCtx]) == 1U)
+        {
+            sigMap[i] = 1U;
+            lastSigIdx = static_cast<int32_t>(i);
+            ++numSig;
+
+            // Check last_significant_coeff_flag
+            uint32_t lastCtx = cCtxLastSigCoeff8x8 + cLastSigCtxInc8x8Frame[i];
+            if (engine.decodeBin(ctx[lastCtx]) == 1U)
+            {
+                foundLast = true;
+                break;
+            }
+        }
+    }
+
+    // §9.3.3.1.3: Position maxCoeff-1 (63) is implicitly significant when
+    // the loop exhausted without last_significant_coeff_flag=1.
+    if (!foundLast)
+    {
+        if (numSig == 0U)
+            return 0U;
+        sigMap[cMaxCoeff8x8 - 1U] = 1U;
+        lastSigIdx = static_cast<int32_t>(cMaxCoeff8x8 - 1U);
+        ++numSig;
+    }
+
+    // Decode coefficient levels (reverse scan order) — §9.3.3.1.3.
+    // coeff_abs_level_minus1 uses ctxBlockCat=5 offsets at cCtxCoeffAbsLevel8x8.
+    uint32_t numT1 = 0U;
+    uint32_t numLarger = 0U;
+
+    for (int32_t i = lastSigIdx; i >= 0; --i)
+    {
+        if (!sigMap[i])
+            continue;
+
+        // coeff_abs_level_minus1: prefix (truncated unary)
+        // §9.3.3.1.3: bin 0 context depends on trailing ones / larger counts.
+        uint32_t ctxInc;
+        if (numLarger > 0U)
+            ctxInc = 0U;
+        else
+            ctxInc = (numT1 < 4U) ? (numT1 + 1U) : 4U;
+
+        uint32_t prefix = 0U;
+        if (engine.decodeBin(ctx[cCtxCoeffAbsLevel8x8 + ctxInc]) == 1U)
+        {
+            ++prefix;
+            // §9.3.3.1.3: bins k>=1 use ctxIdxInc = 5 + min(numDecodAbsLevelGt1, 4)
+            /// Maximum additional context increment for level suffix bins.
+            static constexpr uint32_t cMaxLevelCtxInc8x8 = 4U;
+            uint32_t nextCtx = 5U + (numLarger < cMaxLevelCtxInc8x8
+                                     ? numLarger : cMaxLevelCtxInc8x8);
+            while (prefix < 14U)
+            {
+                if (engine.decodeBin(ctx[cCtxCoeffAbsLevel8x8 + nextCtx]) == 0U)
+                    break;
+                ++prefix;
+            }
+        }
+
+        int32_t absLevel;
+        if (prefix < 14U)
+        {
+            absLevel = static_cast<int32_t>(prefix) + 1;
+        }
+        else
+        {
+            // Suffix: Exp-Golomb k=0 via bypass bins — §9.3.3.1.3.
+            uint32_t k = 0U;
+            while (engine.decodeBypass() == 1U && k < 16U)
+                ++k;
+            uint32_t suffix = ((1U << k) - 1U) + engine.decodeBypassBins(k);
+            absLevel = static_cast<int32_t>(14U + suffix) + 1;
+        }
+
+        // Sign (bypass)
+        uint32_t sign = engine.decodeBypass();
+        // Output in SCAN ORDER — caller applies zigzag reordering via cZigzag8x8.
+        coeffs[i] = sign ? static_cast<int16_t>(-absLevel)
+                         : static_cast<int16_t>(absLevel);
 
         // Update context tracking
         if (absLevel == 1)

@@ -86,6 +86,71 @@ struct SliceHeader
     DecRefPicMarking decRefPicMarking_;
 };
 
+/** Skip pred_weight_table() — ITU-T H.264 §7.3.3.2.
+ *  Consumes weight/offset values from the bitstream for alignment.
+ *  Actual weighted prediction not yet applied.
+ */
+inline void skipPredWeightTable(BitReader& br, SliceType sliceType,
+                                 uint8_t numRefL0, uint8_t numRefL1,
+                                 int32_t chromaFormatIdc) noexcept
+{
+    uint32_t lumaLog2WeightDenom = br.readUev();
+    (void)lumaLog2WeightDenom;
+
+    if (chromaFormatIdc != 0)
+    {
+        uint32_t chromaLog2WeightDenom = br.readUev();
+        (void)chromaLog2WeightDenom;
+    }
+
+    for (uint8_t i = 0U; i < numRefL0; ++i)
+    {
+        bool lumaWeightFlag = br.readBit() != 0U;
+        if (lumaWeightFlag)
+        {
+            br.readSev(); // luma_weight_l0[i]
+            br.readSev(); // luma_offset_l0[i]
+        }
+        if (chromaFormatIdc != 0)
+        {
+            bool chromaWeightFlag = br.readBit() != 0U;
+            if (chromaWeightFlag)
+            {
+                for (uint32_t j = 0U; j < 2U; ++j)
+                {
+                    br.readSev(); // chroma_weight_l0[i][j]
+                    br.readSev(); // chroma_offset_l0[i][j]
+                }
+            }
+        }
+    }
+
+    if (sliceType == SliceType::B)
+    {
+        for (uint8_t i = 0U; i < numRefL1; ++i)
+        {
+            bool lumaWeightFlag = br.readBit() != 0U;
+            if (lumaWeightFlag)
+            {
+                br.readSev();
+                br.readSev();
+            }
+            if (chromaFormatIdc != 0)
+            {
+                bool chromaWeightFlag = br.readBit() != 0U;
+                if (chromaWeightFlag)
+                {
+                    for (uint32_t j = 0U; j < 2U; ++j)
+                    {
+                        br.readSev();
+                        br.readSev();
+                    }
+                }
+            }
+        }
+    }
+}
+
 /** Skip reference picture list modification syntax.
  *  Full implementation deferred to Phase 6.
  */
@@ -254,9 +319,21 @@ inline Result parseSliceHeader(BitReader& br, const Sps& sps, const Pps& pps,
     // VALIDATED: reads modification_of_pic_nums_idc loop correctly for L0/L1.
     skipRefPicListModification(br, sh.sliceType_);
 
-    // TODO §7.3.3.2: pred_weight_table() not parsed. Safe for Baseline
-    // (weighted_pred_flag=0). Latent misalignment bug for Main/High with
-    // weighted prediction. Add skipPredWeightTable() when supporting those.
+    // pred_weight_table() — §7.3.3.2
+    // Present for P/SP slices with weighted_pred_flag=1, or B slices with
+    // weighted_bipred_idc=1. Skips the weight/offset values (actual weighted
+    // prediction not yet implemented, but bits must be consumed for alignment).
+    if ((sh.sliceType_ == SliceType::P || sh.sliceType_ == SliceType::SP) &&
+        pps.weightedPredFlag_)
+    {
+        skipPredWeightTable(br, sh.sliceType_, sh.numRefIdxActiveL0_,
+                            sh.numRefIdxActiveL1_, sps.chromaFormatIdc_);
+    }
+    else if (sh.sliceType_ == SliceType::B && pps.weightedBipredIdc_ == 1U)
+    {
+        skipPredWeightTable(br, sh.sliceType_, sh.numRefIdxActiveL0_,
+                            sh.numRefIdxActiveL1_, sps.chromaFormatIdc_);
+    }
 
     // dec_ref_pic_marking — §7.3.3.3 (if nal_ref_idc != 0)
     // VALIDATED: IDR reads 2 flags, non-IDR reads MMCO loop.

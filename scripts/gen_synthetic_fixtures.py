@@ -153,7 +153,9 @@ def gen_gradient_pan(outdir, name="gradient_pan", intra_only=False):
 def encode_yuv_to_h264(yuv_path, h264_path, w, h, nframes, intra_only=False,
                        profile="baseline"):
     """Encode raw YUV to H.264 using ffmpeg/libx264.
-    profile: "baseline" (CAVLC, no B-frames) or "high" (CABAC, 8x8 transform).
+    profile: "baseline" (CAVLC, no B-frames) or "high" (CABAC, 4x4 transform only).
+    Note: High profile uses CABAC but explicitly disables 8x8 transform so we can
+    validate CABAC decode independently of 8x8 transform support.
     """
     gop = "1" if intra_only else "10"
     bf = "0" if profile == "baseline" else "0"  # No B-frames for P-only decode

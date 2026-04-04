@@ -174,7 +174,8 @@ private:
     // CABAC state
     CabacEngine cabacEngine_;
     std::array<CabacCtx, cNumCabacCtx> cabacCtx_ = {};
-    std::vector<bool> mbIsSkip_;  // [mbIdx] — for CABAC skip context
+    std::vector<bool> mbIsSkip_;   // [mbIdx] — for CABAC skip context
+    std::vector<bool> mbIsI4x4_;   // [mbIdx] — for CABAC mb_type context (I_NxN flag)
 
     uint16_t widthInMbs_ = 0U;
     uint16_t heightInMbs_ = 0U;
@@ -381,18 +382,20 @@ private:
             // Align to byte boundary after slice header
             br.alignToByte();
 
-            // Initialize CABAC contexts
+            // Initialize CABAC contexts — §9.3.1.1
             uint32_t sliceTypeIdx = (sh.sliceType_ == SliceType::I) ? 2U :
                                     (sh.sliceType_ == SliceType::P) ? 0U : 1U;
             initCabacContexts(cabacCtx_.data(), sliceTypeIdx,
                               sh.cabacInitIdc_, sliceQp);
 
-            // Initialize arithmetic engine
+            // Initialize arithmetic engine — §9.3.1.2
             cabacEngine_.init(br);
 
             // Resize skip tracking
             mbIsSkip_.resize(totalMbs, false);
             std::fill(mbIsSkip_.begin(), mbIsSkip_.end(), false);
+            mbIsI4x4_.resize(totalMbs, false);
+            std::fill(mbIsI4x4_.begin(), mbIsI4x4_.end(), false);
         }
 
         // Decode macroblocks
@@ -445,23 +448,32 @@ private:
                     if (skipFlag)
                     {
                         mbIsSkip_[mbAddr] = true;
+                        mbIsI4x4_[mbAddr] = false; // skip is inter, not I_NxN
                         decodePSkipMb(*decodeTarget, *refFrame, mbX, mbY);
                         // Skip MBs inherit QP — no mb_qp_delta per §7.4.5.
                     }
                     else
                     {
                         mbIsSkip_[mbAddr] = false;
-                        uint32_t mbTypeRaw = cabacDecodeMbTypeP(cabacEngine_, cabacCtx_.data());
+
+                        // §9.3.3.1.2: neighbor I_NxN state for intra suffix context
+                        bool leftIsI4x4 = (mbX > 0U) && mbIsI4x4_[mbAddr - 1U];
+                        bool topIsI4x4 = (mbY > 0U) && mbIsI4x4_[mbAddr - widthInMbs_];
+                        uint32_t mbTypeRaw = cabacDecodeMbTypeP(cabacEngine_, cabacCtx_.data(),
+                                                                 leftIsI4x4, topIsI4x4);
 
                         if (mbTypeRaw >= 5U)
                         {
-                            mbTypeRaw -= 5U;
+                            // Intra in P-slice: track I_NxN flag
+                            uint32_t intraMbType = mbTypeRaw - 5U;
+                            mbIsI4x4_[mbAddr] = (intraMbType == 0U);
                             if (!decodeIntraMbInPSlice(br, *sps, *pps, sh, mbQp,
-                                                        mbTypeRaw, *decodeTarget, mbX, mbY))
+                                                        intraMbType, *decodeTarget, mbX, mbY))
                                 break;
                         }
                         else
                         {
+                            mbIsI4x4_[mbAddr] = false; // inter, not I_NxN
                             // CABAC inter MB: use CABAC for MVD + residual
                             decodeCabacPInterMb(br, *sps, *pps, mbQp,
                                                 mbTypeRaw, *decodeTarget, *refFrame, mbX, mbY);
@@ -1973,11 +1985,16 @@ private:
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
         setMbMotion(mbIdx, {0, 0}, -1);
 
-        bool leftIsIntra = (mbX == 0U) || (mbMotion_[(mbIdx - 1U) * 16U + 15U].refIdx == -1);
-        bool topIsIntra = (mbY == 0U) || (mbMotion_[(mbIdx - widthInMbs_) * 16U + 12U].refIdx == -1);
+        // §9.3.3.1.2: condTermFlagN = 0 when neighbor is I_NxN (I_4x4),
+        // = 1 when NOT I_NxN (I_16x16, inter, unavailable).
+        bool leftIsI4x4 = (mbX > 0U) && mbIsI4x4_[mbIdx - 1U];
+        bool topIsI4x4 = (mbY > 0U) && mbIsI4x4_[mbIdx - widthInMbs_];
 
         uint32_t mbTypeRaw = cabacDecodeMbTypeI(cabacEngine_, cabacCtx_.data(),
-                                                 leftIsIntra, topIsIntra);
+                                                 leftIsI4x4, topIsI4x4);
+
+        // Track I_NxN (I_4x4) for future neighbor context derivation
+        mbIsI4x4_[mbIdx] = (mbTypeRaw == 0U);
 
         if (mbTypeRaw == 25U) return true; // I_PCM
         if (mbTypeRaw == 0U)
@@ -1997,17 +2014,64 @@ private:
                             int32_t& qp, uint32_t mbX, uint32_t mbY) noexcept
     {
         (void)sps;
-        // Read intra 4x4 prediction modes using CABAC (spec scan order §6.4.3)
-        // Store in raster order for consistent neighbor lookup.
-        uint8_t predModes[16] = {};
-        for (uint32_t i = 0U; i < 16U; ++i)
+
+        // §7.3.5: For I_NxN with transform_8x8_mode_flag=1, decode
+        // transform_size_8x8_flag. If 1 → I_8x8; if 0 → I_4x4.
+        bool use8x8Transform = false;
+        if (pps.transform8x8Mode_ != 0U)
         {
-            uint32_t rasterIdx = cLuma4x4ToRaster[i];
-            uint8_t result = cabacDecodeIntra4x4PredMode(cabacEngine_, cabacCtx_.data());
-            if (result == 0xFFU)
-                predModes[rasterIdx] = 2U; // Most probable → DC (simplified)
+            use8x8Transform = cabacEngine_.decodeBin(
+                cabacCtx_[cCtxTransform8x8]) != 0U;
+        }
+
+        // Decode prediction modes: 4 modes for I_8x8, 16 for I_4x4.
+        // Both use prev_intra_pred_mode_flag + rem via the same CABAC context
+        // (§9.3.3.1.3: prev_intra8x8 uses same ctxIdx 68 as prev_intra4x4).
+        // §8.3.1.1 / §8.3.2.1: MPM = min(leftMode, topMode).
+        uint8_t predModes[16] = {};
+        uint32_t numModeBlocks = use8x8Transform ? 4U : 16U;
+        for (uint32_t i = 0U; i < numModeBlocks; ++i)
+        {
+            // For I_8x8: 4 blocks in 8x8 scan order (TL, TR, BL, BR)
+            // For I_4x4: 16 blocks in spec scan order §6.4.3
+            uint32_t rasterIdx;
+            if (use8x8Transform)
+            {
+                // 8x8 block i → top-left 4x4 raster index for neighbor lookup
+                // Block 0→raster 0, Block 1→raster 2, Block 2→raster 8, Block 3→raster 10
+                static constexpr uint32_t c8x8ToRaster[4] = {0U, 2U, 8U, 10U};
+                rasterIdx = c8x8ToRaster[i];
+            }
             else
-                predModes[rasterIdx] = result;
+            {
+                rasterIdx = cLuma4x4ToRaster[i];
+            }
+
+            uint8_t leftMode = getNeighborIntra4x4Mode(mbX, mbY, rasterIdx, true, predModes);
+            uint8_t topMode  = getNeighborIntra4x4Mode(mbX, mbY, rasterIdx, false, predModes);
+            uint8_t mpm = (leftMode < topMode) ? leftMode : topMode;
+
+            uint8_t result = cabacDecodeIntra4x4PredMode(cabacEngine_, cabacCtx_.data());
+            uint8_t mode;
+            if (result == 0xFFU)
+                mode = mpm;
+            else
+                mode = (result < mpm) ? result : static_cast<uint8_t>(result + 1U);
+
+            if (use8x8Transform)
+            {
+                // Propagate mode to all 4 constituent 4x4 blocks for neighbor lookup
+                static constexpr uint32_t c8x8Sub[4][4] = {
+                    {0U, 1U, 4U, 5U}, {2U, 3U, 6U, 7U},
+                    {8U, 9U, 12U, 13U}, {10U, 11U, 14U, 15U}
+                };
+                for (uint32_t s = 0U; s < 4U; ++s)
+                    predModes[c8x8Sub[i][s]] = mode;
+            }
+            else
+            {
+                predModes[rasterIdx] = mode;
+            }
         }
 
         // Chroma pred mode
@@ -2032,46 +2096,110 @@ private:
             if (qp > 51) qp -= 52;
         }
 
-        // Decode luma 4x4 blocks (spec scan order §6.4.3)
+        // Decode luma residual — §7.3.5.3
         uint8_t* mbLuma = currentFrame_.yMb(mbX, mbY);
         uint32_t yStride = currentFrame_.yStride();
 
-        for (uint32_t blkIdx = 0U; blkIdx < 16U; ++blkIdx)
+        if (use8x8Transform)
         {
-            uint32_t blkX = cLuma4x4BlkX[blkIdx];
-            uint32_t blkY = cLuma4x4BlkY[blkIdx];
-            uint32_t rasterIdx = cLuma4x4ToRaster[blkIdx];
-            uint32_t absX = mbX * cMbSize + blkX;
-            uint32_t absY = mbY * cMbSize + blkY;
-
-            // Prediction
-            uint8_t pred4x4[16];
-            uint8_t topBuf[8] = {}, leftBuf[4] = {}, topLeftVal = cDefaultPredValue;
-            const uint8_t *top = nullptr, *topRight = nullptr, *left = nullptr, *topLeft = nullptr;
-            if (absY > 0U) { const uint8_t* row = currentFrame_.yRow(absY - 1U); for (uint32_t i = 0U; i < 4U; ++i) topBuf[i] = row[absX + i]; top = topBuf; if (absX + 4U < currentFrame_.width() && !cTopRightUnavailScan[blkIdx]) { for (uint32_t i = 0U; i < 4U; ++i) topBuf[4+i] = row[absX+4U+i]; topRight = topBuf+4U; } }
-            if (absX > 0U) { for (uint32_t i = 0U; i < 4U; ++i) leftBuf[i] = currentFrame_.y(absX-1U, absY+i); left = leftBuf; }
-            if (absX > 0U && absY > 0U) { topLeftVal = currentFrame_.y(absX-1U, absY-1U); topLeft = &topLeftVal; }
-
-            intraPred4x4(static_cast<Intra4x4Mode>(predModes[rasterIdx]), top, topRight, left, topLeft, pred4x4);
-
-            // Residual via CABAC
-            uint32_t group8x8 = blkIdx >> 2U;
-            bool hasResidual = (cbpLuma >> group8x8) & 1U;
-
-            int16_t coeffs[16] = {};
-            if (hasResidual)
+            // I_8x8: 4 × 8x8 residual blocks — §7.3.5.3 with ctxBlockCat=5
+            for (uint32_t blk8 = 0U; blk8 < 4U; ++blk8)
             {
-                int16_t scanCoeffs[16] = {};
-                cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), scanCoeffs, 16U, 2U);
-                // Reorder from scan to raster via zigzag — §8.5.6
-                for (uint32_t k = 0U; k < 16U; ++k)
-                    coeffs[cZigzag4x4[k]] = scanCoeffs[k];
-                nnzLuma_[mbIdx * 16U + rasterIdx] = 1U; // Simplified NNZ tracking
-                inverseQuantize4x4(coeffs, qp);
-            }
+                uint32_t blkX = (blk8 & 1U) * 8U;
+                uint32_t blkY = (blk8 >> 1U) * 8U;
+                uint32_t absX = mbX * cMbSize + blkX;
+                uint32_t absY = mbY * cMbSize + blkY;
+                bool hasResidual = (cbpLuma >> blk8) & 1U;
 
-            uint8_t* outPtr = mbLuma + blkY * yStride + blkX;
-            inverseDct4x4AddPred(coeffs, pred4x4, 4U, outPtr, yStride);
+                // 8x8 intra prediction — use DC mode as baseline (§8.3.2.2.4)
+                uint8_t pred8x8[64];
+                {
+                    uint32_t sum = 0U, count = 0U;
+                    if (absY > 0U)
+                        for (uint32_t c = 0U; c < 8U; ++c) { sum += currentFrame_.y(absX + c, absY - 1U); ++count; }
+                    if (absX > 0U)
+                        for (uint32_t r = 0U; r < 8U; ++r) { sum += currentFrame_.y(absX - 1U, absY + r); ++count; }
+                    uint8_t dc = (count > 0U) ? static_cast<uint8_t>((sum + count / 2U) / count) : cDefaultPredValue;
+                    std::memset(pred8x8, dc, 64U);
+                }
+
+                int16_t coeffs[64] = {};
+                if (hasResidual)
+                {
+                    int16_t scanCoeffs[64] = {};
+                    cabacDecodeResidual8x8(cabacEngine_, cabacCtx_.data(), scanCoeffs);
+                    // Reorder from 8x8 scan to raster via zigzag — §6.4.8
+                    for (uint32_t k = 0U; k < 64U; ++k)
+                        coeffs[cZigzag8x8[k]] = scanCoeffs[k];
+                    inverseQuantize8x8(coeffs, qp);
+                }
+
+                // Mark all constituent 4x4 blocks NNZ
+                uint32_t base4x4 = (blk8 >> 1U) * 8U + (blk8 & 1U) * 2U;
+                for (uint32_t dy = 0U; dy < 2U; ++dy)
+                    for (uint32_t dx = 0U; dx < 2U; ++dx)
+                        nnzLuma_[mbIdx * 16U + base4x4 + dy * 4U + dx] = hasResidual ? 1U : 0U;
+
+                uint8_t* outPtr = mbLuma + blkY * yStride + blkX;
+                inverseDct8x8AddPred(coeffs, pred8x8, 8U, outPtr, yStride);
+            }
+        }
+        else
+        {
+            // I_4x4: 16 × 4x4 residual blocks (spec scan order §6.4.3)
+            for (uint32_t blkIdx = 0U; blkIdx < 16U; ++blkIdx)
+            {
+                uint32_t blkX = cLuma4x4BlkX[blkIdx];
+                uint32_t blkY = cLuma4x4BlkY[blkIdx];
+                uint32_t rasterIdx = cLuma4x4ToRaster[blkIdx];
+                uint32_t absX = mbX * cMbSize + blkX;
+                uint32_t absY = mbY * cMbSize + blkY;
+
+                // Prediction
+                uint8_t pred4x4[16];
+                uint8_t topBuf[8] = {}, leftBuf[4] = {}, topLeftVal = cDefaultPredValue;
+                const uint8_t *top = nullptr, *topRight = nullptr, *left = nullptr, *topLeft = nullptr;
+                if (absY > 0U) { const uint8_t* row = currentFrame_.yRow(absY - 1U); for (uint32_t i = 0U; i < 4U; ++i) topBuf[i] = row[absX + i]; top = topBuf; if (absX + 4U < currentFrame_.width() && !cTopRightUnavailScan[blkIdx]) { for (uint32_t i = 0U; i < 4U; ++i) topBuf[4+i] = row[absX+4U+i]; topRight = topBuf+4U; } }
+                if (absX > 0U) { for (uint32_t i = 0U; i < 4U; ++i) leftBuf[i] = currentFrame_.y(absX-1U, absY+i); left = leftBuf; }
+                if (absX > 0U && absY > 0U) { topLeftVal = currentFrame_.y(absX-1U, absY-1U); topLeft = &topLeftVal; }
+
+                intraPred4x4(static_cast<Intra4x4Mode>(predModes[rasterIdx]), top, topRight, left, topLeft, pred4x4);
+
+                // Residual via CABAC
+                uint32_t group8x8 = blkIdx >> 2U;
+                bool hasResidual = (cbpLuma >> group8x8) & 1U;
+
+                int16_t coeffs[16] = {};
+                if (hasResidual)
+                {
+                    // §9.3.3.1.1.3: coded_block_flag ctxIdxInc
+                    uint32_t leftNnz = 0U, topNnz = 0U;
+                    if (rasterIdx % 4U > 0U)
+                        leftNnz = nnzLuma_[mbIdx * 16U + rasterIdx - 1U];
+                    else if (mbX > 0U)
+                        leftNnz = nnzLuma_[(mbIdx - 1U) * 16U + rasterIdx + 3U];
+                    if (rasterIdx >= 4U)
+                        topNnz = nnzLuma_[mbIdx * 16U + rasterIdx - 4U];
+                    else if (mbY > 0U)
+                        topNnz = nnzLuma_[(mbIdx - widthInMbs_) * 16U + rasterIdx + 12U];
+                    uint32_t cbfCtxInc = (leftNnz != 0U ? 1U : 0U) + (topNnz != 0U ? 2U : 0U);
+
+                    int16_t scanCoeffs[16] = {};
+                    uint32_t numNonZero = cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(),
+                                                                  scanCoeffs, 16U, 2U, cbfCtxInc);
+                    for (uint32_t k = 0U; k < 16U; ++k)
+                        coeffs[cZigzag4x4[k]] = scanCoeffs[k];
+                    nnzLuma_[mbIdx * 16U + rasterIdx] = (numNonZero > 0U) ? 1U : 0U;
+                    inverseQuantize4x4(coeffs, qp);
+                }
+                else
+                {
+                    nnzLuma_[mbIdx * 16U + rasterIdx] = 0U;
+                }
+
+                uint8_t* outPtr = mbLuma + blkY * yStride + blkX;
+                inverseDct4x4AddPred(coeffs, pred4x4, 4U, outPtr, yStride);
+            }
         }
 
         // Chroma (use existing CAVLC chroma path — structure is the same,
@@ -2148,11 +2276,17 @@ private:
 
             if (cbpLuma)
             {
-                // Compute coded_block_flag context per §9.3.3.1.1.3:
-                // ctxInc = (leftNnz > 0) + 2 * (topNnz > 0)
-                int32_t nc = getLumaNc(mbX, mbY, rasterIdx);
-                uint32_t cbfInc = (nc > 0) ? 1U : 0U; // Simplified: use nC as proxy
-                // TODO: proper left/top split for condTermFlagA/B
+                // §9.3.3.1.1.3: coded_block_flag ctxIdxInc = condTermFlagA + 2*condTermFlagB
+                uint32_t leftNnz = 0U, topNnz = 0U;
+                if (rasterIdx % 4U > 0U)
+                    leftNnz = nnzLuma_[mbIdx * 16U + rasterIdx - 1U];
+                else if (mbX > 0U)
+                    leftNnz = nnzLuma_[(mbIdx - 1U) * 16U + rasterIdx + 3U];
+                if (rasterIdx >= 4U)
+                    topNnz = nnzLuma_[mbIdx * 16U + rasterIdx - 4U];
+                else if (mbY > 0U)
+                    topNnz = nnzLuma_[(mbIdx - widthInMbs_) * 16U + rasterIdx + 12U];
+                uint32_t cbfInc = (leftNnz != 0U ? 1U : 0U) + (topNnz != 0U ? 2U : 0U);
 
                 int16_t acScan[16] = {};
                 uint32_t numSig = cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(),
@@ -2229,6 +2363,14 @@ private:
                                       true, true, false, false);
         uint8_t cbpLuma = cbp & 0x0FU;
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
+
+        // §7.3.5: For inter MBs with transform_8x8_mode_flag AND cbp != 0,
+        // decode transform_size_8x8_flag after CBP.
+        if (cbp != 0U && pps.transform8x8Mode_ != 0U)
+        {
+            /* bool use8x8 = */ cabacEngine_.decodeBin(cabacCtx_[cCtxTransform8x8]);
+            // TODO: use 8x8 inverse transform when flag is set
+        }
 
         int32_t qp = mbQp;
         if (cbp > 0U)
