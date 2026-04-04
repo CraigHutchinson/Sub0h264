@@ -28,6 +28,7 @@ commit, platform, and fps for the standard benchmark fixtures.
 | Date | Commit | CAVLC-640 | CAVLC-320 | CABAC-320 | FLAT-640 | Notes |
 |------|--------|-----------|-----------|-----------|----------|-------|
 | 2026-04-04 | 1d9d746 | 13.9 fps | 30.9 fps | 10.9 fps | 14.1 fps | First full benchmark with matched fixtures |
+| 2026-04-04 | 3879dd0 | 14.6 fps | 30.9 fps | — | 14.1 fps | +MC fast-path, +deblock BS precompute, +activeFrame_ |
 
 ## Key observations
 
