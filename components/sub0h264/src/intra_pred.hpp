@@ -551,6 +551,7 @@ inline void intraPred8x8Luma(Intra4x4Mode mode, const Frame& frame,
     // p'[7,-1]  = (p[6,-1] + 2*p[7,-1] + p[8,-1] + 2) >> 2
     // Similar for left column.
     uint8_t ft[16] = {}, fl[8] = {}, ftl;
+    (void)ftl; // Used by diagonal modes (DDR, VR, HD) — currently DC fallback
 
     if (hasTop && hasLeft)
         ftl = filt121(left[0], tl, top[0]);

@@ -18,9 +18,17 @@
 #define SUB0H264_TIMING 0
 #endif
 
-#ifdef ESP_PLATFORM
+#if defined(ESP_PLATFORM) && __has_include("esp_timer.h")
 #include "esp_timer.h"
 inline int64_t sub0h264TimerUs() { return esp_timer_get_time(); }
+#elif defined(ESP_PLATFORM)
+// esp_timer not available — use FreeRTOS tick count as fallback
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+inline int64_t sub0h264TimerUs()
+{
+    return static_cast<int64_t>(xTaskGetTickCount()) * (1000000LL / configTICK_RATE_HZ);
+}
 #else
 #include <chrono>
 inline int64_t sub0h264TimerUs()

@@ -472,8 +472,12 @@ TEST_CASE("CABAC decode: standalone engine matches Python for blk_scan1 coeffici
     if (engine.decodeBin(ctx[77]) != 0U)
         cbpChroma = (engine.decodeBin(ctx[81]) == 0U) ? 1U : 2U;
 
-    MESSAGE("CBP: luma=0x" << std::hex << (int)cbpLuma
-            << " chroma=" << (int)cbpChroma << std::dec);
+    {
+        char cbpBuf[64];
+        std::snprintf(cbpBuf, sizeof(cbpBuf), "CBP: luma=0x%02x chroma=%u",
+                      cbpLuma, cbpChroma);
+        MESSAGE(cbpBuf);
+    }
     CHECK(cbpLuma == 0x0FU);  // Python says 0x0F
     CHECK(cbpChroma == 1U);   // Python says 1
 
