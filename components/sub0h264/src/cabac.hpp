@@ -245,7 +245,7 @@ public:
      */
     uint32_t decodeBin(CabacCtx& ctx) noexcept
     {
-        uint32_t state = ctx.mpsState & 0x7FU; // combined state = pStateIdx | (mps << 6)
+        uint32_t state = ctx.mpsState & 0x7FU;
         uint32_t qRange = (codIRange_ >> 6U) & 3U;
 
         uint32_t tableEntry = cCabacTable[state][qRange];
@@ -255,20 +255,20 @@ public:
         uint32_t symbol;
         if (codIOffset_ >= codIRange_)
         {
-            // LPS
-            symbol = 1U - (state >> 6U); // 1 - MPS
+            // LPS path
+            symbol = 1U - (state >> 6U);
             codIOffset_ -= codIRange_;
             codIRange_ = rangeLPS;
             ctx.mpsState = static_cast<uint8_t>((tableEntry >> 15U) & 0x7FU);
         }
         else
         {
-            // MPS
+            // MPS path (common case — branch predictor handles this well)
             symbol = state >> 6U;
             ctx.mpsState = static_cast<uint8_t>((tableEntry >> 8U) & 0x7FU);
         }
 
-        // Renormalize
+        // Renormalize when range drops below 256
         if (codIRange_ < 256U)
             renormalize();
 
@@ -364,11 +364,15 @@ private:
 
     void renormalize() noexcept
     {
-        while (codIRange_ < 256U)
-        {
-            codIRange_ <<= 1U;
-            codIOffset_ = (codIOffset_ << 1U) | br_->readBit();
-        }
+        // Count leading zeros to determine shift count in one step,
+        // then batch-read that many bits. Avoids per-bit loop overhead
+        // on in-order cores (ESP32-P4 RISC-V).
+        // codIRange_ is in [1, 255] here; we need it >= 256.
+        // Shift count = 8 - floor(log2(codIRange_)) = clz(codIRange_) - 23
+        // (since codIRange_ fits in 9 bits, clz of 32-bit = 32 - bits = 23+)
+        uint32_t shift = clz32(codIRange_) - 23U;
+        codIRange_ <<= shift;
+        codIOffset_ = (codIOffset_ << shift) | br_->readBits(shift);
     }
 };
 

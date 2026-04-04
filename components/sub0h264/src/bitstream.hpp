@@ -82,10 +82,17 @@ public:
         bitOffset_ += n;
     }
 
-    /** Read a single bit. */
+    /** Read a single bit — optimized fast path.
+     *  Avoids the full peekBits() accumulator for the common case.
+     */
     uint32_t readBit() noexcept
     {
-        return readBits(1U);
+        uint32_t byteOff = bitOffset_ >> 3U;
+        uint32_t bitPos  = bitOffset_ & 7U;
+        ++bitOffset_;
+        return (byteOff < sizeBytes_)
+            ? (data_[byteOff] >> (7U - bitPos)) & 1U
+            : 0U;
     }
 
 
