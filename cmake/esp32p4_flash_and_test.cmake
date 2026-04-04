@@ -37,7 +37,7 @@ if(NOT DEFINED BOOT_TIMEOUT)
 endif()
 
 if(NOT DEFINED TEST_TIMEOUT)
-    set(TEST_TIMEOUT 120)
+    set(TEST_TIMEOUT 300)  # 5 minutes: benchmarks + 253 tests on ESP32-P4
 endif()
 
 if(NOT DEFINED PYTHON)
