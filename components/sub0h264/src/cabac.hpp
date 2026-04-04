@@ -352,6 +352,10 @@ public:
 
     /** Get current bitstream read position (for debugging/testing). */
     uint32_t bitPosition() const noexcept { return br_ ? br_->bitOffset() : 0U; }
+    /** Get current range (for diagnostic comparison). */
+    uint32_t range() const noexcept { return codIRange_; }
+    /** Get current offset (for diagnostic comparison). */
+    uint32_t offset() const noexcept { return codIOffset_; }
 
 private:
     BitReader* br_ = nullptr;

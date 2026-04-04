@@ -303,14 +303,20 @@ def main():
             print(f"  blk_scan{blk_scan}: cbf=0 (no coeff)")
             continue
 
-        # Decode significant map
+        # Decode significant map (verbose for first coded block)
+        is_first_coded = (blk_scan in (1,))
         sig_map = [0] * 16
         num_sig = 0
         last_sig = -1
         found_last = False
         for i in range(15):
             p_sig, mps_sig = ctx.get(SIG_OFF + i, compute_init_state(INIT_MN_I[SIG_OFF + i][0], INIT_MN_I[SIG_OFF + i][1], qp))
+            if is_first_coded and i < 6:
+                print(f"    sig[{i}]: pre(R={engine.range},O={engine.offset}) "
+                      f"ctx=(p={p_sig},mps={mps_sig})", end="")
             sig, p_sig, mps_sig = engine.decode_bin(p_sig, mps_sig)
+            if is_first_coded and i < 6:
+                print(f" -> sig={sig} post(R={engine.range},O={engine.offset})")
             ctx[SIG_OFF + i] = (p_sig, mps_sig)
             if sig:
                 sig_map[i] = 1
