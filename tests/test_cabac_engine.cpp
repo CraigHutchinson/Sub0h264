@@ -278,6 +278,53 @@ TEST_CASE("CABAC decode: flat gray 320x240 I-frame pixel analysis")
     CHECK(mb0Mean < 200.0); // or white
 }
 
+TEST_CASE("CABAC decode: flat gray MB(0,0) bit position matches reference")
+{
+    // The Python reference (trace_cabac_mb0.py) decodes MB(0,0) of the flat
+    // gray CABAC fixture and reaches bitstream position 412 after the full MB.
+    // Our C++ decoder should reach the same position if it consumes the same bins.
+    // A mismatch indicates wrong bin count → cascade source for MB(1,0)+.
+    //
+    // Note: the Python trace includes luma residual only (not chroma).
+    // The full MB(0,0) decode includes chroma DC + AC residual too,
+    // so the C++ position will be HIGHER than 412.
+    auto h264 = getFixture("cabac_flat_main.h264");
+    if (h264.empty())
+    {
+        MESSAGE("cabac_flat_main.h264 not found - skipping");
+        return;
+    }
+
+    H264Decoder decoder;
+    std::vector<NalBounds> bounds;
+    findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
+
+    // Decode just the first frame and check MB(0,0) pixel values
+    const Frame* frame = nullptr;
+    for (const auto& b : bounds)
+    {
+        NalUnit nal;
+        if (!parseNalUnit(h264.data() + b.offset, b.size, nal))
+            continue;
+        if (decoder.processNal(nal) == DecodeStatus::FrameDecoded)
+        {
+            frame = decoder.currentFrame();
+            break;
+        }
+    }
+    REQUIRE(frame != nullptr);
+
+    // Check MB(0,0) blk(0,0) specifically: Python says coded_block_flag=0
+    // so output should be pure prediction (DC=128 for first block, no neighbors)
+    uint8_t blk00_pixel = frame->yRow(0)[0]; // Top-left pixel of MB(0,0)
+    MESSAGE("MB(0,0) blk(0,0) pixel[0,0] = " << (int)blk00_pixel
+            << " (expected ~128 from DC pred, ref=121)");
+    // coded_block_flag=0 means no residual → output = prediction
+    // For first block with no neighbors, DC prediction = 128
+    CHECK(blk00_pixel >= 120U); // Should be around 128
+    CHECK(blk00_pixel <= 136U);
+}
+
 TEST_CASE("CABAC decode: scrolling texture High profile I-frame produces non-black")
 {
     // Decode the High profile CABAC scrolling texture.

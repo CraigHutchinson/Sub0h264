@@ -350,6 +350,9 @@ public:
         return val;
     }
 
+    /** Get current bitstream read position (for debugging/testing). */
+    uint32_t bitPosition() const noexcept { return br_ ? br_->bitOffset() : 0U; }
+
 private:
     BitReader* br_ = nullptr;
     uint32_t codIRange_ = 510U;

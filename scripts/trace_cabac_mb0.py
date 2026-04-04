@@ -128,23 +128,20 @@ class CabacEngine:
         return 0
 
 
-# I-slice init (m,n) values for contexts 0-99
-# Extracted from cCabacInitMN[3]
-INIT_MN_I = [
-    (20,-15),(2,54),(3,74),(20,-15),(2,54),(3,74),(-28,127),(-23,104),
-    (-6,53),(-1,54),(7,51),(23,33),(23,2),(21,0),(1,9),(0,49),
-    (-37,118),(5,57),(-13,78),(-11,65),(1,62),(12,49),(-4,73),(17,50),
-    (18,64),(9,43),(29,0),(26,67),(16,90),(9,104),(-46,127),(-20,104),
-    (1,67),(-13,78),(-11,65),(1,62),(-6,86),(-17,95),(-6,61),(9,45),
-    (-3,69),(-6,81),(-11,96),(6,55),(7,67),(-5,86),(2,88),(0,58),
-    (-3,76),(-10,94),(5,54),(4,69),(-3,81),(0,88),(-7,67),(-5,74),
-    (-4,74),(-5,80),(-7,72),(1,58),(0,41),(0,63),(0,63),(0,63),
-    (-9,83),(4,86),(0,97),(-7,72),(13,41),(3,62),(0,11),(1,55),
-    (0,69),(-17,127),(-13,102),(0,82),(-7,74),(-21,107),(-27,127),(-31,127),
-    (-24,127),(-18,95),(-27,127),(-21,114),(-30,127),(-17,123),(-12,115),(-16,122),
-    (-11,115),(-12,63),(-2,68),(-15,84),(-13,104),(-3,70),(-8,93),(-10,90),
-    (-30,127),(-1,74),(-6,97),
-]
+def load_init_mn_from_header(path="components/sub0h264/src/cabac_init_mn.hpp", idc=3):
+    """Load (m,n) init values from the C++ header for a given init_idc."""
+    import re
+    with open(path) as f:
+        content = f.read()
+    # Find the section for init_idc
+    sections = content.split("// init_idc ")
+    for s in sections[1:]:
+        if s.startswith(str(idc)):
+            pairs = re.findall(r'\{\s*(-?\d+),\s*(-?\d+)\}', s)
+            return [(int(m), int(n)) for m, n in pairs[:460]]
+    return []
+
+INIT_MN_I = load_init_mn_from_header()
 
 
 def main():
@@ -285,11 +282,100 @@ def main():
             delta = ((abs_val + 1) >> 1) * (1 if abs_val & 1 else -1)
             print(f"Bin {engine.bin_count}: qp_delta={delta} (abs={abs_val})")
 
-    # 6. First residual block coded_block_flag
-    p93, mps93 = ctx[93]  # ctxCbf + cat*4 + cbfCtxInc(0)
-    cbf_bin, p93, mps93 = engine.decode_bin(p93, mps93)
-    ctx[93] = (p93, mps93)
-    print(f"Bin {engine.bin_count}: coded_block_flag[0] = {cbf_bin}")
+    # 6. Residual blocks (ctxBlockCat=2: luma 4x4)
+    # sig: ctxIdxOffset=134, last: ctxIdxOffset=195, level: ctxIdxOffset=247
+    SIG_OFF = 134
+    LAST_OFF = 195
+    LEVEL_OFF = 247
+    CBF_OFF = 93  # 85 + cat*4, cat=2 -> 85+8=93
+
+    for blk_scan in range(16):
+        group_8x8 = blk_scan >> 2
+        if not ((cbp_luma >> group_8x8) & 1):
+            continue  # 8x8 group not coded
+
+        # coded_block_flag
+        p_cbf, mps_cbf = ctx.get(CBF_OFF, compute_init_state(INIT_MN_I[CBF_OFF][0], INIT_MN_I[CBF_OFF][1], qp))
+        cbf, p_cbf, mps_cbf = engine.decode_bin(p_cbf, mps_cbf)
+        ctx[CBF_OFF] = (p_cbf, mps_cbf)
+
+        if cbf == 0:
+            print(f"  blk_scan{blk_scan}: cbf=0 (no coeff)")
+            continue
+
+        # Decode significant map
+        sig_map = [0] * 16
+        num_sig = 0
+        last_sig = -1
+        found_last = False
+        for i in range(15):
+            p_sig, mps_sig = ctx.get(SIG_OFF + i, compute_init_state(INIT_MN_I[SIG_OFF + i][0], INIT_MN_I[SIG_OFF + i][1], qp))
+            sig, p_sig, mps_sig = engine.decode_bin(p_sig, mps_sig)
+            ctx[SIG_OFF + i] = (p_sig, mps_sig)
+            if sig:
+                sig_map[i] = 1
+                last_sig = i
+                num_sig += 1
+                # last_significant_coeff_flag
+                p_last, mps_last = ctx.get(LAST_OFF + i, compute_init_state(INIT_MN_I[LAST_OFF + i][0], INIT_MN_I[LAST_OFF + i][1], qp))
+                last_bin, p_last, mps_last = engine.decode_bin(p_last, mps_last)
+                ctx[LAST_OFF + i] = (p_last, mps_last)
+                if last_bin:
+                    found_last = True
+                    break
+
+        if not found_last and num_sig > 0:
+            sig_map[15] = 1
+            last_sig = 15
+            num_sig += 1
+
+        # Decode levels (reverse scan)
+        coeffs = [0] * 16
+        num_t1 = 0
+        num_larger = 0
+        for i in range(last_sig, -1, -1):
+            if not sig_map[i]:
+                continue
+            # coeff_abs_level_minus1 prefix
+            if num_larger > 0:
+                ci = 0
+            else:
+                ci = min(4, num_t1 + 1)
+            p_lev, mps_lev = ctx.get(LEVEL_OFF + ci, compute_init_state(INIT_MN_I[min(LEVEL_OFF + ci, len(INIT_MN_I)-1)][0], INIT_MN_I[min(LEVEL_OFF + ci, len(INIT_MN_I)-1)][1], qp))
+            prefix_bin, p_lev, mps_lev = engine.decode_bin(p_lev, mps_lev)
+            ctx[LEVEL_OFF + ci] = (p_lev, mps_lev)
+            prefix = 0
+            if prefix_bin:
+                prefix = 1
+                max_inc = 4
+                next_ci = 5 + min(num_larger, max_inc)
+                while prefix < 14:
+                    p_lev2, mps_lev2 = ctx.get(LEVEL_OFF + next_ci, compute_init_state(INIT_MN_I[min(LEVEL_OFF + next_ci, len(INIT_MN_I)-1)][0], INIT_MN_I[min(LEVEL_OFF + next_ci, len(INIT_MN_I)-1)][1], qp))
+                    pbin, p_lev2, mps_lev2 = engine.decode_bin(p_lev2, mps_lev2)
+                    ctx[LEVEL_OFF + next_ci] = (p_lev2, mps_lev2)
+                    if pbin == 0:
+                        break
+                    prefix += 1
+
+            if prefix < 14:
+                abs_level = prefix + 1
+            else:
+                k = 0
+                while engine.decode_bypass() == 1 and k < 16:
+                    k += 1
+                suffix = ((1 << k) - 1) + engine._read_bits(k)  # bypass bins
+                abs_level = 14 + suffix + 1
+
+            sign = engine.decode_bypass()
+            coeffs[i] = -abs_level if sign else abs_level
+            if abs_level == 1:
+                num_t1 += 1
+            else:
+                num_larger += 1
+
+        print(f"  blk_scan{blk_scan}: cbf=1 numSig={num_sig} lastSig={last_sig} "
+              f"coeffs=[{','.join(str(c) for c in coeffs if c != 0)}]")
+
     print(f"\nTotal bins consumed: {engine.bin_count}")
     print(f"Bitstream position: bit {engine.bit_pos}")
 
