@@ -38,6 +38,8 @@ public:
         : data_(data)
         , sizeBytes_(sizeBytes)
         , bitOffset_(0U)
+        , cache_(0U)
+        , cacheByteOff_(0xFFFFFFFFU) // force first refill
     {}
 
     /** Read N bits (1-32) and advance the offset. */
@@ -48,7 +50,14 @@ public:
         return val;
     }
 
-    /** Peek N bits (1-32) without advancing the offset. */
+    /** Peek N bits (1-32) without advancing the offset.
+     *
+     *  Uses a cached 64-bit window to avoid re-reading from PSRAM on
+     *  every call. The window is refilled only when the current read
+     *  falls outside the cached range. For sequential reads (the common
+     *  case in entropy decode), this reduces PSRAM accesses from ~5 per
+     *  call to ~1 per 8 bytes.
+     */
     uint32_t peekBits(uint32_t n) const noexcept
     {
         if (n == 0U)
@@ -57,23 +66,18 @@ public:
         uint32_t byteOff = bitOffset_ >> 3U;
         uint32_t bitPos  = bitOffset_ & 7U;
 
-        // Read up to 5 bytes into a 40-bit accumulator.
-        // Bytes are placed MSB-first: data[byteOff] at bits [39:32], etc.
-        uint64_t accum = 0U;
-        uint32_t bytesRead = 0U;
-        for (uint32_t i = 0U; i < 5U && (byteOff + i) < sizeBytes_; ++i)
-        {
-            accum = (accum << 8U) | data_[byteOff + i];
-            ++bytesRead;
-        }
-        // Pad to fill the 40-bit window if we hit the end of the buffer
-        accum <<= (5U - bytesRead) * 8U;
+        // Refill cache if the current byte is outside the cached window.
+        // The cache holds 8 bytes starting at cacheByteOff_.
+        // A read of n bits at bitPos can span at most 5 bytes: [byteOff..byteOff+4].
+        if (byteOff < cacheByteOff_ || byteOff + 4U > cacheByteOff_ + 7U)
+            refillCache(byteOff);
 
-        // Extract N bits starting at bitPos within the 40-bit window.
-        // Bits are numbered [39..0] MSB-first. We want bits [39-bitPos .. 39-bitPos-n+1].
-        uint32_t shift = 40U - bitPos - n;
+        // Extract from cached 64-bit window.
+        // cache_ bits are arranged MSB-first from cacheByteOff_.
+        uint32_t bitInCache = (byteOff - cacheByteOff_) * 8U + bitPos;
+        uint32_t shift = 64U - bitInCache - n;
         uint64_t mask  = (1ULL << n) - 1ULL;
-        return static_cast<uint32_t>((accum >> shift) & mask);
+        return static_cast<uint32_t>((cache_ >> shift) & mask);
     }
 
     /** Skip N bits. */
@@ -83,13 +87,22 @@ public:
     }
 
     /** Read a single bit — optimized fast path.
-     *  Avoids the full peekBits() accumulator for the common case.
+     *  Uses the cached window when available, falls back to direct byte read.
      */
     uint32_t readBit() noexcept
     {
         uint32_t byteOff = bitOffset_ >> 3U;
         uint32_t bitPos  = bitOffset_ & 7U;
         ++bitOffset_;
+
+        // Fast path: byte is in cache
+        if (byteOff >= cacheByteOff_ && byteOff < cacheByteOff_ + 8U)
+        {
+            uint32_t bitInCache = (byteOff - cacheByteOff_) * 8U + bitPos;
+            return static_cast<uint32_t>((cache_ >> (63U - bitInCache)) & 1U);
+        }
+
+        // Slow path: direct byte read
         return (byteOff < sizeBytes_)
             ? (data_[byteOff] >> (7U - bitPos)) & 1U
             : 0U;
@@ -181,6 +194,24 @@ private:
     const uint8_t* data_ = nullptr;
     uint32_t sizeBytes_  = 0U;
     uint32_t bitOffset_  = 0U;
+
+    // 64-bit read-ahead cache: avoids re-reading 5 bytes from PSRAM per peekBits().
+    // Mutable because peekBits() is logically const but updates the cache.
+    mutable uint64_t cache_ = 0U;
+    mutable uint32_t cacheByteOff_ = 0xFFFFFFFFU;
+
+    /** Refill the 64-bit cache from the byte at byteOff. */
+    void refillCache(uint32_t byteOff) const noexcept
+    {
+        cacheByteOff_ = byteOff;
+        cache_ = 0U;
+        // Read up to 8 bytes into MSB-first 64-bit window.
+        uint32_t avail = (byteOff < sizeBytes_) ? sizeBytes_ - byteOff : 0U;
+        uint32_t toRead = (avail < 8U) ? avail : 8U;
+        for (uint32_t i = 0U; i < toRead; ++i)
+            cache_ = (cache_ << 8U) | data_[byteOff + i];
+        cache_ <<= (8U - toRead) * 8U; // pad remaining MSB bits with 0
+    }
 };
 
 } // namespace sub0h264
