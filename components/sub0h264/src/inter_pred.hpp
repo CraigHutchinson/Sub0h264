@@ -84,10 +84,28 @@ inline void lumaMotionComp(const Frame& ref,
 
     if (dx == 0U && dy == 0U)
     {
-        // Full-pel copy
-        for (uint32_t row = 0U; row < height; ++row)
-            for (uint32_t col = 0U; col < width; ++col)
-                dst[row * dstStride + col] = getSample(refX + col, refY + row);
+        // Full-pel copy — fast path when block is fully within frame bounds.
+        // Avoids per-pixel clamping (~6 branches per pixel eliminated).
+        if (refX >= 0 && refY >= 0 &&
+            refX + static_cast<int32_t>(width) <= static_cast<int32_t>(ref.width()) &&
+            refY + static_cast<int32_t>(height) <= static_cast<int32_t>(ref.height()))
+        {
+            uint32_t ux = static_cast<uint32_t>(refX);
+            uint32_t uy = static_cast<uint32_t>(refY);
+            uint32_t refStride = ref.yStride();
+            const uint8_t* refRow = ref.yRow(uy) + ux;
+            for (uint32_t row = 0U; row < height; ++row)
+            {
+                std::memcpy(dst + row * dstStride, refRow, width);
+                refRow += refStride;
+            }
+        }
+        else
+        {
+            for (uint32_t row = 0U; row < height; ++row)
+                for (uint32_t col = 0U; col < width; ++col)
+                    dst[row * dstStride + col] = getSample(refX + col, refY + row);
+        }
         return;
     }
 

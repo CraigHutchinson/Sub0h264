@@ -98,9 +98,12 @@ inline void inverseDct4x4AddPred(const int16_t* coeffs,
                                   const uint8_t* pred, uint32_t predStride,
                                   uint8_t* out, uint32_t outStride) noexcept
 {
-    int32_t tmp[16];
+    // Transposed intermediate: tmp[col][row] so vertical pass is row-major.
+    // 4x4 fits in L1 cache regardless, but this layout avoids strided reads
+    // on in-order cores (ESP32-P4 RISC-V) and enables future PIE vectorization.
+    int32_t tmp[4][4];
 
-    // Horizontal transform (for each row)
+    // Horizontal transform (for each row) → store transposed
     for (uint32_t i = 0U; i < 4U; ++i)
     {
         int32_t q0 = coeffs[i * 4 + 0];
@@ -113,19 +116,20 @@ inline void inverseDct4x4AddPred(const int16_t* coeffs,
         int32_t x2 = (q1 >> 1) - q3;
         int32_t x3 = q1 + (q3 >> 1);
 
-        tmp[i * 4 + 0] = x0 + x3;
-        tmp[i * 4 + 1] = x1 + x2;
-        tmp[i * 4 + 2] = x1 - x2;
-        tmp[i * 4 + 3] = x0 - x3;
+        // Store transposed: tmp[col][row] = result for (row, col)
+        tmp[0][i] = x0 + x3;
+        tmp[1][i] = x1 + x2;
+        tmp[2][i] = x1 - x2;
+        tmp[3][i] = x0 - x3;
     }
 
-    // Vertical transform (for each column) + prediction + clip
+    // Vertical transform (now row-major reads) + prediction + clip
     for (uint32_t j = 0U; j < 4U; ++j)
     {
-        int32_t t0 = tmp[0 * 4 + j];
-        int32_t t1 = tmp[1 * 4 + j];
-        int32_t t2 = tmp[2 * 4 + j];
-        int32_t t3 = tmp[3 * 4 + j];
+        int32_t t0 = tmp[j][0];
+        int32_t t1 = tmp[j][1];
+        int32_t t2 = tmp[j][2];
+        int32_t t3 = tmp[j][3];
 
         int32_t x0 = t0 + t2;
         int32_t x1 = t0 - t2;
@@ -133,15 +137,10 @@ inline void inverseDct4x4AddPred(const int16_t* coeffs,
         int32_t x3 = t1 + (t3 >> 1);
 
         // Scale down by 64 (6-bit shift with rounding) and add prediction
-        int32_t r0 = (x0 + x3 + 32) >> 6;
-        int32_t r1 = (x1 + x2 + 32) >> 6;
-        int32_t r2 = (x1 - x2 + 32) >> 6;
-        int32_t r3 = (x0 - x3 + 32) >> 6;
-
-        out[0 * outStride + j] = static_cast<uint8_t>(clipU8(pred[0 * predStride + j] + r0));
-        out[1 * outStride + j] = static_cast<uint8_t>(clipU8(pred[1 * predStride + j] + r1));
-        out[2 * outStride + j] = static_cast<uint8_t>(clipU8(pred[2 * predStride + j] + r2));
-        out[3 * outStride + j] = static_cast<uint8_t>(clipU8(pred[3 * predStride + j] + r3));
+        out[0 * outStride + j] = static_cast<uint8_t>(clipU8(pred[0 * predStride + j] + ((x0 + x3 + 32) >> 6)));
+        out[1 * outStride + j] = static_cast<uint8_t>(clipU8(pred[1 * predStride + j] + ((x1 + x2 + 32) >> 6)));
+        out[2 * outStride + j] = static_cast<uint8_t>(clipU8(pred[2 * predStride + j] + ((x1 - x2 + 32) >> 6)));
+        out[3 * outStride + j] = static_cast<uint8_t>(clipU8(pred[3 * predStride + j] + ((x0 - x3 + 32) >> 6)));
     }
 }
 
