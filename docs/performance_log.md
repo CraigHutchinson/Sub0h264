@@ -20,6 +20,7 @@ commit, platform, and fps for the standard benchmark fixtures.
 | 2026-04-04 | 200aa68 | 1048 fps | 2497 fps | 598 fps | 994 fps | +P-frame sync elimination, +MC fast-path |
 | 2026-04-04 | ccaa6a4 | 1048 fps | 2497 fps | 584 fps | 994 fps | +readBit fast-path, +batched renormalize |
 | 2026-04-04 | 1d9d746 | 1048 fps | 2019 fps | 584 fps | 838 fps | All 20 fixtures embedded (baseline) |
+| 2026-04-04 | 719c6e6 | 946 fps | 2064 fps | 575 fps | 841 fps | +activeFrame_ zero-copy, +readBit fast-path |
 
 ## ESP32-P4 (360 MHz RISC-V, 32 MB PSRAM, COM9)
 
