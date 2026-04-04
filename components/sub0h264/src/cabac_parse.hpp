@@ -149,36 +149,70 @@ inline uint32_t cabacDecodeMbTypeP(CabacEngine& engine, CabacCtx* ctx,
 
 // ── coded_block_pattern — §9.3.3.1.4 ───────────────────────────────────
 
-/** Decode coded_block_pattern for CABAC.
- *  @return CBP value (4 luma bits + 2 chroma bits)
+/** Decode coded_block_pattern for CABAC — §9.3.3.1.1.4.
+ *
+ *  Each of the 4 luma bins uses condTermFlag derived from a SPECIFIC 8x8
+ *  block of the left/top neighbor (not just "has any luma CBP").
+ *
+ *  Block layout: 0=TL, 1=TR, 2=BL, 3=BR.
+ *  Block 0: left=leftCbp bit 1, top=topCbp bit 2
+ *  Block 1: left=current bit 0,  top=topCbp bit 3
+ *  Block 2: left=leftCbp bit 3, top=current bit 0
+ *  Block 3: left=current bit 2,  top=current bit 1
+ *
+ *  condTermFlagN = 1 when neighbor block is NOT coded (cbp bit=0),
+ *                  0 when coded (cbp bit=1) or unavailable (treat as coded).
+ *
+ *  @param leftLumaCbp  Left MB's 4-bit luma CBP (bits 0-3), or 0x0F if unavailable
+ *  @param topLumaCbp   Top MB's 4-bit luma CBP (bits 0-3), or 0x0F if unavailable
+ *  @param leftChromaCbp Left MB's chroma CBP (0-2), or 2 if unavailable
+ *  @param topChromaCbp  Top MB's chroma CBP (0-2), or 2 if unavailable
  */
 inline uint8_t cabacDecodeCbp(CabacEngine& engine, CabacCtx* ctx,
-                               bool leftHasLumaCbp, bool topHasLumaCbp,
-                               bool leftHasChromaCbp, bool topHasChromaCbp) noexcept
+                               uint8_t leftLumaCbp, uint8_t topLumaCbp,
+                               uint8_t leftChromaCbp, uint8_t topChromaCbp) noexcept
 {
-    // Luma CBP: 4 bins, one per 8x8 block
+    // Luma CBP: 4 bins, one per 8x8 block — §9.3.3.1.1.4
+    // condTermFlagN = (neighbor_cbp_bit == 0) ? 1 : 0
     uint8_t cbpLuma = 0U;
-    for (uint32_t i = 0U; i < 4U; ++i)
-    {
-        // Simplified context: use left/top availability
-        uint32_t ctxInc = 0U;
-        if (i == 0U) ctxInc = (leftHasLumaCbp ? 0U : 1U) + (topHasLumaCbp ? 0U : 2U);
-        else if (i == 1U) ctxInc = ((cbpLuma & 1U) ? 0U : 1U) + (topHasLumaCbp ? 0U : 2U);
-        else if (i == 2U) ctxInc = (leftHasLumaCbp ? 0U : 1U) + ((cbpLuma & 1U) ? 0U : 2U);
-        else ctxInc = ((cbpLuma & 4U) ? 0U : 1U) + ((cbpLuma & 2U) ? 0U : 2U);
 
-        if (engine.decodeBin(ctx[cCtxCbpLuma + ctxInc]) == 1U)
-            cbpLuma |= (1U << i);
+    // Block 0 (TL): A=left's bit 1, B=top's bit 2
+    {
+        uint32_t cA = (leftLumaCbp & 0x02U) ? 0U : 1U;
+        uint32_t cB = (topLumaCbp  & 0x04U) ? 0U : 2U;
+        if (engine.decodeBin(ctx[cCtxCbpLuma + cA + cB]) == 1U) cbpLuma |= 1U;
+    }
+    // Block 1 (TR): A=current's bit 0, B=top's bit 3
+    {
+        uint32_t cA = (cbpLuma     & 0x01U) ? 0U : 1U;
+        uint32_t cB = (topLumaCbp  & 0x08U) ? 0U : 2U;
+        if (engine.decodeBin(ctx[cCtxCbpLuma + cA + cB]) == 1U) cbpLuma |= 2U;
+    }
+    // Block 2 (BL): A=left's bit 3, B=current's bit 0
+    {
+        uint32_t cA = (leftLumaCbp & 0x08U) ? 0U : 1U;
+        uint32_t cB = (cbpLuma     & 0x01U) ? 0U : 2U;
+        if (engine.decodeBin(ctx[cCtxCbpLuma + cA + cB]) == 1U) cbpLuma |= 4U;
+    }
+    // Block 3 (BR): A=current's bit 2, B=current's bit 1
+    {
+        uint32_t cA = (cbpLuma & 0x04U) ? 0U : 1U;
+        uint32_t cB = (cbpLuma & 0x02U) ? 0U : 2U;
+        if (engine.decodeBin(ctx[cCtxCbpLuma + cA + cB]) == 1U) cbpLuma |= 8U;
     }
 
-    // Chroma CBP: 2 bins
+    // Chroma CBP: 2 bins — §9.3.3.1.1.4
+    // condTermFlagN = (neighbor_chromaCbp > 0) ? 0 : 1
     uint8_t cbpChroma = 0U;
     {
-        uint32_t ctxInc = (leftHasChromaCbp ? 1U : 0U) + (topHasChromaCbp ? 2U : 0U);
-        if (engine.decodeBin(ctx[cCtxCbpChroma + ctxInc]) == 1U)
+        uint32_t cA = (leftChromaCbp > 0U) ? 0U : 1U;
+        uint32_t cB = (topChromaCbp  > 0U) ? 0U : 2U;
+        if (engine.decodeBin(ctx[cCtxCbpChroma + cA + cB]) == 1U)
         {
-            ctxInc = (leftHasChromaCbp ? 1U : 0U) + (topHasChromaCbp ? 2U : 0U);
-            cbpChroma = engine.decodeBin(ctx[cCtxCbpChroma + ctxInc + 4U]) == 0U ? 1U : 2U;
+            // Second chroma bin: cbpChroma == 1 or 2
+            cA = (leftChromaCbp > 1U) ? 0U : 1U;
+            cB = (topChromaCbp  > 1U) ? 0U : 2U;
+            cbpChroma = engine.decodeBin(ctx[cCtxCbpChroma + cA + cB + 4U]) == 0U ? 1U : 2U;
         }
     }
 

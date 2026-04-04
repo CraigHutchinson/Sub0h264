@@ -2084,12 +2084,12 @@ private:
         uint32_t chromaPredMode = cabacDecodeIntraChromaMode(cabacEngine_, cabacCtx_.data(),
                                                               leftIntra, topIntra);
 
-        // CBP via CABAC — §9.3.3.1.4 with actual neighbor CBP for context
+        // CBP via CABAC — §9.3.3.1.1.4 with per-block neighbor CBP
         uint8_t leftCbp = (mbX > 0U) ? mbCbp_[mbIdx - 1U] : 0x2FU;
         uint8_t topCbp = (mbY > 0U) ? mbCbp_[mbIdx - widthInMbs_] : 0x2FU;
         uint8_t cbp = cabacDecodeCbp(cabacEngine_, cabacCtx_.data(),
-                                      (leftCbp & 0x0FU) != 0U, (topCbp & 0x0FU) != 0U,
-                                      ((leftCbp >> 4U) & 3U) != 0U, ((topCbp >> 4U) & 3U) != 0U);
+                                      leftCbp & 0x0FU, topCbp & 0x0FU,
+                                      (leftCbp >> 4U) & 3U, (topCbp >> 4U) & 3U);
         uint8_t cbpLuma = cbp & 0x0FU;
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
         mbCbp_[mbIdx] = cbp;
@@ -2118,17 +2118,14 @@ private:
                 uint32_t absY = mbY * cMbSize + blkY;
                 bool hasResidual = (cbpLuma >> blk8) & 1U;
 
-                // 8x8 intra prediction — use DC mode as baseline (§8.3.2.2.4)
+                // 8x8 intra prediction — §8.3.2 with reference sample filtering
+                // The prediction mode is stored in predModes[] at the top-left
+                // 4x4 sub-block of this 8x8 block.
+                static constexpr uint32_t c8x8TopLeft[4] = {0U, 2U, 8U, 10U};
+                uint8_t mode8x8 = predModes[c8x8TopLeft[blk8]];
                 uint8_t pred8x8[64];
-                {
-                    uint32_t sum = 0U, count = 0U;
-                    if (absY > 0U)
-                        for (uint32_t c = 0U; c < 8U; ++c) { sum += currentFrame_.y(absX + c, absY - 1U); ++count; }
-                    if (absX > 0U)
-                        for (uint32_t r = 0U; r < 8U; ++r) { sum += currentFrame_.y(absX - 1U, absY + r); ++count; }
-                    uint8_t dc = (count > 0U) ? static_cast<uint8_t>((sum + count / 2U) / count) : cDefaultPredValue;
-                    std::memset(pred8x8, dc, 64U);
-                }
+                intraPred8x8Luma(static_cast<Intra4x4Mode>(mode8x8),
+                                  currentFrame_, absX, absY, pred8x8);
 
                 int16_t coeffs[64] = {};
                 if (hasResidual)
@@ -2366,14 +2363,14 @@ private:
         chromaMotionComp(ref, chromaRefX, chromaRefY, cdx, cdy,
                          cChromaBlockSize, cChromaBlockSize, false, predV, cChromaBlockSize);
 
-        // CBP via CABAC — §9.3.3.1.4 with actual neighbor CBP
+        // CBP via CABAC — ��9.3.3.1.1.4 with per-block neighbor CBP
         uint8_t cbp;
         {
             uint8_t lCbp = (mbX > 0U) ? mbCbp_[mbIdx - 1U] : 0x2FU;
             uint8_t tCbp = (mbY > 0U) ? mbCbp_[mbIdx - widthInMbs_] : 0x2FU;
             cbp = cabacDecodeCbp(cabacEngine_, cabacCtx_.data(),
-                                 (lCbp & 0x0FU) != 0U, (tCbp & 0x0FU) != 0U,
-                                 ((lCbp >> 4U) & 3U) != 0U, ((tCbp >> 4U) & 3U) != 0U);
+                                 lCbp & 0x0FU, tCbp & 0x0FU,
+                                 (lCbp >> 4U) & 3U, (tCbp >> 4U) & 3U);
         }
         uint8_t cbpLuma = cbp & 0x0FU;
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;

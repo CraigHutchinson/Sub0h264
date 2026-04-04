@@ -503,6 +503,120 @@ inline void intraPredChroma8x8(IntraChromaMode mode,
     }
 }
 
+// ── Intra 8x8 prediction — ITU-T H.264 §8.3.2 ─────────────────────────
+
+/** Generate an 8x8 intra prediction block.
+ *
+ *  Uses the same 9 modes as 4x4 (§8.3.2.2) but on 8x8 blocks.
+ *  §8.3.2.1 defines reference sample filtering before prediction.
+ *
+ *  @param mode      Prediction mode [0-8] (same enum as Intra4x4Mode)
+ *  @param frame     Current frame (for reading neighbor pixels)
+ *  @param absX      Absolute X position of block's top-left pixel
+ *  @param absY      Absolute Y position of block's top-left pixel
+ *  @param[out] pred Output 8x8 prediction block (stride=8)
+ */
+inline void intraPred8x8Luma(Intra4x4Mode mode, const Frame& frame,
+                              uint32_t absX, uint32_t absY,
+                              uint8_t* pred) noexcept
+{
+    // §8.3.2.1: Gather reference samples p[-1,-1], p[0..-1..7,-1], p[-1,0..7]
+    // and optionally p[8..15,-1] for top-right extension.
+    bool hasTop  = (absY > 0U);
+    bool hasLeft = (absX > 0U);
+    bool hasTL   = hasTop && hasLeft;
+
+    uint8_t top[16] = {};   // p[0..15, -1] (8 top + 8 top-right)
+    uint8_t left[8] = {};   // p[-1, 0..7]
+    uint8_t tl = cDefaultPredValue; // p[-1, -1]
+
+    if (hasTop)
+    {
+        const uint8_t* row = frame.yRow(absY - 1U);
+        for (uint32_t c = 0U; c < 8U; ++c)
+            top[c] = row[absX + c];
+        // Top-right: p[8..15, -1]. If at right edge, replicate top[7].
+        for (uint32_t c = 8U; c < 16U; ++c)
+            top[c] = (absX + c < frame.width()) ? row[absX + c] : top[7];
+    }
+    if (hasLeft)
+        for (uint32_t r = 0U; r < 8U; ++r)
+            left[r] = frame.y(absX - 1U, absY + r);
+    if (hasTL)
+        tl = frame.y(absX - 1U, absY - 1U);
+
+    // §8.3.2.1: Reference sample filtering (low-pass for smoother prediction).
+    // p'[-1,-1] = (p[-1,0] + 2*p[-1,-1] + p[0,-1] + 2) >> 2
+    // p'[x,-1]  = (p[x-1,-1] + 2*p[x,-1] + p[x+1,-1] + 2) >> 2  for x=0..6
+    // p'[7,-1]  = (p[6,-1] + 2*p[7,-1] + p[8,-1] + 2) >> 2
+    // Similar for left column.
+    uint8_t ft[16] = {}, fl[8] = {}, ftl;
+
+    if (hasTop && hasLeft)
+        ftl = filt121(left[0], tl, top[0]);
+    else if (hasTop)
+        ftl = top[0];
+    else if (hasLeft)
+        ftl = left[0];
+    else
+        ftl = cDefaultPredValue;
+
+    if (hasTop)
+    {
+        ft[0] = hasTL ? filt121(tl, top[0], top[1]) : filt121(top[0], top[0], top[1]);
+        for (uint32_t c = 1U; c < 15U; ++c)
+            ft[c] = filt121(top[c - 1U], top[c], top[c + 1U]);
+        ft[15] = filt121(top[14], top[15], top[15]);
+    }
+
+    if (hasLeft)
+    {
+        fl[0] = hasTL ? filt121(tl, left[0], left[1]) : filt121(left[0], left[0], left[1]);
+        for (uint32_t r = 1U; r < 7U; ++r)
+            fl[r] = filt121(left[r - 1U], left[r], left[r + 1U]);
+        fl[7] = filt121(left[6], left[7], left[7]);
+    }
+
+    switch (mode)
+    {
+    case Intra4x4Mode::Vertical: // §8.3.2.2.2
+        for (uint32_t r = 0U; r < 8U; ++r)
+            for (uint32_t c = 0U; c < 8U; ++c)
+                pred[r * 8U + c] = hasTop ? ft[c] : cDefaultPredValue;
+        break;
+
+    case Intra4x4Mode::Horizontal: // §8.3.2.2.3
+        for (uint32_t r = 0U; r < 8U; ++r)
+            for (uint32_t c = 0U; c < 8U; ++c)
+                pred[r * 8U + c] = hasLeft ? fl[r] : cDefaultPredValue;
+        break;
+
+    case Intra4x4Mode::Dc: // §8.3.2.2.4
+    {
+        uint32_t sum = 0U, count = 0U;
+        if (hasTop)  { for (uint32_t c = 0U; c < 8U; ++c) { sum += ft[c]; ++count; } }
+        if (hasLeft) { for (uint32_t r = 0U; r < 8U; ++r) { sum += fl[r]; ++count; } }
+        uint8_t dc = (count > 0U)
+            ? static_cast<uint8_t>((sum + count / 2U) / count) : cDefaultPredValue;
+        std::memset(pred, dc, 64U);
+        break;
+    }
+
+    default:
+        // Modes 5-8 (VR, HD, VL, HU): fall back to DC for now.
+        // TODO §8.3.2.2.7-8.3.2.2.10: implement remaining directional modes.
+        {
+            uint32_t sum = 0U, count = 0U;
+            if (hasTop)  { for (uint32_t c = 0U; c < 8U; ++c) { sum += ft[c]; ++count; } }
+            if (hasLeft) { for (uint32_t r = 0U; r < 8U; ++r) { sum += fl[r]; ++count; } }
+            uint8_t dc = (count > 0U)
+                ? static_cast<uint8_t>((sum + count / 2U) / count) : cDefaultPredValue;
+            std::memset(pred, dc, 64U);
+        }
+        break;
+    }
+}
+
 } // namespace sub0h264
 
 #endif // CROG_SUB0H264_INTRA_PRED_HPP

@@ -406,9 +406,9 @@ inline void inverseQuantize8x8(int16_t* coeffs, int32_t qp) noexcept
         // ITU-T H.264 §8.5.12.1 with default flat scaling list (all 16):
         //   d = c * normAdjust8x8 * 16 << (qP/6 - 6)
         //     = c * normAdjust8x8 << (qP/6 - 2)
-        // The IDCT applies >> 6 normalization at output, matching the 4x4 convention.
-        // Note: 4x4 uses << qP/6 because 4x4 spec shift is (qP/6 - 4) and
-        // 16 * 2^(qP/6-4) = 2^(qP/6). For 8x8: 16 * 2^(qP/6-6) = 2^(qP/6-2).
+        // Combined with IDCT >> 12 (two passes of >>6 equivalent).
+        // Verified against libavc ih264_iquant_itrans_recon_8x8 which uses:
+        //   INV_QUANT: pi2_tmp[i] = (pi2_src[i] * pu2_iscale_mat[i] * g_scal_coff[u4_rem6]) >> (5 - u4_qp_div6 + shift)
         if (qpDiv6 >= 2)
             val <<= (qpDiv6 - 2);
         else
