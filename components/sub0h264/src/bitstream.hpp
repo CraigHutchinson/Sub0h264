@@ -117,15 +117,37 @@ public:
      */
     uint32_t readUev() noexcept
     {
+        // Peek up to 32 bits and count leading zeros with CLZ.
+        // This replaces the per-bit while loop with a single peek + intrinsic.
+        // For short codes (0-2 leading zeros, ~80% of values), this saves
+        // 1-4 readBit() calls.
+        uint32_t bits = peekBits(32U > (sizeBytes_ * 8U - bitOffset_)
+                                 ? (sizeBytes_ * 8U - bitOffset_) : 32U);
+        if (bits == 0U)
+            return cExpGolombOverflow;
+
+        // CLZ gives position of first '1' bit (= number of leading zeros)
+#if defined(__GNUC__) || defined(__clang__)
+        uint32_t leadingZeros = static_cast<uint32_t>(__builtin_clz(bits));
+#elif defined(_MSC_VER)
+        unsigned long idx;
+        _BitScanReverse(&idx, bits);
+        uint32_t leadingZeros = 31U - idx;
+#else
         uint32_t leadingZeros = 0U;
-        while (readBit() == 0U)
-        {
-            ++leadingZeros;
-            if (leadingZeros > 31U)
-                return cExpGolombOverflow;
-        }
+        uint32_t tmp = bits;
+        while ((tmp & 0x80000000U) == 0U) { ++leadingZeros; tmp <<= 1U; }
+#endif
+
+        if (leadingZeros > 31U)
+            return cExpGolombOverflow;
+
+        // Skip leading zeros + the '1' bit
+        bitOffset_ += leadingZeros + 1U;
+
         if (leadingZeros == 0U)
             return 0U;
+
         uint32_t suffix = readBits(leadingZeros);
         return (1U << leadingZeros) - 1U + suffix;
     }
