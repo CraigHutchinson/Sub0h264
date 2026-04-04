@@ -111,29 +111,69 @@ inline void lumaMotionComp(const Frame& ref,
 
     if (dx == 0U && dy == 2U)
     {
-        // Vertical half-pel
-        for (uint32_t row = 0U; row < height; ++row)
-            for (uint32_t col = 0U; col < width; ++col)
+        // Vertical half-pel — fast path when 6-tap filter window is in bounds
+        if (refX >= 0 && refY >= 2 &&
+            refX + static_cast<int32_t>(width) <= static_cast<int32_t>(ref.width()) &&
+            refY + static_cast<int32_t>(height) + 3 <= static_cast<int32_t>(ref.height()))
+        {
+            uint32_t stride = ref.yStride();
+            for (uint32_t row = 0U; row < height; ++row)
             {
-                int32_t sum = 0;
-                for (int32_t k = -2; k <= 3; ++k)
-                    sum += cLumaFilter6Tap[k + 2] * getSample(refX + col, refY + row + k);
-                dst[row * dstStride + col] = static_cast<uint8_t>(clipU8((sum + 16) >> 5));
+                const uint8_t* col0 = ref.yRow(static_cast<uint32_t>(refY + row) - 2U)
+                                     + static_cast<uint32_t>(refX);
+                for (uint32_t col = 0U; col < width; ++col)
+                {
+                    const uint8_t* p = col0 + col;
+                    int32_t sum = p[0] - 5*p[stride] + 20*p[2*stride] + 20*p[3*stride]
+                                - 5*p[4*stride] + p[5*stride];
+                    dst[row * dstStride + col] = static_cast<uint8_t>(clipU8((sum + 16) >> 5));
+                }
             }
+        }
+        else
+        {
+            for (uint32_t row = 0U; row < height; ++row)
+                for (uint32_t col = 0U; col < width; ++col)
+                {
+                    int32_t sum = 0;
+                    for (int32_t k = -2; k <= 3; ++k)
+                        sum += cLumaFilter6Tap[k + 2] * getSample(refX + col, refY + row + k);
+                    dst[row * dstStride + col] = static_cast<uint8_t>(clipU8((sum + 16) >> 5));
+                }
+        }
         return;
     }
 
     if (dx == 2U && dy == 0U)
     {
-        // Horizontal half-pel
-        for (uint32_t row = 0U; row < height; ++row)
-            for (uint32_t col = 0U; col < width; ++col)
+        // Horizontal half-pel — fast path when 6-tap filter window is in bounds
+        if (refX >= 2 && refY >= 0 &&
+            refX + static_cast<int32_t>(width) + 3 <= static_cast<int32_t>(ref.width()) &&
+            refY + static_cast<int32_t>(height) <= static_cast<int32_t>(ref.height()))
+        {
+            for (uint32_t row = 0U; row < height; ++row)
             {
-                int32_t sum = 0;
-                for (int32_t k = -2; k <= 3; ++k)
-                    sum += cLumaFilter6Tap[k + 2] * getSample(refX + col + k, refY + row);
-                dst[row * dstStride + col] = static_cast<uint8_t>(clipU8((sum + 16) >> 5));
+                const uint8_t* p = ref.yRow(static_cast<uint32_t>(refY + row))
+                                 + static_cast<uint32_t>(refX) - 2U;
+                for (uint32_t col = 0U; col < width; ++col)
+                {
+                    int32_t sum = p[0] - 5*p[1] + 20*p[2] + 20*p[3] - 5*p[4] + p[5];
+                    dst[row * dstStride + col] = static_cast<uint8_t>(clipU8((sum + 16) >> 5));
+                    ++p;
+                }
             }
+        }
+        else
+        {
+            for (uint32_t row = 0U; row < height; ++row)
+                for (uint32_t col = 0U; col < width; ++col)
+                {
+                    int32_t sum = 0;
+                    for (int32_t k = -2; k <= 3; ++k)
+                        sum += cLumaFilter6Tap[k + 2] * getSample(refX + col + k, refY + row);
+                    dst[row * dstStride + col] = static_cast<uint8_t>(clipU8((sum + 16) >> 5));
+                }
+        }
         return;
     }
 
