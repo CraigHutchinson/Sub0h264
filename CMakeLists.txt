@@ -9,6 +9,12 @@ project(Sub0h264 VERSION 0.1.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
+# ── CPM package manager + Version.cmake for git-based versioning ─────────
+include(cmake/CPM.cmake)
+CPMAddPackage("gh:BareCpper/Version.cmake@0.2")
+# Provides version::version target. Link to get Version.h with:
+#   VERSION_SHA, VERSION_SEMANTIC, VERSION_FULL, VERSION_MAJOR/MINOR/PATCH
+
 option(SUB0H264_BUILD_TESTING "Build unit-tests" ON)
 
 # Platform selection for SIMD dispatch

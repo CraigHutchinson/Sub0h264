@@ -17,10 +17,11 @@ target_include_directories(Sub0h264_Tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
 )
 
-# Path to test fixtures (H.264 test vectors)
+# Path to test fixtures + Version.h from build dir for traceability
 target_compile_definitions(Sub0h264_Tests PRIVATE
     SUB0H264_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
 )
+target_link_libraries(Sub0h264_Tests PRIVATE version::version)
 
 add_test(NAME Sub0h264_Tests COMMAND Sub0h264_Tests)
 
@@ -34,3 +35,4 @@ target_include_directories(Sub0h264_Bench PRIVATE
 target_compile_definitions(Sub0h264_Bench PRIVATE
     SUB0H264_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
 )
+target_link_libraries(Sub0h264_Bench PRIVATE version::version)

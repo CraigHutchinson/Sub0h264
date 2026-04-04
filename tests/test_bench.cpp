@@ -24,6 +24,14 @@ using namespace sub0h264;
 /// Number of timed passes after warm-up.
 static constexpr uint32_t cBenchPasses = 3U;
 
+// Version.cmake generates Version.h at build time with VERSION_FULL etc.
+#if __has_include("Version.h")
+#include "Version.h"
+#endif
+#ifndef VERSION_FULL
+#define VERSION_FULL "unknown"
+#endif
+
 /** Run a decode benchmark: validate, warm-up, measure, report. */
 static void benchStream(const char* name, const char* fixture)
 {
@@ -64,8 +72,8 @@ static void benchStream(const char* name, const char* fixture)
     // Report via doctest MESSAGE (captured by CTest)
     char buf[256];
     std::snprintf(buf, sizeof(buf),
-        "BENCH %s: %ld frames, %.1f ms median (%.1f / %.1f / %.1f), %.1f fps",
-        name, (long)frameCount, medianMs,
+        "BENCH [%s] %s: %ld frames, %.1f ms median (%.1f / %.1f / %.1f), %.1f fps",
+        VERSION_FULL, name, (long)frameCount, medianMs,
         passMs[0], passMs[1], passMs[2], medianFps);
     MESSAGE(buf);
 }
@@ -115,13 +123,13 @@ static void profileStream(const char* name, const char* fixture)
 
     char buf[768];
     std::snprintf(buf, sizeof(buf),
-        "PROFILE %s: %ld frames in %lld us (%.1f fps)\n"
+        "PROFILE [%s] %s: %ld frames in %lld us (%.1f fps)\n"
         "    Intra MB:   %8lld us  (%5.1f%%)\n"
         "    Inter MB:   %8lld us  (%5.1f%%)\n"
         "    Deblock:    %8lld us  (%5.1f%%)\n"
         "    FrameSync:  %8lld us  (%5.1f%%)\n"
         "    Other:      %8lld us  (%5.1f%%)",
-        name, (long)frames, (long long)totalUs,
+        VERSION_FULL, name, (long)frames, (long long)totalUs,
         (totalUs > 0) ? (frames * 1e6 / totalUs) : 0.0,
         (long long)profile.intraPredUs,
         (totalUs > 0) ? (100.0 * profile.intraPredUs / totalUs) : 0.0,
