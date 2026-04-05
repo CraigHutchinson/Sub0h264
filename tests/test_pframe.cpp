@@ -811,7 +811,7 @@ TEST_CASE("P-frame fixes: baseline IDR CRC unchanged")
         if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
         {
             uint32_t crc = frameCrc32(*decoder->currentFrame());
-            CHECK(crc == 0xefa4af1eU);
+            CHECK(crc == 0xb364ff3aU); // Updated after DDR intra pred fix
             break;
         }
     }

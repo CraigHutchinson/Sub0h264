@@ -291,7 +291,7 @@ inline bool writeVerifyReport(const FrameVerifyReport& r, const char* path) noex
 /// Remaining differences vs ffmpeg: deblocking filter rounding at block edges.
 /// Y: 99.4% match, U: 99.9% match, V: 99.7% match.
 inline constexpr uint32_t cRefCrcBaseline[] = {
-    0xefa4af1eU, // Frame 0 (IDR) — 52.5 dB PSNR vs raw source
+    0xb364ff3aU, // Frame 0 (IDR) — updated after DDR intra pred fix
     0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, // Frames 1-9: P-frames (evolving)
     0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, // 10-19
     0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, // 20-29
