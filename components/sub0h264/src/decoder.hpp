@@ -902,6 +902,7 @@ private:
         // ITU-T H.264 §8.3.1.1: most probable mode = min(leftMode, topMode).
         // If prev_intra4x4_pred_mode_flag=1: use MPM.
         // If flag=0: read rem_intra4x4_pred_mode (3 bits).
+        uint8_t mpmPerBlock[16] = {}; // saved for trace
         //   If rem < MPM: mode = rem. Else: mode = rem + 1.
         uint8_t predModes[16] = {};
 
@@ -923,6 +924,7 @@ private:
             uint8_t leftMode = getNeighborIntra4x4Mode(mbX, mbY, rasterIdx, true, predModes);
             uint8_t topMode  = getNeighborIntra4x4Mode(mbX, mbY, rasterIdx, false, predModes);
             uint8_t mpm = (leftMode < topMode) ? leftMode : topMode;
+            mpmPerBlock[rasterIdx] = mpm;
 
             uint32_t prevFlag = br.readBit();
             if (prevFlag)
@@ -1054,10 +1056,11 @@ private:
             intraPred4x4(static_cast<Intra4x4Mode>(predModes[rasterIdx]),
                          top, topRight, left, topLeft, pred4x4);
 
-            // Trace: prediction mode (callback-based, zero cost when unused)
+            // Trace: prediction mode with actual MPM
             trace_.emit({TraceEventType::BlockPredMode,
                          static_cast<uint16_t>(mbX), static_cast<uint16_t>(mbY),
-                         blkIdx, rasterIdx, predModes[rasterIdx], 0U, nullptr, 0U});
+                         blkIdx, rasterIdx, predModes[rasterIdx],
+                         mpmPerBlock[rasterIdx], nullptr, 0U});
 
             // Decode residual if CBP indicates this 8x8 group has coefficients
             uint32_t group8x8 = blkIdx >> 2U; // scan order: 0-3=8x8_0, 4-7=8x8_1, ...
@@ -1144,6 +1147,20 @@ private:
             // Reconstruct: inverse DCT + prediction + clip
             uint8_t* outPtr = mbLuma + blkY * yStride + blkX;
             inverseDct4x4AddPred(coeffs, pred4x4, 4U, outPtr, yStride);
+
+            // Trace: prediction + output pixels
+            if (trace_.hasCallback() && trace_.shouldTrace(mbX, mbY))
+            {
+                int16_t pixBuf[32]; // pred[16] then output[16]
+                for (uint32_t k = 0; k < 16; ++k)
+                    pixBuf[k] = pred4x4[k];
+                for (uint32_t r = 0; r < 4; ++r)
+                    for (uint32_t c = 0; c < 4; ++c)
+                        pixBuf[16 + r * 4 + c] = outPtr[r * yStride + c];
+                trace_.emit({TraceEventType::BlockPixels,
+                             static_cast<uint16_t>(mbX), static_cast<uint16_t>(mbY),
+                             blkIdx, 0U, 0U, 0U, pixBuf, 32U});
+            }
 
 #if SUB0H264_TRACE
             if (mbX == 9U && mbY == 0U && blkIdx >= 12U)

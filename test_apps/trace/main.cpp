@@ -141,9 +141,21 @@ static void traceCallback(const TraceEvent& e, const TraceState& state)
     case TraceEventType::BlockCoeffs:
         if (state.level >= TraceLevel::Coeff && e.data && e.dataLen > 0)
         {
-            std::printf("    blk scan%u coeffs=[", e.a);
+            std::printf("    blk scan%u dequant=[", e.a);
             for (uint32_t i = 0; i < e.dataLen; ++i)
                 std::printf("%d ", e.data[i]);
+            std::printf("]\n");
+        }
+        break;
+
+    case TraceEventType::BlockPixels:
+        if (state.level >= TraceLevel::Pixel && e.data && e.dataLen >= 32U)
+        {
+            std::printf("    blk scan%u pred=[", e.a);
+            for (uint32_t i = 0; i < 16; ++i) std::printf("%d ", e.data[i]);
+            std::printf("]\n");
+            std::printf("    blk scan%u  out=[", e.a);
+            for (uint32_t i = 16; i < 32; ++i) std::printf("%d ", e.data[i]);
             std::printf("]\n");
         }
         break;
