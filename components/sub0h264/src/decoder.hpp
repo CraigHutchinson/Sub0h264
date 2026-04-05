@@ -1095,7 +1095,7 @@ private:
             }
 
 #if SUB0H264_TRACE
-            if (mbX == 1U && mbY == 0U)
+            if ((mbX == 1U || mbX == 3U) && mbY == 0U)
             {
                 std::printf("[I4x4-DBG] MB(1,0) scan%lu raster%lu pos(%lu,%lu) mode=%u hasRes=%d\n",
                     (unsigned long)blkIdx, (unsigned long)rasterIdx,
