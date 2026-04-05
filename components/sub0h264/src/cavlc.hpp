@@ -569,8 +569,8 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
     // MB 9: block 10 (TC=0) = 1 call, block 11 (TC=16) = 2nd call
     if (ct.totalCoeff > 0U && ct.totalCoeff >= 10U)
     {
-        std::printf("[CAVLC] call#%u tc=%u to=%u levels=[",
-            sResidualCallCount, ct.totalCoeff, ct.trailingOnes);
+        std::printf("[CAVLC] call#%u tc=%u to=%u tz=%u levels=[",
+            sResidualCallCount, ct.totalCoeff, ct.trailingOnes, totalZeros);
         for (uint32_t k = 0U; k < ct.totalCoeff; ++k)
             std::printf("%d ", levels[k]);
         std::printf("] coeffs=[");

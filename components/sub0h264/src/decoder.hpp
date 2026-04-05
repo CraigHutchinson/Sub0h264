@@ -573,8 +573,12 @@ private:
 
         // Deblocking filter pass (entire frame, after all MBs decoded)
         // Per-MB QP is used; boundary edges use (qpP + qpQ + 1) >> 1 per §8.7.2.2.
+#ifndef SUB0H264_SKIP_DEBLOCK
         if (pps->deblockingFilterControlPresent_ == 0U ||
             sh.disableDeblockingFilter_ != 1U)
+#else
+        if (false)
+#endif
         {
             int64_t dbT0 = profile_ ? sub0h264TimerUs() : 0;
             int32_t alphaOff = sh.sliceAlphaC0Offset_;
@@ -1058,6 +1062,9 @@ private:
             if (hasResidual)
             {
                 int32_t nc = getLumaNc(mbX, mbY, rasterIdx);
+#if SUB0H264_TRACE
+                uint32_t blkBitBefore = br.bitOffset();
+#endif
                 ResidualBlock4x4 resBlock;
                 decodeResidualBlock4x4(br, nc, cMaxCoeff4x4, 0U, resBlock);
 
