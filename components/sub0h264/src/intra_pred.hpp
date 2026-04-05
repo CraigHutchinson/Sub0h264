@@ -139,21 +139,27 @@ inline void intraPred4x4(Intra4x4Mode mode,
     case Intra4x4Mode::DiagDownRight:
         if (top && left && topLeft)
         {
+            // ITU-T H.264 §8.3.1.2.5: DiagDownRight
+            // pred[y][x] = filt121(p[d-1], p[d], p[d+1]) where d = x - y
+            // p values indexed by diagonal offset d:
+            //   d = -3: left[3]    d = -2: left[2]    d = -1: left[1]
+            //   d =  0: left[0]/tl/top[0]  (center = filt121(left[0], tl, top[0]))
+            //   d = +1: tl/top[0]/top[1]   d = +2: top[0]/top[1]/top[2]
+            //   d = +3: top[1]/top[2]/top[3]
+            // Build array: p[d] for d = -4..-1,0,+1..+3
+            //   idx: 0=left[3], 1=left[2], 2=left[1], 3=left[0],
+            //        4=topLeft, 5=top[0], 6=top[1], 7=top[2], 8=top[3]
             uint8_t tl = *topLeft;
+            uint8_t p[9] = { left[3], left[2], left[1], left[0],
+                             tl, top[0], top[1], top[2], top[3] };
+            // pred[y][x] = filt121(p[d-1], p[d], p[d+1])
+            // where d_idx = 4 + d = 4 + (x - y), range [1..7]
             for (uint32_t row = 0U; row < 4U; ++row)
                 for (uint32_t col = 0U; col < 4U; ++col)
                 {
-                    if (col > row)
-                        pred[row * 4U + col] = filt121(top[col - row - 2U < 4U ? col - row - 2U : 0U],
-                                                        top[col - row - 1U],
-                                                        col - row < 4U ? top[col - row] : top[3]);
-                    else if (col == row)
-                        pred[row * 4U + col] = filt121(left[0], tl, top[0]);
-                    else
-                        pred[row * 4U + col] = filt121(
-                            row - col - 2U < 4U ? left[row - col - 2U] : left[0],
-                            left[row - col - 1U],
-                            row - col == 1U ? tl : left[row - col - 2U < 4U ? row - col - 2U : 0U]);
+                    int32_t d = static_cast<int32_t>(col) - static_cast<int32_t>(row);
+                    uint32_t di = static_cast<uint32_t>(4 + d); // index into p[]
+                    pred[row * 4U + col] = filt121(p[di - 1U], p[di], p[di + 1U]);
                 }
         }
         break;

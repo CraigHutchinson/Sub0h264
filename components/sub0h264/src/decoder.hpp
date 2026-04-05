@@ -1095,6 +1095,26 @@ private:
             }
 
 #if SUB0H264_TRACE
+            if (mbX == 1U && mbY == 0U)
+            {
+                std::printf("[I4x4-DBG] MB(1,0) scan%lu raster%lu pos(%lu,%lu) mode=%u hasRes=%d\n",
+                    (unsigned long)blkIdx, (unsigned long)rasterIdx,
+                    (unsigned long)blkX, (unsigned long)blkY,
+                    predModes[rasterIdx], hasResidual);
+                std::printf("  pred=[%u %u %u %u / %u %u %u %u / %u %u %u %u / %u %u %u %u]\n",
+                    pred4x4[0],pred4x4[1],pred4x4[2],pred4x4[3],
+                    pred4x4[4],pred4x4[5],pred4x4[6],pred4x4[7],
+                    pred4x4[8],pred4x4[9],pred4x4[10],pred4x4[11],
+                    pred4x4[12],pred4x4[13],pred4x4[14],pred4x4[15]);
+                if (hasResidual)
+                {
+                    std::printf("  dequant=[%d %d %d %d / %d %d %d %d / %d %d %d %d / %d %d %d %d]\n",
+                        coeffs[0],coeffs[1],coeffs[2],coeffs[3],
+                        coeffs[4],coeffs[5],coeffs[6],coeffs[7],
+                        coeffs[8],coeffs[9],coeffs[10],coeffs[11],
+                        coeffs[12],coeffs[13],coeffs[14],coeffs[15]);
+                }
+            }
             if (mbX == 9U && mbY == 0U && blkIdx >= 12U)
             {
                 std::printf("[DBG]   MB9 scan%lu(raster%lu) pos(%lu,%lu): mode=%u pred=[%u %u %u %u] hasRes=%d qp=%d\n",
