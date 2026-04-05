@@ -220,7 +220,7 @@ struct DecodeTrace
 #endif
     }
 
-private:
+// private: // Made public for direct trace emission from decoder code
     TraceCallback callback_;
 
     void emit(const TraceEvent& e) const noexcept

@@ -1054,6 +1054,11 @@ private:
             intraPred4x4(static_cast<Intra4x4Mode>(predModes[rasterIdx]),
                          top, topRight, left, topLeft, pred4x4);
 
+            // Trace: prediction mode (callback-based, zero cost when unused)
+            trace_.emit({TraceEventType::BlockPredMode,
+                         static_cast<uint16_t>(mbX), static_cast<uint16_t>(mbY),
+                         blkIdx, rasterIdx, predModes[rasterIdx], 0U, nullptr, 0U});
+
             // Decode residual if CBP indicates this 8x8 group has coefficients
             uint32_t group8x8 = blkIdx >> 2U; // scan order: 0-3=8x8_0, 4-7=8x8_1, ...
             bool hasResidual = (cbpLuma >> group8x8) & 1U;
@@ -1092,6 +1097,11 @@ private:
                 nnzLuma_[mbIdx * 16U + rasterIdx] = resBlock.totalCoeff;
 
                 inverseQuantize4x4(coeffs, qp);
+
+                // Trace: dequantized coefficients
+                trace_.emit({TraceEventType::BlockCoeffs,
+                             static_cast<uint16_t>(mbX), static_cast<uint16_t>(mbY),
+                             blkIdx, 0U, 0U, 0U, coeffs, 16U});
             }
 
 #if SUB0H264_TRACE
