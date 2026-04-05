@@ -38,13 +38,28 @@ inline constexpr uint32_t cTraceAll = UINT32_MAX;
 /// Trace event types for structured callback tracing.
 enum class TraceEventType : uint8_t
 {
-    MbStart,          ///< MB decode started: mbX, mbY, mbType, bitOffset
-    MbEnd,            ///< MB decode ended: mbX, mbY, bitOffset
-    ChromaDcRaw,      ///< Chroma DC raw CAVLC coefficients: a=0 Cb, a=1 Cr
-    ChromaDcDequant,  ///< Chroma DC after Hadamard + dequant: a=0 Cb, a=1 Cr
-    BlockResidual,    ///< CAVLC block: blkIdx, nC, totalCoeff, bits
-    LumaDcDequant,    ///< Luma I_16x16 DC after dequant: values in data[]
-    MvPrediction,     ///< MV prediction: a=partIdx, data=[mvpX,mvpY,mvdX,mvdY,mvX,mvY,aX,aY,bX,bY,cX,cY]
+    // Level: summary
+    FrameStart,       ///< a=frameIdx, b=sliceType, c=QP, d=width|height<<16
+    FrameDone,        ///< a=frameIdx, b=totalBits
+
+    // Level: mb
+    MbStart,          ///< a=mbType, b=bitOffset
+    MbEnd,            ///< a=0, b=bitOffset
+    MbDone,           ///< a=cbp, b=bitOffset, c=QP
+
+    // Level: block
+    BlockResidual,    ///< a=scanIdx, b=nC, c=totalCoeff, d=bitsConsumed
+    BlockPredMode,    ///< a=scanIdx, b=rasterIdx, c=predMode, d=mpm
+
+    // Level: coeff
+    ChromaDcRaw,      ///< a=0 Cb / 1 Cr; data=raw coefficients
+    ChromaDcDequant,  ///< a=0 Cb / 1 Cr; data=dequantized coefficients
+    LumaDcDequant,    ///< data=16 DC values after Hadamard + dequant
+    BlockCoeffs,      ///< a=scanIdx; data=dequantized coefficients
+
+    // Level: pixel
+    BlockPixels,      ///< a=scanIdx; data=pred[16] then output[16]
+    MvPrediction,     ///< a=partIdx, data=[mvpX,mvpY,mvdX,mvdY,mvX,mvY,...]
 };
 
 /// Structured trace event — passed to callbacks.

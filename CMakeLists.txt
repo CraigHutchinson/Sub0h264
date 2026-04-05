@@ -37,6 +37,7 @@ add_library(Sub0h264::Sub0h264 ALIAS sub0h264)
 if(SUB0H264_BUILD_TESTING AND NOT IS_SUBPROJECT)
     enable_testing()
     add_subdirectory(tests)
+    add_subdirectory(test_apps/trace)
 endif()
 
 # Install project if not included by add_subdirectory() from another project
