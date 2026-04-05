@@ -127,9 +127,15 @@ static void traceCallback(const TraceEvent& e, const TraceState& state)
         break;
 
     case TraceEventType::BlockResidual:
-        if (state.level >= TraceLevel::Block)
-            std::printf("    blk scan%u nC=%u tc=%u bits=%u\n",
-                        e.a, e.b, e.c, e.d);
+        if (state.level >= TraceLevel::Coeff && e.data && e.dataLen > 0)
+        {
+            std::printf("    blk scan%u nC=%u tc=%u bits=%u raw=[", e.a, e.b, e.c, e.d);
+            for (uint32_t i = 0; i < e.dataLen; ++i)
+                std::printf("%d ", e.data[i]);
+            std::printf("]\n");
+        }
+        else if (state.level >= TraceLevel::Block)
+            std::printf("    blk scan%u nC=%u tc=%u bits=%u\n", e.a, e.b, e.c, e.d);
         break;
 
     case TraceEventType::BlockPredMode:

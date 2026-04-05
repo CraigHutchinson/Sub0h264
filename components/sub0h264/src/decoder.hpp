@@ -1070,9 +1070,7 @@ private:
             if (hasResidual)
             {
                 int32_t nc = getLumaNc(mbX, mbY, rasterIdx);
-#if SUB0H264_TRACE
                 uint32_t blkBitBefore = br.bitOffset();
-#endif
                 ResidualBlock4x4 resBlock;
                 decodeResidualBlock4x4(br, nc, cMaxCoeff4x4, 0U, resBlock);
 
@@ -1095,6 +1093,13 @@ private:
 
                 for (uint32_t i = 0U; i < 16U; ++i)
                     coeffs[i] = resBlock.coeffs[i];
+
+                // Trace: RAW coefficients (before dequant) — use BlockResidual data field
+                trace_.emit({TraceEventType::BlockResidual,
+                             static_cast<uint16_t>(mbX), static_cast<uint16_t>(mbY),
+                             blkIdx, static_cast<uint32_t>(nc),
+                             resBlock.totalCoeff,
+                             br.bitOffset() - blkBitBefore, coeffs, 16U});
 
                 uint32_t mbIdx = mbY * widthInMbs_ + mbX;
                 nnzLuma_[mbIdx * 16U + rasterIdx] = resBlock.totalCoeff;
