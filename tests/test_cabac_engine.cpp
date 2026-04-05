@@ -684,3 +684,46 @@ TEST_CASE("CABAC decode: scrolling texture High profile I-frame produces non-bla
     // Currently ~10 dB. Target: 50 dB when CABAC fully implemented.
     CHECK(psnr >= 5.0);
 }
+
+TEST_CASE("CAVLC: bouncing ball per-MB bit offset trace")
+{
+    // Trace bit offsets after each MB decode for the bouncing ball IDR.
+    // MB(0,0) is pixel-perfect; the CAVLC overconsumption starts at MB(1,0).
+    // This test captures the exact bit offsets for debugging.
+    auto h264 = getFixture("bouncing_ball.h264");
+    if (h264.empty()) { MESSAGE("bouncing_ball.h264 not found"); return; }
+
+    struct MbBitInfo { uint32_t mbX, mbY, bitAfter; };
+    std::vector<MbBitInfo> mbBits;
+
+    H264Decoder decoder;
+    decoder.trace().setCallback([&](const TraceEvent& e) {
+        // Type 201 = bit offset AFTER MB decode (I-slice)
+        if (e.type == TraceEventType::MbStart && e.a == 201U && e.mbY == 0U)
+            mbBits.push_back({e.mbX, e.mbY, e.b});
+    });
+
+    std::vector<NalBounds> bounds;
+    findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
+
+    for (const auto& b : bounds)
+    {
+        NalUnit nal;
+        if (!parseNalUnit(h264.data() + b.offset, b.size, nal)) continue;
+        if (decoder.processNal(nal) == DecodeStatus::FrameDecoded)
+            break; // first frame only
+    }
+
+    // Report first 10 MB bit offsets for row 0
+    MESSAGE("Bouncing ball IDR — per-MB bit offsets (row 0):");
+    for (size_t i = 0; i < mbBits.size() && i < 10; ++i)
+    {
+        uint32_t consumed = (i > 0) ? (mbBits[i].bitAfter - mbBits[i-1].bitAfter) : mbBits[i].bitAfter;
+        MESSAGE("  MB(" << mbBits[i].mbX << ",0): bit " << mbBits[i].bitAfter
+                << " (consumed " << consumed << ")");
+    }
+
+    // MB(0,0) starts at bit 24 (slice header). After decode should be reasonable.
+    REQUIRE(mbBits.size() >= 2U);
+    MESSAGE("  Delta MB(0)->MB(1): " << (mbBits[1].bitAfter - mbBits[0].bitAfter) << " bits");
+}

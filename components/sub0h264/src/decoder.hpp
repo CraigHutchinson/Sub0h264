@@ -442,6 +442,8 @@ private:
                         break;
                     if (profile_) profile_->intraPredUs += sub0h264TimerUs() - intraT0;
                 }
+                // Trace per-MB bit offset for alignment debugging (type 201)
+                trace_.onMbStart(mbX, mbY, 201U, static_cast<uint32_t>(br.bitOffset()));
                 // Store accumulated QP for deblocking pass — ITU-T H.264 §8.7.2.2.
                 mbQps_[mbAddr] = mbQp;
             }
