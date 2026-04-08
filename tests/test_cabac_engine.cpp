@@ -1043,6 +1043,300 @@ TEST_CASE("CabacMbParser: decodeCbp uses neighbor context correctly")
     }
 }
 
+TEST_CASE("CABAC hack: u100 mb_type and residual trace")
+{
+    // Trace what happens when decoding cabac_min_u100:
+    // Expected: I_16x16 with DC residual that shifts 128→100
+    // Bug: likely decoding as I_4x4 or missing residual
+    auto h264 = getFixture("cabac_min_u100.h264");
+    auto raw = getFixture("cabac_min_u100_raw.yuv");
+    if (h264.empty() || raw.empty()) { MESSAGE("fixture not found"); return; }
+
+    // Capture MbStart trace to get mb_type
+    struct MbInfo { uint32_t mbX, mbY, mbType; };
+    std::vector<MbInfo> mbInfos;
+
+    H264Decoder decoder;
+    decoder.trace().setCallback([&](const TraceEvent& e) {
+        if (e.type == TraceEventType::MbStart && e.a == 200U)
+            mbInfos.push_back({e.mbX, e.mbY, e.b});
+    });
+
+    std::vector<NalBounds> bounds;
+    findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
+
+    const Frame* frame = nullptr;
+    for (const auto& b : bounds)
+    {
+        NalUnit nal;
+        if (!parseNalUnit(h264.data() + b.offset, b.size, nal)) continue;
+        if (decoder.processNal(nal) == DecodeStatus::FrameDecoded)
+        { frame = decoder.currentFrame(); break; }
+    }
+    REQUIRE(frame != nullptr);
+
+    // Report mb_type for MB(0,0)
+    if (!mbInfos.empty())
+        MESSAGE("MB(0,0) trace a=200 b=" << mbInfos[0].mbType);
+
+    // Check actual pixel output
+    uint8_t pixel00 = frame->yRow(0)[0];
+    MESSAGE("MB(0,0) pixel[0,0] = " << (int)pixel00 << " (expected 100)");
+
+    // Use snapshot tools: get contexts state AFTER init
+    auto ctxAfterDecode = decoder.cabacContexts().snapshot();
+    MESSAGE("Contexts after decode: first diff from fresh init at idx "
+            << [&]() {
+                CabacContextSet fresh;
+                fresh.init(2U, 0U, 26); // I-slice, QP guess
+                return fresh.firstDifference(ctxAfterDecode);
+            }());
+
+    // Now decode standalone with CabacMbParser to trace mb_type independently
+    {
+        // Find IDR NAL
+        NalUnit nal;
+        bool found = false;
+        for (const auto& b : bounds)
+        {
+            if (parseNalUnit(h264.data() + b.offset, b.size, nal) &&
+                nal.type == NalType::SliceIdr)
+            { found = true; break; }
+        }
+        REQUIRE(found);
+
+        // Parse SPS/PPS to get QP
+        Sps sps;
+        Pps pps;
+        for (const auto& b : bounds)
+        {
+            NalUnit n;
+            if (!parseNalUnit(h264.data() + b.offset, b.size, n)) continue;
+            if (n.type == NalType::Sps) {
+                BitReader sbr(n.rbspData.data(), static_cast<uint32_t>(n.rbspData.size()));
+                parseSps(sbr, sps);
+            }
+            if (n.type == NalType::Pps) {
+                BitReader pbr(n.rbspData.data(), static_cast<uint32_t>(n.rbspData.size()));
+                parsePps(pbr, &sps, pps);
+            }
+        }
+
+        BitReader br(nal.rbspData.data(), static_cast<uint32_t>(nal.rbspData.size()));
+
+        // Parse slice header to find QP
+        SliceHeader sh;
+        bool isIdr = (nal.type == NalType::SliceIdr);
+        parseSliceHeader(br, sps, pps, isIdr, nal.refIdc, sh);
+        int32_t sliceQp = pps.picInitQp_ + sh.sliceQpDelta_;
+        MESSAGE("Slice QP = " << sliceQp << " (pps.picInitQp=" << (int)pps.picInitQp_
+                << " delta=" << sh.sliceQpDelta_ << ")");
+
+        br.alignToByte();
+
+        // Init CABAC standalone
+        CabacContextSet ctxSet;
+        uint32_t sliceTypeIdx = (sh.sliceType_ == SliceType::I) ? 2U : 0U;
+        ctxSet.init(sliceTypeIdx, sh.cabacInitIdc_, sliceQp);
+
+        CabacEngine engine;
+        engine.init(br);
+
+        CabacNeighborCtx neighbor;
+        uint32_t wMb = sps.width() / 16U;
+        uint32_t hMb = sps.height() / 16U;
+        neighbor.init(wMb, hMb);
+
+        CabacMbParser parser;
+        parser.bind(engine, ctxSet, neighbor);
+
+        MESSAGE("Engine after init: R=" << engine.range() << " O=" << engine.offset()
+                << " bit=" << engine.bitPosition());
+
+        // Snapshot state before mb_type decode
+        CabacState s0 = engine.snapshot();
+        CabacContextSet ctx0 = ctxSet.snapshot();
+
+        // Decode mb_type MANUALLY to trace each bin
+        // bin0: ctx[3+ctxInc]
+        uint32_t ctxInc0 = 0U; // both neighbors unavailable → condTerm=0
+        MESSAGE("ctx[3] before bin0: state=" << (int)ctxSet[3].state()
+                << " mps=" << (int)ctxSet[3].mps());
+        uint32_t bin0 = engine.decodeBin(ctxSet[3]);
+        MESSAGE("bin0 = " << bin0 << " (0=I_4x4, 1=not I_4x4)"
+                << " R=" << engine.range() << " O=" << engine.offset());
+
+        if (bin0 == 1U)
+        {
+            // terminate check
+            uint32_t term = engine.decodeTerminate();
+            MESSAGE("terminate = " << term << " (1=I_PCM)");
+
+            if (term == 0U)
+            {
+                // I_16x16 suffix: ctx[6] = cbpLuma
+                MESSAGE("ctx[6] before cbpLuma: state=" << (int)ctxSet[6].state()
+                        << " mps=" << (int)ctxSet[6].mps());
+                CabacState preCbp = engine.snapshot();
+                uint32_t cbpLumaBin = engine.decodeBin(ctxSet[6]);
+                MESSAGE("cbpLuma bin = " << cbpLumaBin
+                        << " pre(R=" << preCbp.codIRange << " O=" << preCbp.codIOffset
+                        << " bit=" << preCbp.bitPosition << ")"
+                        << " post(R=" << engine.range() << " O=" << engine.offset() << ")");
+
+                // ctx[7] = cbpChromaFlag
+                uint32_t cbpChromaFlag = engine.decodeBin(ctxSet[7]);
+                MESSAGE("cbpChromaFlag bin = " << cbpChromaFlag);
+
+                uint32_t cbpChroma = 0U;
+                if (cbpChromaFlag != 0U)
+                    cbpChroma = engine.decodeBin(ctxSet[8]) == 0U ? 1U : 2U;
+
+                // ctx[9,10] = predMode
+                uint32_t predBit1 = engine.decodeBin(ctxSet[9]);
+                uint32_t predBit0 = engine.decodeBin(ctxSet[10]);
+                uint32_t predMode = (predBit1 << 1U) | predBit0;
+
+                uint32_t mbTypeManual = 1U + predMode + cbpChroma * 4U + cbpLumaBin * 12U;
+                MESSAGE("Manual mb_type = " << mbTypeManual
+                        << " predMode=" << predMode
+                        << " cbpLuma=" << cbpLumaBin
+                        << " cbpChroma=" << cbpChroma);
+            }
+        }
+        else
+        {
+            MESSAGE("*** Decoded as I_4x4 ***");
+        }
+
+        // Also run through the parser for comparison
+        // Reset state
+        engine.restore(s0, br);
+        for (uint32_t i = 0U; i < cNumCabacCtx; ++i)
+            ctxSet[i] = ctx0[i];
+
+        uint32_t mbType = parser.decodeMbTypeI(0U, 0U);
+        MESSAGE("Parser mb_type = " << mbType
+                << " (0=I_4x4, 1-24=I_16x16, 25=I_PCM)");
+
+        CabacState s1 = engine.snapshot();
+        MESSAGE("Engine after mb_type: R=" << s1.codIRange << " O=" << s1.codIOffset
+                << " bit=" << s1.bitPosition);
+
+        if (mbType == 0U)
+        {
+            MESSAGE("*** DECODED AS I_4x4 — this is likely wrong for flat content ***");
+            MESSAGE("Expected I_16x16 (mb_type > 0) for uniform Y=100 content");
+        }
+        else if (mbType >= 1U && mbType <= 24U)
+        {
+            // I_16x16 — decode cbpLuma/cbpChroma/predMode from mb_type
+            uint32_t cbpLuma = ((mbType - 1U) / 12U != 0U) ? 0x0FU : 0U;
+            uint32_t cbpChroma = ((mbType - 1U) / 4U) % 3U;
+            uint32_t predMode = (mbType - 1U) % 4U;
+            MESSAGE("I_16x16: predMode=" << predMode << " cbpLuma=" << cbpLuma
+                    << " cbpChroma=" << cbpChroma);
+        }
+    }
+
+    // Key check: is our output 128 (DC pred only) or something closer to 100?
+    if (pixel00 == 128U)
+        MESSAGE("*** OUTPUT IS PURE DC PREDICTION (128) — residual not applied or CBP=0 ***");
+    else if (pixel00 >= 95U && pixel00 <= 105U)
+        MESSAGE("Output near target 100 — working correctly!");
+    else
+        MESSAGE("Output " << (int)pixel00 << " — unexpected value");
+
+    // Known failing check — the bug is in CABAC coeff level decode:
+    // dcScan[0]=-1 when it should be -138 for Y=100.
+    // Confirmed: forcing dcScan[0]=-138 → pixel=100.0
+    WARN(pixel00 != 128U);
+}
+
+TEST_CASE("CABAC hack: trace coeff level decode for u100 DC block")
+{
+    // Isolate the coefficient level decode for the I_16x16 DC block.
+    // Use CabacMbParser to decode up to the DC residual, then trace the level bins.
+    auto h264 = getFixture("cabac_min_u100.h264");
+    if (h264.empty()) { MESSAGE("fixture not found"); return; }
+
+    std::vector<NalBounds> bounds;
+    findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
+
+    Sps sps;
+    Pps pps;
+    NalUnit idrNal;
+    for (const auto& b : bounds)
+    {
+        NalUnit n;
+        if (!parseNalUnit(h264.data() + b.offset, b.size, n)) continue;
+        if (n.type == NalType::Sps) {
+            BitReader sbr(n.rbspData.data(), static_cast<uint32_t>(n.rbspData.size()));
+            parseSps(sbr, sps);
+        }
+        if (n.type == NalType::Pps) {
+            BitReader pbr(n.rbspData.data(), static_cast<uint32_t>(n.rbspData.size()));
+            parsePps(pbr, &sps, pps);
+        }
+        if (n.type == NalType::SliceIdr) idrNal = n;
+    }
+
+    BitReader br(idrNal.rbspData.data(), static_cast<uint32_t>(idrNal.rbspData.size()));
+    SliceHeader sh;
+    parseSliceHeader(br, sps, pps, true, idrNal.refIdc, sh);
+    int32_t sliceQp = pps.picInitQp_ + sh.sliceQpDelta_;
+    br.alignToByte();
+
+    CabacContextSet ctxSet;
+    ctxSet.init(2U, sh.cabacInitIdc_, sliceQp);
+
+    CabacEngine engine;
+    engine.init(br);
+
+    CabacNeighborCtx neighbor;
+    neighbor.init(sps.width()/16U, sps.height()/16U);
+
+    CabacMbParser parser;
+    parser.bind(engine, ctxSet, neighbor);
+
+    // Decode mb_type (should be 3 = I_16x16_0_0_2)
+    uint32_t mbType = parser.decodeMbTypeI(0U, 0U);
+    MESSAGE("mb_type = " << mbType);
+
+    // For I_16x16: decode chroma mode + qpDelta (ALWAYS present for I_16x16 per §7.3.5.1)
+    parser.decodeIntraChromaMode(0U, 0U);
+    int32_t qpDelta = parser.decodeMbQpDelta(false);
+    MESSAGE("qpDelta = " << qpDelta);
+
+    // Snapshot before DC block decode
+    CabacState preDC = engine.snapshot();
+
+    // Trace the level decode context states for cat 0 (Luma DC)
+    // levelOffset for cat 0 = 227
+    MESSAGE("Pre-DC engine: R=" << preDC.codIRange << " O=" << preDC.codIOffset
+            << " bit=" << preDC.bitPosition);
+
+    // Check ctx states for level contexts
+    for (uint32_t i = 0; i < 10; ++i)
+    {
+        uint32_t ci = 227U + i;
+        MESSAGE("  ctx[" << ci << "]: state=" << (int)ctxSet[ci].state()
+                << " mps=" << (int)ctxSet[ci].mps()
+                << " (mpsState=0x" << std::hex << (int)ctxSet[ci].mpsState << std::dec << ")");
+    }
+
+    // Now decode the DC residual
+    int16_t dcScan[16] = {};
+    uint32_t dcNumSig = parser.decodeResidual4x4(dcScan, 16U, 0U);
+    MESSAGE("DC: numSig=" << dcNumSig << " dcScan[0]=" << dcScan[0]);
+    MESSAGE("Post-DC engine: R=" << engine.range() << " O=" << engine.offset()
+            << " bit=" << engine.bitPosition());
+
+    // The bug: dcScan[0] should be around -138, not -1
+    MESSAGE("Expected dcScan[0] ~ -138 for Y=100; got " << dcScan[0]);
+    CHECK(std::abs(dcScan[0]) > 10); // Should be much larger than 1
+}
+
 TEST_CASE("CabacNeighborCtx: cbpNeighbors returns struct")
 {
     CabacNeighborCtx neighbor;

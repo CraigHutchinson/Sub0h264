@@ -2226,6 +2226,7 @@ private:
                 rasterIdx = cLuma4x4ToRaster[i];
             }
 
+            //TODO: Shoudl we still do these when !leftMbAvail || !topMbAvail makes them redundant!?
             uint8_t leftMode = getNeighborIntra4x4Mode(mbX, mbY, rasterIdx, true, predModes);
             uint8_t topMode  = getNeighborIntra4x4Mode(mbX, mbY, rasterIdx, false, predModes);
 
@@ -2240,6 +2241,7 @@ private:
             else
                 mpm = (leftMode < topMode) ? leftMode : topMode;
 
+            //TODO: THis is missing any specification reference/validation for this logic!
             uint8_t result = cabacDecodeIntra4x4PredMode(cabacEngine_, cabacCtx_.data());
             uint8_t mode;
             if (result == 0xFFU)
@@ -2249,6 +2251,7 @@ private:
 
             if (use8x8Transform)
             {
+                //TODO: THis is missing any specification reference/validation for this logic!
                 // Propagate mode to all 4 constituent 4x4 blocks for neighbor lookup
                 static constexpr uint32_t c8x8Sub[4][4] = {
                     {0U, 1U, 4U, 5U}, {2U, 3U, 6U, 7U},
@@ -2279,7 +2282,7 @@ private:
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
         cabacNeighbor_[mbIdx].cbp = cbp;
 
-
+        //TODO: THis is missing any specification reference/validation for this logic!
         // QP delta
         if (cbp > 0U)
         {
@@ -2323,7 +2326,8 @@ private:
                         coeffs[cZigzag8x8[k]] = scanCoeffs[k];
                     inverseQuantize8x8(coeffs, qp);
                 }
-
+            
+                //TODO: THis is missing any specification reference/validation for this logic!
                 // Mark all constituent 4x4 blocks NNZ
                 uint32_t base4x4 = (blk8 >> 1U) * 8U + (blk8 & 1U) * 2U;
                 for (uint32_t dy = 0U; dy < 2U; ++dy)
@@ -2345,6 +2349,7 @@ private:
                 uint32_t absX = mbX * cMbSize + blkX;
                 uint32_t absY = mbY * cMbSize + blkY;
 
+                //TODO: THis is missing any specification reference/validation for this logic!
                 // Prediction
                 uint8_t pred4x4[16];
                 uint8_t topBuf[8] = {}, leftBuf[4] = {}, topLeftVal = cDefaultPredValue;
@@ -2355,6 +2360,7 @@ private:
 
                 intraPred4x4(static_cast<Intra4x4Mode>(predModes[rasterIdx]), top, topRight, left, topLeft, pred4x4);
 
+                //TODO: THis is missing any specification reference/validation for this logic!
                 // Residual via CABAC
                 uint32_t group8x8 = blkIdx >> 2U;
                 bool hasResidual = (cbpLuma >> group8x8) & 1U;
@@ -2395,6 +2401,7 @@ private:
                 }
                 else
                 {
+                    //TODO: coeffs not initiaslised? or intended to be zeroed - could be fine
                     nnzLuma_[mbIdx * 16U + rasterIdx] = 0U;
                 }
 
@@ -2423,6 +2430,7 @@ private:
         uint8_t predMode = i16x16PredMode(static_cast<uint8_t>(mbTypeRaw));
         uint8_t cbpLuma  = i16x16CbpLuma(static_cast<uint8_t>(mbTypeRaw));
         uint8_t cbpChroma = i16x16CbpChroma(static_cast<uint8_t>(mbTypeRaw));
+
 
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
         cabacNeighbor_[mbIdx].cbp = cbpLuma | (cbpChroma << 4U); // Store for neighbor context
