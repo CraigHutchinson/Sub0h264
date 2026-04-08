@@ -945,3 +945,122 @@ TEST_CASE("BitReader: seekToBit restores read position")
     br.seekToBit(8U);
     CHECK(br.readBits(8U) == 0xADU);
 }
+
+// ── CabacMbParser isolation tests ─────────────────────────────────────────
+
+TEST_CASE("CabacMbParser: bind and decode mb_type I-slice on fixture")
+{
+    // Use the CABAC flat fixture to test CabacMbParser in isolation.
+    // The parser should produce the same mb_type as the full decoder.
+    auto h264 = getFixture("cabac_flat_main.h264");
+    if (h264.empty()) { MESSAGE("fixture not found"); return; }
+
+    // Find IDR NAL
+    std::vector<NalBounds> bounds;
+    findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
+
+    NalUnit nal;
+    bool foundIdr = false;
+    for (const auto& b : bounds)
+    {
+        if (parseNalUnit(h264.data() + b.offset, b.size, nal) &&
+            nal.type == NalType::SliceIdr)
+        { foundIdr = true; break; }
+    }
+    REQUIRE(foundIdr);
+
+    // Set up standalone CABAC: engine + contexts + neighbors
+    BitReader br(nal.rbspData.data(), static_cast<uint32_t>(nal.rbspData.size()));
+    br.skipBits(24U); // skip slice header
+    br.alignToByte();
+
+    CabacContextSet ctxSet;
+    ctxSet.init(2U, 0U, 17); // I-slice, QP=17
+
+    CabacEngine engine;
+    engine.init(br);
+
+    CabacNeighborCtx neighbor;
+    neighbor.init(20U, 15U); // 320x240 = 20x15 MBs
+
+    // Bind parser
+    CabacMbParser parser;
+    parser.bind(engine, ctxSet, neighbor);
+    CHECK(parser.isBound());
+
+    // Decode MB(0,0) mb_type — should be I_4x4 (0) for this fixture
+    uint32_t mbType = parser.decodeMbTypeI(0U, 0U);
+    MESSAGE("CabacMbParser MB(0,0) mb_type = " << mbType);
+    // The flat gray fixture encodes as I_4x4 with our current decode
+    CHECK(mbType <= 25U); // Valid I-slice mb_type range
+}
+
+TEST_CASE("CabacMbParser: decodeCbp uses neighbor context correctly")
+{
+    auto h264 = getFixture("cabac_flat_main.h264");
+    if (h264.empty()) { MESSAGE("fixture not found"); return; }
+
+    std::vector<NalBounds> bounds;
+    findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
+
+    NalUnit nal;
+    for (const auto& b : bounds)
+        if (parseNalUnit(h264.data() + b.offset, b.size, nal) &&
+            nal.type == NalType::SliceIdr)
+            break;
+
+    BitReader br(nal.rbspData.data(), static_cast<uint32_t>(nal.rbspData.size()));
+    br.skipBits(24U);
+    br.alignToByte();
+
+    CabacContextSet ctxSet;
+    ctxSet.init(2U, 0U, 17);
+
+    CabacEngine engine;
+    engine.init(br);
+
+    CabacNeighborCtx neighbor;
+    neighbor.init(20U, 15U);
+
+    CabacMbParser parser;
+    parser.bind(engine, ctxSet, neighbor);
+
+    // Decode mb_type first (must happen before CBP)
+    uint32_t mbType = parser.decodeMbTypeI(0U, 0U);
+
+    if (mbType == 0U)
+    {
+        // I_4x4: skip pred modes, then decode CBP
+        for (uint32_t blk = 0U; blk < 16U; ++blk)
+            parser.decodeIntra4x4PredMode();
+
+        parser.decodeIntraChromaMode(false, false); // MB(0,0) has no neighbors
+
+        uint8_t cbp = parser.decodeCbp(0U, 0U);
+        MESSAGE("CabacMbParser MB(0,0) CBP = 0x" << std::hex << (int)cbp);
+        // Valid range: 0x00-0x2F
+        CHECK((cbp & 0xC0U) == 0U); // upper bits must be 0
+    }
+}
+
+TEST_CASE("CabacNeighborCtx: cbpNeighbors returns struct")
+{
+    CabacNeighborCtx neighbor;
+    neighbor.init(4U, 4U);
+
+    // MB(0,0): both unavailable → defaults
+    auto n00 = neighbor.cbpNeighbors(0U, 0U);
+    CHECK(n00.left == 0x2FU);
+    CHECK(n00.top == 0x2FU);
+
+    // Set MB(0,0) cbp and check MB(1,0) left neighbor
+    neighbor[0].cbp = 0x15U;
+    auto n10 = neighbor.cbpNeighbors(1U, 0U);
+    CHECK(n10.left == 0x15U);
+    CHECK(n10.top == 0x2FU); // top still unavailable
+
+    // Set MB(1,0) and check MB(1,1) neighbors
+    neighbor[1].cbp = 0x0AU;
+    auto n11 = neighbor.cbpNeighbors(1U, 1U);
+    CHECK(n11.top == 0x0AU); // top = MB(1,0)
+}

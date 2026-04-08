@@ -1,0 +1,158 @@
+/** Sub0h264 — CABAC neighbor context for spatial prediction
+ *
+ *  Consolidates per-MB state needed for CABAC context derivation into a
+ *  single cache-friendly structure. Replaces the 4 separate vectors
+ *  (mbIsSkip_, mbIsI4x4_, mbCbp_, mbChromaMode_) that were scattered
+ *  across the decoder.
+ *
+ *  All condTermFlagN derivation logic for neighbor-dependent syntax elements
+ *  (mb_type, mb_skip_flag, CBP, intra_chroma_pred_mode) lives here with
+ *  ITU-T H.264 spec references.
+ *
+ *  Reference: ITU-T H.264 §9.3.3.1.1
+ *
+ *  SPDX-License-Identifier: MIT
+ */
+#ifndef CROG_SUB0H264_CABAC_NEIGHBOR_HPP
+#define CROG_SUB0H264_CABAC_NEIGHBOR_HPP
+
+#include <cstdint>
+#include <cstring>
+#include <vector>
+
+namespace sub0h264 {
+
+/// Per-MB info stored for CABAC neighbor context derivation.
+/// Packed to 4 bytes for cache efficiency (1 struct per MB vs 4 vector lookups).
+struct MbCabacInfo
+{
+    uint8_t flags = 0U;     ///< Bit 0: isI4x4, Bit 1: isSkip
+    uint8_t cbp = 0x2FU;    ///< Luma CBP (bits 0-3) | chroma CBP (bits 4-5). Default 0x2F = all coded.
+    uint8_t chromaMode = 0U; ///< intra_chroma_pred_mode (§9.3.3.1.1.7)
+    uint8_t reserved = 0U;   ///< Padding for alignment
+
+    bool isI4x4() const noexcept { return (flags & 0x01U) != 0U; }
+    bool isSkip() const noexcept { return (flags & 0x02U) != 0U; }
+
+    void setI4x4(bool v) noexcept { flags = v ? (flags | 0x01U) : (flags & ~0x01U); }
+    void setSkip(bool v) noexcept { flags = v ? (flags | 0x02U) : (flags & ~0x02U); }
+
+    uint8_t lumaCbp() const noexcept { return cbp & 0x0FU; }
+    uint8_t chromaCbp() const noexcept { return (cbp >> 4U) & 0x03U; }
+};
+
+/// Pair of neighbor CBP values returned by cbpNeighbors().
+struct CbpNeighbors
+{
+    uint8_t left;   ///< Left neighbor CBP (luma 4 bits | chroma << 4)
+    uint8_t top;    ///< Top neighbor CBP
+};
+
+/// Default value for unavailable neighbors — all bits coded, not skip, not I4x4.
+/// ITU-T H.264 §9.3.3.1.1.3: condTermFlagN = 0 when neighbor unavailable.
+inline constexpr MbCabacInfo cMbCabacUnavailable = { 0U, 0x2FU, 0U, 0U };
+
+/** Consolidated CABAC neighbor context for spatial prediction.
+ *
+ *  Stores one MbCabacInfo per macroblock in raster order. Provides
+ *  named methods for all neighbor-dependent context increment calculations,
+ *  each citing the relevant spec section.
+ */
+class CabacNeighborCtx
+{
+public:
+    CabacNeighborCtx() noexcept = default;
+
+    /** Initialize for a new slice.
+     *  Resets all MBs to the unavailable default state.
+     *  @param widthMbs   Picture width in macroblocks
+     *  @param heightMbs  Picture height in macroblocks
+     */
+    void init(uint32_t widthMbs, uint32_t heightMbs) noexcept
+    {
+        widthMbs_ = widthMbs;
+        uint32_t total = widthMbs * heightMbs;
+        mbs_.resize(total);
+        // Reset to "unavailable" defaults — cbp=0x2F means all coded
+        MbCabacInfo defaultInfo = cMbCabacUnavailable;
+        std::fill(mbs_.begin(), mbs_.end(), defaultInfo);
+    }
+
+    /** @return Mutable reference to the MB info at (mbX, mbY). */
+    MbCabacInfo& at(uint32_t mbX, uint32_t mbY) noexcept
+    {
+        return mbs_[mbY * widthMbs_ + mbX];
+    }
+
+    /** @return Const reference to the MB info at (mbX, mbY). */
+    const MbCabacInfo& at(uint32_t mbX, uint32_t mbY) const noexcept
+    {
+        return mbs_[mbY * widthMbs_ + mbX];
+    }
+
+    /** @return MB info by linear index. */
+    MbCabacInfo& operator[](uint32_t mbIdx) noexcept { return mbs_[mbIdx]; }
+    const MbCabacInfo& operator[](uint32_t mbIdx) const noexcept { return mbs_[mbIdx]; }
+
+    // ── Neighbor context derivation methods ─────────────────────────────
+
+    /** mb_type context increment for I-slices — §9.3.3.1.1.3 Table 9-39.
+     *
+     *  condTermFlagN = 0 if neighbor unavailable OR neighbor is I_NxN (I_4x4/I_8x8).
+     *  condTermFlagN = 1 otherwise (neighbor is I_16x16, I_PCM, etc).
+     *  ctxInc = condTermFlagA + condTermFlagB (left + top).
+     *
+     *  @return Pair {leftCondZero, topCondZero} for cabacDecodeMbTypeI().
+     */
+    void mbTypeCtxI(uint32_t mbX, uint32_t mbY,
+                    bool& leftCondZero, bool& topCondZero) const noexcept
+    {
+        // §9.3.3.1.1.3: condTermFlagN = 0 when unavailable
+        leftCondZero = (mbX == 0U) || mbs_[mbY * widthMbs_ + mbX - 1U].isI4x4();
+        topCondZero  = (mbY == 0U) || mbs_[(mbY - 1U) * widthMbs_ + mbX].isI4x4();
+    }
+
+    /** mb_skip_flag context increment for P-slices — §9.3.3.1.1.1.
+     *
+     *  ctxInc = (leftIsSkip ? 0 : 1) + (topIsSkip ? 0 : 1) — but inverted:
+     *  skip_flag ctxInc counts neighbors that are NOT skip.
+     *  Actually: condTermFlagN = mbSkipFlag of neighbor.
+     *
+     *  @return Pair {leftSkip, topSkip} for cabacDecodeMbSkipP().
+     */
+    void skipCtx(uint32_t mbX, uint32_t mbY,
+                 bool& leftSkip, bool& topSkip) const noexcept
+    {
+        uint32_t mbIdx = mbY * widthMbs_ + mbX;
+        leftSkip = (mbX > 0U) && mbs_[mbIdx - 1U].isSkip();
+        topSkip  = (mbY > 0U) && mbs_[mbIdx - widthMbs_].isSkip();
+    }
+
+    /** CBP neighbor values for CABAC CBP decode — §9.3.3.1.1.4.
+     *
+     *  Returns the stored CBP for left and top neighbors.
+     *  Unavailable neighbors default to 0x2F (all luma coded, chroma=2).
+     */
+    CbpNeighbors cbpNeighbors(uint32_t mbX, uint32_t mbY) const noexcept
+    {
+        uint32_t mbIdx = mbY * widthMbs_ + mbX;
+        return {
+            (mbX > 0U) ? mbs_[mbIdx - 1U].cbp : static_cast<uint8_t>(0x2FU),
+            (mbY > 0U) ? mbs_[mbIdx - widthMbs_].cbp : static_cast<uint8_t>(0x2FU)
+        };
+    }
+
+    /** @return Width in MBs. */
+    uint32_t widthMbs() const noexcept { return widthMbs_; }
+
+    /** @return Total number of MBs. */
+    uint32_t totalMbs() const noexcept { return static_cast<uint32_t>(mbs_.size()); }
+
+private:
+    uint32_t widthMbs_ = 0U;
+    std::vector<MbCabacInfo> mbs_;
+};
+
+} // namespace sub0h264
+
+#endif // CROG_SUB0H264_CABAC_NEIGHBOR_HPP

@@ -12,6 +12,8 @@
 #include "annexb.hpp"
 #include "bitstream.hpp"
 #include "cabac.hpp"
+#include "cabac_mb_parser.hpp"
+#include "cabac_neighbor.hpp"
 #include "cabac_parse.hpp"
 #include "cavlc.hpp"
 #include "deblock.hpp"
@@ -140,6 +142,9 @@ public:
     /** Access trace for setting callbacks from tests. */
     DecodeTrace& trace() noexcept { return trace_; }
     CabacEngine& cabacEngine() noexcept { return cabacEngine_; }
+    CabacMbParser& cabacParser() noexcept { return cabacParser_; }
+    CabacContextSet& cabacContexts() noexcept { return cabacCtx_; }
+    CabacNeighborCtx& cabacNeighbors() noexcept { return cabacNeighbor_; }
 
     /** Enable per-section profiling. Pass nullptr to disable. */
     void setProfile(SectionProfile* profile) noexcept { profile_ = profile; }
@@ -181,10 +186,8 @@ private:
     // CABAC state
     CabacEngine cabacEngine_;
     CabacContextSet cabacCtx_;
-    std::vector<bool> mbIsSkip_;   // [mbIdx] — for CABAC skip context
-    std::vector<bool> mbIsI4x4_;   // [mbIdx] — for CABAC mb_type context (I_NxN flag)
-    std::vector<uint8_t> mbCbp_;   // [mbIdx] — for CABAC CBP context (4 luma bits + 2 chroma)
-    std::vector<uint8_t> mbChromaMode_; // [mbIdx] — intra_chroma_pred_mode per MB (§9.3.3.1.1.7)
+    CabacNeighborCtx cabacNeighbor_; ///< Per-MB CABAC neighbor state (skip, I4x4, CBP, chroma mode)
+    CabacMbParser cabacParser_;      ///< Bound syntax element parser for isolated testing
 
     uint16_t widthInMbs_ = 0U;
     uint16_t heightInMbs_ = 0U;
@@ -401,15 +404,11 @@ private:
             cabacEngine_.init(br);
 
 
-            // Resize per-MB CABAC tracking vectors
-            mbIsSkip_.resize(totalMbs, false);
-            std::fill(mbIsSkip_.begin(), mbIsSkip_.end(), false);
-            mbIsI4x4_.resize(totalMbs, false);
-            std::fill(mbIsI4x4_.begin(), mbIsI4x4_.end(), false);
-            mbCbp_.resize(totalMbs, 0U);
-            std::fill(mbCbp_.begin(), mbCbp_.end(), static_cast<uint8_t>(0x2FU));
-            mbChromaMode_.resize(totalMbs, 0U);
-            std::fill(mbChromaMode_.begin(), mbChromaMode_.end(), static_cast<uint8_t>(0U));
+            // Initialize per-MB CABAC neighbor context
+            cabacNeighbor_.init(widthInMbs_, heightInMbs_);
+
+            // Bind the syntax element parser to engine + contexts + neighbors
+            cabacParser_.bind(cabacEngine_, cabacCtx_, cabacNeighbor_);
         }
 
         // Set active frame: decode directly into DPB target when possible.
@@ -491,16 +490,16 @@ private:
                     if (br.isExhausted())
                         break;
 
-                    // Decode mb_skip_flag
-                    bool leftSkip = (mbX > 0U) && mbIsSkip_[mbY * widthInMbs_ + mbX - 1U];
-                    bool topSkip = (mbY > 0U) && mbIsSkip_[(mbY - 1U) * widthInMbs_ + mbX];
+                    // Decode mb_skip_flag — §9.3.3.1.1.1
+                    bool leftSkip, topSkip;
+                    cabacNeighbor_.skipCtx(mbX, mbY, leftSkip, topSkip);
                     uint32_t skipFlag = cabacDecodeMbSkipP(cabacEngine_, cabacCtx_.data(),
                                                            leftSkip, topSkip);
 
                     if (skipFlag)
                     {
-                        mbIsSkip_[mbAddr] = true;
-                        mbIsI4x4_[mbAddr] = false;
+                        cabacNeighbor_[mbAddr].setSkip(true);
+                        cabacNeighbor_[mbAddr].setI4x4(false);
                         int64_t skipT0 = profile_ ? sub0h264TimerUs() : 0;
                         decodePSkipMb(*decodeTarget, *refFrame, mbX, mbY, sh);
                         if (profile_) profile_->interPredUs += sub0h264TimerUs() - skipT0;
@@ -508,11 +507,11 @@ private:
                     }
                     else
                     {
-                        mbIsSkip_[mbAddr] = false;
+                        cabacNeighbor_[mbAddr].setSkip(false);
 
                         // §9.3.3.1.2: condTermFlagN = 0 for unavailable OR I_NxN
-                        bool leftCondZero = (mbX == 0U) || mbIsI4x4_[mbAddr - 1U];
-                        bool topCondZero  = (mbY == 0U) || mbIsI4x4_[mbAddr - widthInMbs_];
+                        bool leftCondZero, topCondZero;
+                        cabacNeighbor_.mbTypeCtxI(mbX, mbY, leftCondZero, topCondZero);
                         uint32_t mbTypeRaw = cabacDecodeMbTypeP(cabacEngine_, cabacCtx_.data(),
                                                                  leftCondZero, topCondZero);
 
@@ -520,14 +519,14 @@ private:
                         {
                             // Intra in P-slice: track I_NxN flag
                             uint32_t intraMbType = mbTypeRaw - 5U;
-                            mbIsI4x4_[mbAddr] = (intraMbType == 0U);
+                            cabacNeighbor_[mbAddr].setI4x4(intraMbType == 0U);
                             if (!decodeIntraMbInPSlice(br, *sps, *pps, sh, mbQp,
                                                         intraMbType, *decodeTarget, mbX, mbY))
                                 break;
                         }
                         else
                         {
-                            mbIsI4x4_[mbAddr] = false;
+                            cabacNeighbor_[mbAddr].setI4x4(false);
                             int64_t ciT0 = profile_ ? sub0h264TimerUs() : 0;
                             decodeCabacPInterMb(br, *sps, *pps, sh, mbQp,
                                                 mbTypeRaw, *decodeTarget, *refFrame, mbX, mbY);
@@ -2172,14 +2171,14 @@ private:
         // condTermFlagN = 1 ONLY when neighbor available AND NOT I_NxN.
         // Verified: ffmpeg/NXPlay both use condTerm=0 for unavailable.
         // Pass true="treat as I_NxN (condTerm=0)" to the decode function.
-        bool leftCondZero = (mbX == 0U) || mbIsI4x4_[mbIdx - 1U]; // unavailable OR I_NxN
-        bool topCondZero  = (mbY == 0U) || mbIsI4x4_[mbIdx - widthInMbs_];
+        bool leftCondZero, topCondZero;
+        cabacNeighbor_.mbTypeCtxI(mbX, mbY, leftCondZero, topCondZero);
 
         uint32_t mbTypeRaw = cabacDecodeMbTypeI(cabacEngine_, cabacCtx_.data(),
                                                  leftCondZero, topCondZero);
 
         // Track I_NxN (I_4x4) for future neighbor context derivation
-        mbIsI4x4_[mbIdx] = (mbTypeRaw == 0U);
+        cabacNeighbor_[mbIdx].setI4x4(mbTypeRaw == 0U);
         if (mbTypeRaw == 25U) return true; // I_PCM
         if (mbTypeRaw == 0U)
         {
@@ -2272,14 +2271,13 @@ private:
                                                               leftIntra, topIntra);
 
         // CBP via CABAC — §9.3.3.1.1.4 with per-block neighbor CBP
-        uint8_t leftCbp = (mbX > 0U) ? mbCbp_[mbIdx - 1U] : 0x2FU;
-        uint8_t topCbp = (mbY > 0U) ? mbCbp_[mbIdx - widthInMbs_] : 0x2FU;
+        auto cbpN = cabacNeighbor_.cbpNeighbors(mbX, mbY);
         uint8_t cbp = cabacDecodeCbp(cabacEngine_, cabacCtx_.data(),
-                                      leftCbp & 0x0FU, topCbp & 0x0FU,
-                                      (leftCbp >> 4U) & 3U, (topCbp >> 4U) & 3U);
+                                      cbpN.left & 0x0FU, cbpN.top & 0x0FU,
+                                      (cbpN.left >> 4U) & 3U, (cbpN.top >> 4U) & 3U);
         uint8_t cbpLuma = cbp & 0x0FU;
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
-        mbCbp_[mbIdx] = cbp;
+        cabacNeighbor_[mbIdx].cbp = cbp;
 
 
         // QP delta
@@ -2427,7 +2425,7 @@ private:
         uint8_t cbpChroma = i16x16CbpChroma(static_cast<uint8_t>(mbTypeRaw));
 
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
-        mbCbp_[mbIdx] = cbpLuma | (cbpChroma << 4U); // Store for neighbor context
+        cabacNeighbor_[mbIdx].cbp = cbpLuma | (cbpChroma << 4U); // Store for neighbor context
         // §7.3.5: intra_chroma_pred_mode is always present for intra MBs
         bool leftIntra2 = (mbX == 0U) || (mbMotion_[(mbIdx - 1U) * 16U + 15U].refIdx == -1);
         bool topIntra2 = (mbY == 0U) || (mbMotion_[(mbIdx - widthInMbs_) * 16U + 12U].refIdx == -1);
@@ -2580,15 +2578,14 @@ private:
         // CBP via CABAC — §9.3.3.1.1.4 with per-block neighbor CBP
         uint8_t cbp;
         {
-            uint8_t lCbp = (mbX > 0U) ? mbCbp_[mbIdx - 1U] : 0x2FU;
-            uint8_t tCbp = (mbY > 0U) ? mbCbp_[mbIdx - widthInMbs_] : 0x2FU;
+            auto cbpN = cabacNeighbor_.cbpNeighbors(mbX, mbY);
             cbp = cabacDecodeCbp(cabacEngine_, cabacCtx_.data(),
-                                 lCbp & 0x0FU, tCbp & 0x0FU,
-                                 (lCbp >> 4U) & 3U, (tCbp >> 4U) & 3U);
+                                 cbpN.left & 0x0FU, cbpN.top & 0x0FU,
+                                 (cbpN.left >> 4U) & 3U, (cbpN.top >> 4U) & 3U);
         }
         uint8_t cbpLuma = cbp & 0x0FU;
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
-        mbCbp_[mbIdx] = cbp;
+        cabacNeighbor_[mbIdx].cbp = cbp;
 
         // §7.3.5: For inter MBs with transform_8x8_mode_flag AND cbp != 0,
         // decode transform_size_8x8_flag after CBP.
