@@ -13,6 +13,8 @@
 #include "frame.hpp"
 #include "sps.hpp"
 
+#include <algorithm>
+
 #include <cstdint>
 #include <vector>
 #include <algorithm>
@@ -44,7 +46,10 @@ public:
         width_ = width;
         height_ = height;
         maxRefFrames_ = numRefFrames;
-        entries_.resize(numRefFrames + 1U);
+        // Need at least 2 entries: one for current decode target + one reference.
+        // With numRefFrames=0, the stream still needs a reference for P-frames.
+        // §A.3.1: maxDpbFrames = Max(1, max_num_ref_frames).
+        entries_.resize(std::max(numRefFrames + 1U, 2U));
         for (auto& e : entries_)
         {
             e = DpbEntry{};
@@ -106,6 +111,141 @@ public:
         }
     }
 
+    /** Apply MMCO commands — ITU-T H.264 §8.2.5.4.
+     *
+     *  Called after decoding a reference frame (non-IDR with adaptive_ref_pic_marking).
+     *
+     *  @param currFrameNum  Current frame's frame_num
+     *  @param maxFrameNum   MaxFrameNum = 1 << sps.bitsInFrameNum_
+     *  @param numCommands   Number of MMCO commands
+     *  @param commands      MMCO command array (op, value1, value2)
+     */
+    void applyMmco(uint16_t currFrameNum, uint32_t maxFrameNum,
+                    uint32_t numCommands, const void* commands) noexcept
+    {
+        struct MmcoCmd { uint8_t op; uint32_t value1, value2; };
+        const auto* cmds = static_cast<const MmcoCmd*>(commands);
+
+        for (uint32_t c = 0U; c < numCommands; ++c)
+        {
+            uint8_t op = cmds[c].op;
+            switch (op)
+            {
+            case 1U: {
+                // Mark short-term ref as "unused for reference"
+                // PicNum = CurrPicNum - (difference_of_pic_nums_minus1 + 1)
+                int32_t picNum = static_cast<int32_t>(currFrameNum)
+                               - static_cast<int32_t>(cmds[c].value1 + 1U);
+                if (picNum < 0)
+                    picNum += static_cast<int32_t>(maxFrameNum);
+                for (auto& e : entries_)
+                {
+                    if (e.occupied && e.isReference && !e.isLongTerm &&
+                        static_cast<int32_t>(e.frameNum) == picNum)
+                    {
+                        e.isReference = false;
+                        break;
+                    }
+                }
+                break;
+            }
+            case 2U: {
+                // Mark long-term ref as "unused for reference"
+                uint32_t ltPicNum = cmds[c].value1;
+                for (auto& e : entries_)
+                {
+                    if (e.occupied && e.isReference && e.isLongTerm &&
+                        e.frameNum == ltPicNum)
+                    {
+                        e.isReference = false;
+                        e.isLongTerm = false;
+                        break;
+                    }
+                }
+                break;
+            }
+            case 3U: {
+                // Assign long_term_frame_idx to short-term ref
+                int32_t picNum = static_cast<int32_t>(currFrameNum)
+                               - static_cast<int32_t>(cmds[c].value1 + 1U);
+                if (picNum < 0)
+                    picNum += static_cast<int32_t>(maxFrameNum);
+                uint32_t ltIdx = cmds[c].value2;
+                // First unmark any existing long-term with this idx
+                for (auto& e : entries_)
+                {
+                    if (e.occupied && e.isLongTerm && e.frameNum == ltIdx)
+                    {
+                        e.isReference = false;
+                        e.isLongTerm = false;
+                    }
+                }
+                // Then mark the target short-term as long-term
+                for (auto& e : entries_)
+                {
+                    if (e.occupied && e.isReference && !e.isLongTerm &&
+                        static_cast<int32_t>(e.frameNum) == picNum)
+                    {
+                        e.isLongTerm = true;
+                        e.frameNum = static_cast<uint16_t>(ltIdx);
+                        break;
+                    }
+                }
+                break;
+            }
+            case 4U: {
+                // Set max long-term frame idx. All long-term refs with
+                // LongTermFrameIdx > max_long_term_frame_idx_plus1 - 1 are unmarked.
+                uint32_t maxPlus1 = cmds[c].value1;
+                if (maxPlus1 == 0U)
+                {
+                    // "no long-term frame indices" — unmark all long-term
+                    for (auto& e : entries_)
+                        if (e.occupied && e.isLongTerm)
+                        { e.isReference = false; e.isLongTerm = false; }
+                }
+                else
+                {
+                    for (auto& e : entries_)
+                        if (e.occupied && e.isLongTerm && e.frameNum >= maxPlus1)
+                        { e.isReference = false; e.isLongTerm = false; }
+                }
+                break;
+            }
+            case 5U: {
+                // Mark all reference pictures as "unused for reference"
+                for (auto& e : entries_)
+                {
+                    e.isReference = false;
+                    e.isLongTerm = false;
+                }
+                break;
+            }
+            case 6U: {
+                // Mark current picture as long-term reference
+                uint32_t ltIdx = cmds[c].value2;
+                // Unmark any existing long-term with this idx
+                for (auto& e : entries_)
+                {
+                    if (e.occupied && e.isLongTerm && e.frameNum == ltIdx)
+                    {
+                        e.isReference = false;
+                        e.isLongTerm = false;
+                    }
+                }
+                if (currentEntry_)
+                {
+                    currentEntry_->isLongTerm = true;
+                    currentEntry_->frameNum = static_cast<uint16_t>(ltIdx);
+                }
+                break;
+            }
+            default:
+                break;
+            }
+        }
+    }
+
     /** Mark all references as unused (IDR reset). */
     void flush() noexcept
     {
@@ -115,15 +255,157 @@ public:
             e.occupied = false;
         }
         currentEntry_ = nullptr;
+        refListL0Built_ = false;
+        refListL0_.clear();
+    }
+
+    /** Build the initial L0 reference list per §8.2.4.2.1 and optionally
+     *  apply reordering commands per §8.2.4.3.
+     *
+     *  Must be called once per slice before any getReference() calls.
+     *  Without calling this, getReference falls back to frameNum-descending order.
+     *
+     *  @param currFrameNum     Current slice's frame_num
+     *  @param maxFrameNum      MaxFrameNum = 1 << sps.bitsInFrameNum_
+     *  @param numReorderCmds   Number of reordering commands (0 = no reordering)
+     *  @param reorderCmds      Array of reordering commands from SliceHeader
+     */
+    void buildRefListL0(uint16_t currFrameNum, uint32_t maxFrameNum,
+                        uint32_t numReorderCmds = 0U,
+                        const void* reorderCmds = nullptr) noexcept
+    {
+        refListL0_.clear();
+
+        // §8.2.4.2.1: Initial reference picture list for P/SP slices.
+        // Short-term refs sorted by PicNum descending.
+        // PicNum = FrameNumWrap = frameNum (for frame-only, no field pics)
+        std::vector<const DpbEntry*> shortTerm;
+        std::vector<const DpbEntry*> longTerm;
+        for (const auto& e : entries_)
+        {
+            if (!e.occupied || !e.isReference)
+                continue;
+            if (e.isLongTerm)
+                longTerm.push_back(&e);
+            else
+                shortTerm.push_back(&e);
+        }
+
+        // Short-term: descending PicNum (=FrameNumWrap for frames)
+        std::sort(shortTerm.begin(), shortTerm.end(),
+                  [](const DpbEntry* a, const DpbEntry* b) {
+                      return a->frameNum > b->frameNum;
+                  });
+        // Long-term: ascending LongTermPicNum
+        std::sort(longTerm.begin(), longTerm.end(),
+                  [](const DpbEntry* a, const DpbEntry* b) {
+                      return a->frameNum < b->frameNum;
+                  });
+
+        for (auto* e : shortTerm) refListL0_.push_back(e);
+        for (auto* e : longTerm)  refListL0_.push_back(e);
+
+        // §8.2.4.3: Modification process for reference picture lists
+        if (numReorderCmds > 0U && reorderCmds != nullptr)
+        {
+            // The reorder commands are SliceHeader::ReorderCmd structs
+            // We can't include slice.hpp here, so cast from void*
+            struct ReorderCmd { uint8_t idc; uint32_t value; };
+            const auto* cmds = static_cast<const ReorderCmd*>(reorderCmds);
+
+            int32_t picNumPred = static_cast<int32_t>(currFrameNum);
+            uint32_t refIdxL0 = 0U;
+
+            for (uint32_t c = 0U; c < numReorderCmds; ++c)
+            {
+                uint8_t idc = cmds[c].idc;
+                if (idc == 3U)
+                    break;
+
+                if (idc == 0U || idc == 1U)
+                {
+                    // Short-term reordering
+                    int32_t absDiffPicNum = static_cast<int32_t>(cmds[c].value) + 1;
+                    int32_t picNumNoWrap;
+                    if (idc == 0U)
+                    {
+                        picNumNoWrap = picNumPred - absDiffPicNum;
+                        if (picNumNoWrap < 0)
+                            picNumNoWrap += static_cast<int32_t>(maxFrameNum);
+                    }
+                    else
+                    {
+                        picNumNoWrap = picNumPred + absDiffPicNum;
+                        if (picNumNoWrap >= static_cast<int32_t>(maxFrameNum))
+                            picNumNoWrap -= static_cast<int32_t>(maxFrameNum);
+                    }
+                    picNumPred = picNumNoWrap;
+
+                    // Find entry with this PicNum and move to position refIdxL0
+                    const DpbEntry* target = nullptr;
+                    size_t targetPos = 0U;
+                    for (size_t i = 0U; i < refListL0_.size(); ++i)
+                    {
+                        if (!refListL0_[i]->isLongTerm &&
+                            static_cast<int32_t>(refListL0_[i]->frameNum) == picNumNoWrap)
+                        {
+                            target = refListL0_[i];
+                            targetPos = i;
+                            break;
+                        }
+                    }
+
+                    if (target && targetPos != refIdxL0)
+                    {
+                        // Remove from current position
+                        refListL0_.erase(refListL0_.begin() + static_cast<ptrdiff_t>(targetPos));
+                        // Insert at refIdxL0
+                        if (refIdxL0 <= refListL0_.size())
+                            refListL0_.insert(refListL0_.begin() + static_cast<ptrdiff_t>(refIdxL0), target);
+                    }
+                    ++refIdxL0;
+                }
+                else if (idc == 2U)
+                {
+                    // Long-term reordering
+                    uint32_t longTermPicNum = cmds[c].value;
+                    const DpbEntry* target = nullptr;
+                    size_t targetPos = 0U;
+                    for (size_t i = 0U; i < refListL0_.size(); ++i)
+                    {
+                        if (refListL0_[i]->isLongTerm &&
+                            refListL0_[i]->frameNum == longTermPicNum)
+                        {
+                            target = refListL0_[i];
+                            targetPos = i;
+                            break;
+                        }
+                    }
+                    if (target && targetPos != refIdxL0)
+                    {
+                        refListL0_.erase(refListL0_.begin() + static_cast<ptrdiff_t>(targetPos));
+                        if (refIdxL0 <= refListL0_.size())
+                            refListL0_.insert(refListL0_.begin() + static_cast<ptrdiff_t>(refIdxL0), target);
+                    }
+                    ++refIdxL0;
+                }
+            }
+        }
+
+        refListL0Built_ = true;
     }
 
     /** Get reference frame by index (L0 list, 0-based).
-     *  For simple P-frame decode, index 0 is the most recent reference.
+     *  Uses the pre-built L0 list if buildRefListL0() was called,
+     *  otherwise falls back to frameNum-descending order.
      *  @return Pointer to reference frame, or nullptr.
      */
     const Frame* getReference(uint8_t refIdx) const noexcept
     {
-        // Build ref list: short-term references sorted by frameNum descending
+        if (refListL0Built_ && refIdx < refListL0_.size())
+            return &refListL0_[refIdx]->frame;
+
+        // Fallback: build on the fly (legacy behavior)
         std::vector<const DpbEntry*> refList;
         for (const auto& e : entries_)
         {
@@ -131,7 +413,6 @@ public:
                 refList.push_back(&e);
         }
 
-        // Sort by frameNum descending (most recent first)
         std::sort(refList.begin(), refList.end(),
                   [](const DpbEntry* a, const DpbEntry* b) {
                       return a->frameNum > b->frameNum;
@@ -165,6 +446,10 @@ private:
     uint16_t width_ = 0U;
     uint16_t height_ = 0U;
     uint8_t maxRefFrames_ = 0U;
+
+    /// Cached L0 reference list — built by buildRefListL0(), used by getReference().
+    mutable std::vector<const DpbEntry*> refListL0_;
+    bool refListL0Built_ = false;
 };
 
 } // namespace sub0h264

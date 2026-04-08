@@ -24,10 +24,10 @@ int main(int argc, char** argv) {
     if (argc < 2) { std::fprintf(stderr, "Usage: %s <h264>\n", argv[0]); return 1; }
     auto h264 = loadFile(argv[1]);
 
-    // Enable trace for MB(0,0) only
+    // Enable trace for MB(1,0) to investigate block-level errors
     H264Decoder dec;
     dec.trace().enabled = true;
-    dec.trace().filterMbX = 0;
+    dec.trace().filterMbX = 3;
     dec.trace().filterMbY = 0;
 
     std::vector<NalBounds> bounds;

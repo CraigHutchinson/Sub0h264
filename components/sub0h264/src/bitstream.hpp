@@ -211,6 +211,17 @@ public:
         return bitOffset_ >= (sizeBytes_ * 8U);
     }
 
+    /** Seek to an absolute bit position.
+     *  Invalidates the read-ahead cache so the next read refills from the
+     *  new position. Used by CabacEngine::restore() for state snapshots.
+     *  @param pos  Bit offset from start of buffer
+     */
+    void seekToBit(uint32_t pos) noexcept
+    {
+        bitOffset_ = pos;
+        cacheByteOff_ = 0xFFFFFFFFU; // invalidate cache — force refill
+    }
+
     /** @return Pointer to the underlying data. */
     const uint8_t* data() const noexcept { return data_; }
 

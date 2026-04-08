@@ -1081,3 +1081,179 @@ TEST_CASE("P-frame MV trace: scrolling_texture first P-frame MV dump")
     MESSAGE("Wild MVs (>±128 pels): " << wildMvCount << "/" << mvRecords.size());
     CHECK(wildMvCount == 0U);
 }
+
+TEST_CASE("Debug: bouncing ball MB(3,0) block coefficient trace")
+{
+    auto h264 = getFixture("bouncing_ball_ionly.h264");
+    if (h264.empty()) { MESSAGE("fixture not found"); return; }
+
+    // Capture raw coefficients (pre-dequant) and dequantized coefficients
+    // for MB(3,0) scan blocks 4 and 5 (perfect vs first error block)
+    struct BlockInfo {
+        uint32_t mbX;
+        uint32_t scanIdx;
+        int16_t rawCoeffs[16];   // Pre-dequant (from BlockResidual)
+        int16_t dqCoeffs[16];    // Post-dequant (from BlockCoeffs)
+        int16_t pred[16];        // Prediction samples
+        int16_t output[16];      // Output pixels
+        uint32_t nC, tc, bits;
+        uint32_t bitEnd;         // Absolute bit position after block decode
+    };
+
+    std::vector<BlockInfo> blocks;
+
+    auto decoder = std::make_unique<H264Decoder>();
+    decoder->trace().setCallback([&](const TraceEvent& e) {
+        if (e.mbY != 0U || e.mbX > 3U) return;
+
+        if (e.type == TraceEventType::BlockResidual && e.dataLen == 16U)
+        {
+            BlockInfo bi{};
+            bi.mbX = e.mbX;
+            bi.scanIdx = e.a;
+            bi.nC = e.b;
+            bi.tc = static_cast<uint32_t>(e.c);
+            bi.bits = e.d;
+            for (uint32_t i = 0; i < 16; ++i)
+                bi.rawCoeffs[i] = e.data[i];
+            blocks.push_back(bi);
+        }
+        else if (e.type == TraceEventType::BlockCoeffs && e.dataLen == 16U)
+        {
+            // Find matching block by scanIdx
+            for (auto& bi : blocks)
+            {
+                if (bi.scanIdx == e.a && bi.dqCoeffs[0] == 0 && bi.dqCoeffs[1] == 0)
+                {
+                    for (uint32_t i = 0; i < 16; ++i)
+                        bi.dqCoeffs[i] = e.data[i];
+                    break;
+                }
+            }
+        }
+        else if (e.type == TraceEventType::BlockPixels && e.dataLen == 32U)
+        {
+            for (auto& bi : blocks)
+            {
+                if (bi.scanIdx == e.a && bi.pred[0] == 0 && bi.output[0] == 0)
+                {
+                    for (uint32_t i = 0; i < 16; ++i)
+                        bi.pred[i] = e.data[i];
+                    for (uint32_t i = 0; i < 16; ++i)
+                        bi.output[i] = e.data[16 + i];
+                    break;
+                }
+            }
+        }
+    });
+
+    std::vector<NalBounds> bounds;
+    findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
+
+    for (const auto& b : bounds)
+    {
+        NalUnit nal;
+        if (!parseNalUnit(h264.data() + b.offset, b.size, nal)) continue;
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
+            break;
+    }
+
+    // Also dump the full coefficient comparison for scan 5
+    // Try to find correct coefficients by computing expected residual
+    if (!blocks.empty())
+    {
+        // Find scan 5
+        for (const auto& bi : blocks)
+        {
+            if (bi.scanIdx != 5U) continue;
+            // Correct output from ffmpeg
+            int16_t ff_out[16] = {74,77,105,178, 140,176,62,108, 184,109,108,159, 133,155,145,179};
+            // Our prediction is correct (horizontal, using perfect block 4 right col)
+            // Residual = output - pred
+            MESSAGE("  Correct residual (ff_out - pred):");
+            for (uint32_t r = 0; r < 4; ++r)
+            {
+                int16_t res0 = ff_out[r*4+0] - bi.pred[r*4+0];
+                int16_t res1 = ff_out[r*4+1] - bi.pred[r*4+1];
+                int16_t res2 = ff_out[r*4+2] - bi.pred[r*4+2];
+                int16_t res3 = ff_out[r*4+3] - bi.pred[r*4+3];
+                MESSAGE("    row" << r << ": " << res0 << " " << res1 << " " << res2 << " " << res3);
+            }
+            MESSAGE("  Our residual (our_out - pred):");
+            for (uint32_t r = 0; r < 4; ++r)
+            {
+                int16_t res0 = bi.output[r*4+0] - bi.pred[r*4+0];
+                int16_t res1 = bi.output[r*4+1] - bi.pred[r*4+1];
+                int16_t res2 = bi.output[r*4+2] - bi.pred[r*4+2];
+                int16_t res3 = bi.output[r*4+3] - bi.pred[r*4+3];
+                MESSAGE("    row" << r << ": " << res0 << " " << res1 << " " << res2 << " " << res3);
+            }
+            break;
+        }
+    }
+
+    // Emit structured per-block trace with CRCs for diffing against libavc
+    auto crc16 = [](const int16_t* data, uint32_t count) -> uint32_t {
+        uint32_t crc = 0xFFFFU;
+        for (uint32_t i = 0; i < count; ++i) {
+            uint16_t v = static_cast<uint16_t>(data[i]);
+            crc ^= v;
+            for (int b = 0; b < 16; ++b)
+                crc = (crc >> 1) ^ ((crc & 1) ? 0xA001U : 0U);
+        }
+        return crc & 0xFFFFU;
+    };
+
+    MESSAGE("=== BLOCK TRACE (diffable) ===");
+    for (const auto& bi : blocks)
+    {
+        uint32_t predCrc = crc16(bi.pred, 16);
+        uint32_t dqCrc = crc16(bi.dqCoeffs, 16);
+        uint32_t outCrc = crc16(bi.output, 16);
+        uint32_t rawCrc = crc16(bi.rawCoeffs, 16);
+        // Use printf for clean hex formatting
+        char buf[256];
+        std::snprintf(buf, sizeof(buf),
+            "BLK MB(%lu,0) scan=%lu nC=%lu tc=%lu bits=%lu raw=%04lx dq=%04lx pred=%04lx out=%04lx",
+            (unsigned long)bi.mbX, (unsigned long)bi.scanIdx,
+            (unsigned long)bi.nC, (unsigned long)bi.tc, (unsigned long)bi.bits,
+            (unsigned long)rawCrc, (unsigned long)dqCrc,
+            (unsigned long)predCrc, (unsigned long)outCrc);
+        MESSAGE(buf);
+    }
+
+    // Report scan blocks 4 and 5 of MB(3,0) specifically
+    for (const auto& bi : blocks)
+    {
+        if (bi.scanIdx != 4U && bi.scanIdx != 5U) continue;
+
+        MESSAGE("  scan" << bi.scanIdx << ": nC=" << bi.nC
+                << " tc=" << bi.tc << " bits=" << bi.bits);
+        MESSAGE("    raw coeffs (pre-dequant): ["
+                << bi.rawCoeffs[0] << " " << bi.rawCoeffs[1] << " "
+                << bi.rawCoeffs[2] << " " << bi.rawCoeffs[3] << " | "
+                << bi.rawCoeffs[4] << " " << bi.rawCoeffs[5] << " "
+                << bi.rawCoeffs[6] << " " << bi.rawCoeffs[7] << " | "
+                << bi.rawCoeffs[8] << " " << bi.rawCoeffs[9] << " "
+                << bi.rawCoeffs[10] << " " << bi.rawCoeffs[11] << " | "
+                << bi.rawCoeffs[12] << " " << bi.rawCoeffs[13] << " "
+                << bi.rawCoeffs[14] << " " << bi.rawCoeffs[15] << "]");
+        MESSAGE("    dequant coeffs: ["
+                << bi.dqCoeffs[0] << " " << bi.dqCoeffs[1] << " "
+                << bi.dqCoeffs[2] << " " << bi.dqCoeffs[3] << " | "
+                << bi.dqCoeffs[4] << " " << bi.dqCoeffs[5] << " "
+                << bi.dqCoeffs[6] << " " << bi.dqCoeffs[7] << " | "
+                << bi.dqCoeffs[8] << " " << bi.dqCoeffs[9] << " "
+                << bi.dqCoeffs[10] << " " << bi.dqCoeffs[11] << " | "
+                << bi.dqCoeffs[12] << " " << bi.dqCoeffs[13] << " "
+                << bi.dqCoeffs[14] << " " << bi.dqCoeffs[15] << "]");
+        for (uint32_t r = 0; r < 4; ++r)
+            MESSAGE("    pred  row" << r << ": " << bi.pred[r*4] << " "
+                    << bi.pred[r*4+1] << " " << bi.pred[r*4+2] << " " << bi.pred[r*4+3]);
+        for (uint32_t r = 0; r < 4; ++r)
+            MESSAGE("    output row" << r << ": " << bi.output[r*4] << " "
+                    << bi.output[r*4+1] << " " << bi.output[r*4+2] << " " << bi.output[r*4+3]);
+    }
+
+    CHECK(blocks.size() > 5U);
+}

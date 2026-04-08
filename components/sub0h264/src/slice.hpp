@@ -27,13 +27,25 @@ enum class SliceType : uint8_t
     SI = 4U,
 };
 
+/** Memory management control operation — ITU-T H.264 §7.3.3.3 Table 7-9. */
+struct MmcoCommand
+{
+    uint8_t op = 0U;       ///< memory_management_control_operation (1-6)
+    uint32_t value1 = 0U;  ///< difference_of_pic_nums_minus1 / long_term_pic_num / long_term_frame_idx
+    uint32_t value2 = 0U;  ///< long_term_frame_idx (for op=3) / max_long_term_frame_idx_plus1 (for op=4)
+};
+
 /** Decoded reference picture marking operation (for IDR and non-IDR). */
 struct DecRefPicMarking
 {
     bool noOutputOfPriorPics_ = false;
     bool longTermReference_ = false;
     bool adaptiveRefPicMarking_ = false;
-    // Full MMCO commands deferred to Phase 6 (DPB management)
+
+    /// MMCO commands — §7.3.3.3. Up to 32 commands.
+    static constexpr uint32_t cMaxMmcoCommands = 32U;
+    MmcoCommand mmcoCommands_[cMaxMmcoCommands] = {};
+    uint32_t numMmcoCommands_ = 0U;
 };
 
 /** Parsed slice header. */
@@ -61,9 +73,20 @@ struct SliceHeader
     // Redundant picture count
     uint8_t redundantPicCnt_ = 0U;
 
-    // Reference picture list modification
+    // Reference picture list modification — §7.3.3.1
     bool refPicListModificationL0_ = false;
     bool refPicListModificationL1_ = false;
+    /// Reordering commands: pairs of (idc, value). idc=3 terminates.
+    static constexpr uint32_t cMaxReorderCmds = 32U;
+    struct ReorderCmd
+    {
+        uint8_t idc = 3U;   ///< modification_of_pic_nums_idc (0-3)
+        uint32_t value = 0U; ///< abs_diff_pic_num_minus1 or long_term_pic_num
+    };
+    ReorderCmd reorderCmdsL0_[cMaxReorderCmds] = {};
+    uint32_t numReorderCmdsL0_ = 0U;
+    ReorderCmd reorderCmdsL1_[cMaxReorderCmds] = {};
+    uint32_t numReorderCmdsL1_ = 0U;
 
     // QP
     int32_t sliceQpDelta_ = 0;
@@ -84,118 +107,173 @@ struct SliceHeader
 
     // Dec ref pic marking
     DecRefPicMarking decRefPicMarking_;
+
+    // Weighted prediction table — §7.3.3.2
+    // Stored when weighted_pred_flag=1 (P) or weighted_bipred_idc=1 (B).
+    static constexpr uint32_t cMaxRefs = 16U;
+    uint8_t lumaLog2WeightDenom_ = 0U;
+    uint8_t chromaLog2WeightDenom_ = 0U;
+    struct WeightEntry
+    {
+        int16_t lumaWeight = 0;
+        int16_t lumaOffset = 0;
+        int16_t chromaWeight[2] = {};
+        int16_t chromaOffset[2] = {};
+        bool lumaWeightFlag = false;
+        bool chromaWeightFlag = false;
+    };
+    WeightEntry weightL0_[cMaxRefs] = {};
+    WeightEntry weightL1_[cMaxRefs] = {};
+    bool hasWeightTable_ = false;
 };
 
-/** Skip pred_weight_table() — ITU-T H.264 §7.3.3.2.
- *  Consumes weight/offset values from the bitstream for alignment.
- *  Actual weighted prediction not yet applied.
+/** Parse pred_weight_table() — ITU-T H.264 §7.3.3.2.
+ *  Stores weight/offset values in the slice header for weighted MC.
  */
-inline void skipPredWeightTable(BitReader& br, SliceType sliceType,
-                                 uint8_t numRefL0, uint8_t numRefL1,
-                                 int32_t chromaFormatIdc) noexcept
+inline void parsePredWeightTable(BitReader& br, SliceHeader& sh,
+                                  int32_t chromaFormatIdc) noexcept
 {
-    uint32_t lumaLog2WeightDenom = br.readUev();
-    (void)lumaLog2WeightDenom;
+    sh.lumaLog2WeightDenom_ = static_cast<uint8_t>(br.readUev());
 
     if (chromaFormatIdc != 0)
-    {
-        uint32_t chromaLog2WeightDenom = br.readUev();
-        (void)chromaLog2WeightDenom;
-    }
+        sh.chromaLog2WeightDenom_ = static_cast<uint8_t>(br.readUev());
 
-    for (uint8_t i = 0U; i < numRefL0; ++i)
+    // Default weights: 2^logWD (implicit 1.0 scaling)
+    int16_t defaultLumaW = static_cast<int16_t>(1 << sh.lumaLog2WeightDenom_);
+    int16_t defaultChromaW = static_cast<int16_t>(1 << sh.chromaLog2WeightDenom_);
+
+    for (uint8_t i = 0U; i < sh.numRefIdxActiveL0_; ++i)
     {
+        sh.weightL0_[i].lumaWeight = defaultLumaW;
+        sh.weightL0_[i].lumaOffset = 0;
+        sh.weightL0_[i].lumaWeightFlag = false;
         bool lumaWeightFlag = br.readBit() != 0U;
         if (lumaWeightFlag)
         {
-            br.readSev(); // luma_weight_l0[i]
-            br.readSev(); // luma_offset_l0[i]
+            sh.weightL0_[i].lumaWeight = static_cast<int16_t>(br.readSev());
+            sh.weightL0_[i].lumaOffset = static_cast<int16_t>(br.readSev());
+            sh.weightL0_[i].lumaWeightFlag = true;
         }
+        sh.weightL0_[i].chromaWeight[0] = defaultChromaW;
+        sh.weightL0_[i].chromaWeight[1] = defaultChromaW;
+        sh.weightL0_[i].chromaOffset[0] = 0;
+        sh.weightL0_[i].chromaOffset[1] = 0;
+        sh.weightL0_[i].chromaWeightFlag = false;
         if (chromaFormatIdc != 0)
         {
             bool chromaWeightFlag = br.readBit() != 0U;
             if (chromaWeightFlag)
             {
+                sh.weightL0_[i].chromaWeightFlag = true;
                 for (uint32_t j = 0U; j < 2U; ++j)
                 {
-                    br.readSev(); // chroma_weight_l0[i][j]
-                    br.readSev(); // chroma_offset_l0[i][j]
+                    sh.weightL0_[i].chromaWeight[j] = static_cast<int16_t>(br.readSev());
+                    sh.weightL0_[i].chromaOffset[j] = static_cast<int16_t>(br.readSev());
                 }
             }
         }
     }
 
-    if (sliceType == SliceType::B)
+    if (sh.sliceType_ == SliceType::B)
     {
-        for (uint8_t i = 0U; i < numRefL1; ++i)
+        for (uint8_t i = 0U; i < sh.numRefIdxActiveL1_; ++i)
         {
+            sh.weightL1_[i].lumaWeight = defaultLumaW;
+            sh.weightL1_[i].lumaOffset = 0;
+            sh.weightL1_[i].lumaWeightFlag = false;
             bool lumaWeightFlag = br.readBit() != 0U;
             if (lumaWeightFlag)
             {
-                br.readSev();
-                br.readSev();
+                sh.weightL1_[i].lumaWeight = static_cast<int16_t>(br.readSev());
+                sh.weightL1_[i].lumaOffset = static_cast<int16_t>(br.readSev());
+                sh.weightL1_[i].lumaWeightFlag = true;
             }
+            sh.weightL1_[i].chromaWeight[0] = defaultChromaW;
+            sh.weightL1_[i].chromaWeight[1] = defaultChromaW;
+            sh.weightL1_[i].chromaOffset[0] = 0;
+            sh.weightL1_[i].chromaOffset[1] = 0;
+            sh.weightL1_[i].chromaWeightFlag = false;
             if (chromaFormatIdc != 0)
             {
                 bool chromaWeightFlag = br.readBit() != 0U;
                 if (chromaWeightFlag)
                 {
+                    sh.weightL1_[i].chromaWeightFlag = true;
                     for (uint32_t j = 0U; j < 2U; ++j)
                     {
-                        br.readSev();
-                        br.readSev();
+                        sh.weightL1_[i].chromaWeight[j] = static_cast<int16_t>(br.readSev());
+                        sh.weightL1_[i].chromaOffset[j] = static_cast<int16_t>(br.readSev());
                     }
                 }
             }
         }
     }
+
+    sh.hasWeightTable_ = true;
 }
 
-/** Skip reference picture list modification syntax.
- *  Full implementation deferred to Phase 6.
+/** Parse ref_pic_list_modification() — ITU-T H.264 §7.3.3.1.
+ *  Stores reordering commands in the SliceHeader for use during
+ *  reference list construction per §8.2.4.3.
  */
-inline void skipRefPicListModification(BitReader& br, SliceType sliceType) noexcept
+inline void parseRefPicListModification(BitReader& br, SliceHeader& sh) noexcept
 {
     // ref_pic_list_modification for L0 (P, B, SP slices)
-    if (sliceType != SliceType::I && sliceType != SliceType::SI)
+    if (sh.sliceType_ != SliceType::I && sh.sliceType_ != SliceType::SI)
     {
-        bool modFlag = br.readBit() != 0U;
-        if (modFlag)
+        sh.refPicListModificationL0_ = br.readBit() != 0U;
+        if (sh.refPicListModificationL0_)
         {
+            sh.numReorderCmdsL0_ = 0U;
             uint32_t op;
             do {
                 op = br.readUev();
+                uint32_t val = 0U;
                 if (op == 0U || op == 1U)
-                    br.readUev(); // abs_diff_pic_num_minus1 or long_term_pic_num
+                    val = br.readUev(); // abs_diff_pic_num_minus1
                 else if (op == 2U)
-                    br.readUev(); // long_term_pic_num
+                    val = br.readUev(); // long_term_pic_num
+                if (sh.numReorderCmdsL0_ < SliceHeader::cMaxReorderCmds)
+                {
+                    sh.reorderCmdsL0_[sh.numReorderCmdsL0_].idc = static_cast<uint8_t>(op);
+                    sh.reorderCmdsL0_[sh.numReorderCmdsL0_].value = val;
+                    ++sh.numReorderCmdsL0_;
+                }
             } while (op != 3U && !br.isExhausted());
         }
     }
 
     // ref_pic_list_modification for L1 (B slices)
-    if (sliceType == SliceType::B)
+    if (sh.sliceType_ == SliceType::B)
     {
-        bool modFlag = br.readBit() != 0U;
-        if (modFlag)
+        sh.refPicListModificationL1_ = br.readBit() != 0U;
+        if (sh.refPicListModificationL1_)
         {
+            sh.numReorderCmdsL1_ = 0U;
             uint32_t op;
             do {
                 op = br.readUev();
+                uint32_t val = 0U;
                 if (op == 0U || op == 1U)
-                    br.readUev();
+                    val = br.readUev();
                 else if (op == 2U)
-                    br.readUev();
+                    val = br.readUev();
+                if (sh.numReorderCmdsL1_ < SliceHeader::cMaxReorderCmds)
+                {
+                    sh.reorderCmdsL1_[sh.numReorderCmdsL1_].idc = static_cast<uint8_t>(op);
+                    sh.reorderCmdsL1_[sh.numReorderCmdsL1_].value = val;
+                    ++sh.numReorderCmdsL1_;
+                }
             } while (op != 3U && !br.isExhausted());
         }
     }
 }
 
-/** Skip dec_ref_pic_marking syntax.
- *  Full implementation deferred to Phase 6.
+/** Parse dec_ref_pic_marking() — ITU-T H.264 §7.3.3.3.
+ *  Stores MMCO commands for application by the DPB after decode.
  */
-inline void skipDecRefPicMarking(BitReader& br, bool isIdr,
-                                  DecRefPicMarking& marking) noexcept
+inline void parseDecRefPicMarking(BitReader& br, bool isIdr,
+                                   DecRefPicMarking& marking) noexcept
 {
     if (isIdr)
     {
@@ -207,17 +285,22 @@ inline void skipDecRefPicMarking(BitReader& br, bool isIdr,
         marking.adaptiveRefPicMarking_ = br.readBit() != 0U;
         if (marking.adaptiveRefPicMarking_)
         {
+            marking.numMmcoCommands_ = 0U;
             uint32_t op;
             do {
                 op = br.readUev();
+                MmcoCommand cmd;
+                cmd.op = static_cast<uint8_t>(op);
                 if (op == 1U || op == 3U)
-                    br.readUev(); // difference_of_pic_nums_minus1
+                    cmd.value1 = br.readUev(); // difference_of_pic_nums_minus1
                 if (op == 2U)
-                    br.readUev(); // long_term_pic_num
+                    cmd.value1 = br.readUev(); // long_term_pic_num
                 if (op == 3U || op == 6U)
-                    br.readUev(); // long_term_frame_idx
+                    cmd.value2 = br.readUev(); // long_term_frame_idx
                 if (op == 4U)
-                    br.readUev(); // max_long_term_frame_idx_plus1
+                    cmd.value1 = br.readUev(); // max_long_term_frame_idx_plus1
+                if (op != 0U && marking.numMmcoCommands_ < DecRefPicMarking::cMaxMmcoCommands)
+                    marking.mmcoCommands_[marking.numMmcoCommands_++] = cmd;
             } while (op != 0U && !br.isExhausted());
         }
     }
@@ -316,29 +399,26 @@ inline Result parseSliceHeader(BitReader& br, const Sps& sps, const Pps& pps,
     }
 
     // ref_pic_list_modification — §7.3.3.1
-    // VALIDATED: reads modification_of_pic_nums_idc loop correctly for L0/L1.
-    skipRefPicListModification(br, sh.sliceType_);
+    // Stores reordering commands for application during L0/L1 list construction.
+    parseRefPicListModification(br, sh);
 
     // pred_weight_table() — §7.3.3.2
     // Present for P/SP slices with weighted_pred_flag=1, or B slices with
-    // weighted_bipred_idc=1. Skips the weight/offset values (actual weighted
-    // prediction not yet implemented, but bits must be consumed for alignment).
+    // weighted_bipred_idc=1. Parses weight/offset values for weighted MC.
     if ((sh.sliceType_ == SliceType::P || sh.sliceType_ == SliceType::SP) &&
         pps.weightedPredFlag_)
     {
-        skipPredWeightTable(br, sh.sliceType_, sh.numRefIdxActiveL0_,
-                            sh.numRefIdxActiveL1_, sps.chromaFormatIdc_);
+        parsePredWeightTable(br, sh, sps.chromaFormatIdc_);
     }
     else if (sh.sliceType_ == SliceType::B && pps.weightedBipredIdc_ == 1U)
     {
-        skipPredWeightTable(br, sh.sliceType_, sh.numRefIdxActiveL0_,
-                            sh.numRefIdxActiveL1_, sps.chromaFormatIdc_);
+        parsePredWeightTable(br, sh, sps.chromaFormatIdc_);
     }
 
     // dec_ref_pic_marking — §7.3.3.3 (if nal_ref_idc != 0)
-    // VALIDATED: IDR reads 2 flags, non-IDR reads MMCO loop.
+    // Stores MMCO commands for DPB application after decode.
     if (nalRefIdc != 0U)
-        skipDecRefPicMarking(br, isIdr, sh.decRefPicMarking_);
+        parseDecRefPicMarking(br, isIdr, sh.decRefPicMarking_);
 
     // cabac_init_idc (only for CABAC slices)
     if (pps.isCabac() && sh.sliceType_ != SliceType::I && sh.sliceType_ != SliceType::SI)

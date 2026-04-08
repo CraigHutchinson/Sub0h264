@@ -101,19 +101,33 @@ inline uint32_t cabacDecodeMbTypeI(CabacEngine& engine, CabacCtx* ctx,
     if (engine.decodeTerminate() == 1U)
         return 25U; // I_PCM
 
-    // I_16x16 binarization — ITU-T H.264 Table 9-34:
-    //   bin[1] (ctx+3): cbpChroma > 0
-    //   bin[2] (ctx+4): cbpChroma == 2 (only if bin[1] == 1)
-    //   bin[3] (ctx+5): cbpLuma > 0
-    //   bin[4:5] (ctx+6, ctx+7): predMode (2 bins)
-    uint32_t cbpChromaFlag = engine.decodeBin(ctx[cCtxMbTypeI + 3U]);
+    // I_16x16 binarization — ffmpeg decode_cabac_intra_mb_type:
+    //   After bin0 and terminate, state pointer advances by 2 for I-slices.
+    //   state = &cabac_state[3+2] = &cabac_state[5].
+    //   bin: state[1]=ctx[6] cbpLuma, state[2]=ctx[7] cbpChroma,
+    //        state[3]=ctx[8] cbpChroma2, state[4]=ctx[9] predMode0,
+    //        state[5]=ctx[10] predMode1.
+    //   ORDER: cbpLuma FIRST, then cbpChroma, then predMode.
+    // I_16x16 suffix — verified against spec-only agent trace and ffmpeg:
+    // After bin0 + terminate, for I-slices: state base advances by 2.
+    // state = &cabac_state[cCtxMbTypeI + 2] (for I-slice, ctxInc was 0-2 for bin0)
+    // Suffix bins from that base:
+    //   state[1] = ctx[6]:  cbpLuma (12*bin for mb_type formula)
+    //   state[2] = ctx[7]:  cbpChroma > 0
+    //   state[3] = ctx[8]:  cbpChroma == 2 (if bin above was 1)
+    //   state[4] = ctx[9]:  predMode bit 1
+    //   state[5] = ctx[10]: predMode bit 0
+    // Agent confirmed: ctx6=cbpLuma, ctx7=cbpChroma, ctx9=pred0, ctx10=pred1
+    constexpr uint32_t base = cCtxMbTypeI + 3U; // = 6
+    uint32_t cbpLuma = engine.decodeBin(ctx[base]);       // ctx[6]
+
+    uint32_t cbpChromaFlag = engine.decodeBin(ctx[base + 1U]); // ctx[7]
     uint32_t cbpChroma = 0U;
     if (cbpChromaFlag != 0U)
-        cbpChroma = engine.decodeBin(ctx[cCtxMbTypeI + 4U]) == 0U ? 1U : 2U;
+        cbpChroma = engine.decodeBin(ctx[base + 2U]) == 0U ? 1U : 2U; // ctx[8]
 
-    uint32_t cbpLuma = engine.decodeBin(ctx[cCtxMbTypeI + 5U]);
-    uint32_t predMode = (engine.decodeBin(ctx[cCtxMbTypeI + 6U]) << 1U) |
-                         engine.decodeBin(ctx[cCtxMbTypeI + 7U]);
+    uint32_t predMode = (engine.decodeBin(ctx[base + 3U]) << 1U) | // ctx[9]
+                          engine.decodeBin(ctx[base + 4U]);          // ctx[10]
 
     // mb_type = 1 + predMode + cbpChroma*4 + cbpLuma*12
     return 1U + predMode + cbpChroma * 4U + cbpLuma * 12U;
@@ -324,20 +338,21 @@ inline uint32_t cabacDecodeResidual4x4(CabacEngine& engine, CabacCtx* ctx,
                                         uint32_t ctxBlockCat,
                                         uint32_t cbfCtxInc = 0U) noexcept
 {
-    // coded_block_flag — §9.3.3.1.1.1 Table 9-34.
-    // Decoded for ctxBlockCat 1,2,4 (AC blocks). NOT decoded for cat 0,3 (DC blocks).
-    if (ctxBlockCat != 0U && ctxBlockCat != 3U)
+    // coded_block_flag — §7.3.5.3.3 + §9.3.3.1.1.1 Table 9-34.
     {
         uint32_t cbfCtx = cCtxCbf + ctxBlockCat * 4U + cbfCtxInc;
         if (engine.decodeBin(ctx[cbfCtx]) == 0U)
-            return 0U; // coded_block_flag = 0: no coefficients
+            return 0U;
     }
 
     // Context offsets per block category — ITU-T H.264 Table 9-39/9-40/9-41.
     // NOT uniformly spaced: chroma DC has only 3 sig contexts, chroma AC starts at 152.
     static constexpr uint32_t cSigOffsets[5]   = {105, 120, 134, 149, 152};
     static constexpr uint32_t cLastOffsets[5]  = {166, 181, 195, 210, 213};
-    static constexpr uint32_t cLevelOffsets[5] = {227, 237, 247, 257, 267};
+    // §9.3.3.1.1.5 Table 9-41: coeff_abs_level_minus1 ctxIdxBlockCatOffset.
+    // Cat 3 (chroma DC) has only 9 contexts (max increment=8), not 10.
+    // So cat 4 offset = 30+9 = 39 (not 40).
+    static constexpr uint32_t cLevelOffsets[5] = {227, 237, 247, 257, 266};
     uint32_t sigOffset   = cSigOffsets[ctxBlockCat];
     uint32_t lastOffset  = cLastOffsets[ctxBlockCat];
     uint32_t levelOffset = cLevelOffsets[ctxBlockCat];
@@ -389,6 +404,10 @@ inline uint32_t cabacDecodeResidual4x4(CabacEngine& engine, CabacCtx* ctx,
             continue;
 
         // coeff_abs_level_minus1: prefix (truncated unary)
+        // §9.3.3.1.3: bin 0 context selection per x264 state machine.
+        //   node_ctx starts at 0; coeff_abs_level1_ctx = {1,2,3,4,0,0,0,0}
+        //   When numLarger==0: ctxIdxInc = min(numT1+1, 4)  [nodes 0-3]
+        //   When numLarger>0:  ctxIdxInc = 0                 [nodes 4-7]
         uint32_t ctxInc;
         if (numLarger > 0U)
             ctxInc = 0U;
@@ -399,10 +418,16 @@ inline uint32_t cabacDecodeResidual4x4(CabacEngine& engine, CabacCtx* ctx,
         if (engine.decodeBin(ctx[levelOffset + ctxInc]) == 1U)
         {
             ++prefix;
-            // §9.3.3.1.3: bins k>=1 use ctxIdxInc = 5 + min(numDecodAbsLevelGt1,
-            //   4 - (ctxBlockCat == 3 ? 1 : 0))
+            // §9.3.3.1.3: bins k>=1 use ctxIdxInc from coeff_abs_levelgt1_ctx.
+            //   When numLarger==0: ctxIdxInc = 5 (nodes 0-3 all map to 5)
+            //   When numLarger>0:  ctxIdxInc = 5 + min(numLarger, 4)
+            //   [nodes 4→6, 5→7, 6→8, 7→9]
             uint32_t maxInc = (ctxBlockCat == 3U) ? 3U : 4U;
-            uint32_t nextCtx = 5U + (numLarger < maxInc ? numLarger : maxInc);
+            uint32_t nextCtx;
+            if (numLarger > 0U)
+                nextCtx = 5U + (numLarger < maxInc ? numLarger : maxInc);
+            else
+                nextCtx = 5U;
             while (prefix < 14U)
             {
                 if (engine.decodeBin(ctx[levelOffset + nextCtx]) == 0U)
@@ -615,14 +640,28 @@ inline uint32_t cabacDecodeResidual8x8(CabacEngine& engine, CabacCtx* ctx,
 
 // ── Intra prediction mode (CABAC) — §9.3.3.1.3 ────────────────────────
 
-/** Decode prev_intra4x4_pred_mode_flag + rem_intra4x4_pred_mode. */
+/** Decode prev_intra4x4_pred_mode_flag + rem_intra4x4_pred_mode.
+ *  §9.3.3.1.1.4: rem uses FL binarization. The H.264 spec Table 9-34
+ *  assigns maxBinIdxCtx=2 and ctxIdxOffset=69, meaning these are
+ *  context-coded bins at ctxIdx=69.
+ *
+ *  HOWEVER: ffmpeg actually uses bypass bins for rem_intra4x4_pred_mode
+ *  in its CAVLC path (readBits(3)), and context-coded in CABAC path
+ *  (get_cabac with state[69]). We use context-coded for CABAC.
+ *
+ *  Bit ordering is LSB-first: value = b0 | (b1<<1) | (b2<<2).
+ */
 inline uint8_t cabacDecodeIntra4x4PredMode(CabacEngine& engine, CabacCtx* ctx) noexcept
 {
     if (engine.decodeBin(ctx[cCtxPrevIntra4x4]) == 1U)
         return 0xFFU; // Use most probable mode
 
-    // 3 fixed-length bypass bins for rem_intra4x4_pred_mode
-    return static_cast<uint8_t>(engine.decodeBypassBins(3U));
+    // 3 bins, LSB-first per ffmpeg: value = b0 | (b1<<1) | (b2<<2)
+    // Context-coded at ctxIdx=69 per spec Table 9-34.
+    uint32_t b0 = engine.decodeBin(ctx[cCtxRemIntra4x4]);
+    uint32_t b1 = engine.decodeBin(ctx[cCtxRemIntra4x4]);
+    uint32_t b2 = engine.decodeBin(ctx[cCtxRemIntra4x4]);
+    return static_cast<uint8_t>(b0 | (b1 << 1U) | (b2 << 2U));
 }
 
 /** Decode intra_chroma_pred_mode (CABAC). */

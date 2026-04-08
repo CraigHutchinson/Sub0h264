@@ -14,6 +14,7 @@
 #include "bitstream.hpp"
 
 #include <cstdint>
+#include <cstdio> // for FILE* in bin trace
 #include <cstring>
 #include <array>
 
@@ -217,6 +218,120 @@ inline uint32_t clz32(uint32_t val) noexcept
 #endif
 }
 
+// ── CABAC arithmetic state snapshot ─────────────────────────────────────
+
+/** Lightweight snapshot of CABAC arithmetic engine state.
+ *
+ *  Captures the three values needed to fully restore the engine to a prior
+ *  point: codIRange, codIOffset, and the bitstream position. Used for
+ *  debugging experiments (save state, decode N bins, restore, compare).
+ *
+ *  ITU-T H.264 §9.3.1 defines these as the core engine variables.
+ */
+struct CabacState
+{
+    uint32_t codIRange = 510U;
+    uint32_t codIOffset = 0U;
+    uint32_t bitPosition = 0U;
+
+    bool operator==(const CabacState& other) const noexcept
+    {
+        return codIRange == other.codIRange
+            && codIOffset == other.codIOffset
+            && bitPosition == other.bitPosition;
+    }
+    bool operator!=(const CabacState& other) const noexcept
+    {
+        return !(*this == other);
+    }
+};
+
+// ── CABAC context set wrapper ───────────────────────────────────────────
+
+/** Wrapper around the 1024 CABAC context models.
+ *
+ *  Drop-in replacement for std::array<CabacCtx, cNumCabacCtx>.
+ *  Provides data(), operator[], and size() for backwards compatibility,
+ *  plus snapshot/compare operations for debugging.
+ */
+class CabacContextSet
+{
+public:
+    CabacContextSet() noexcept = default;
+
+    /** Initialize all contexts for a slice — delegates to initCabacContexts().
+     *  Must be called after construction with the slice parameters.
+     */
+    void init(uint32_t sliceType, uint32_t cabacInitIdc,
+              int32_t sliceQpY) noexcept;
+
+    /** @return Pointer to the context array (for passing to free functions). */
+    CabacCtx* data() noexcept { return ctx_.data(); }
+    const CabacCtx* data() const noexcept { return ctx_.data(); }
+
+    /** Index into the context array. */
+    CabacCtx& operator[](uint32_t idx) noexcept { return ctx_[idx]; }
+    const CabacCtx& operator[](uint32_t idx) const noexcept { return ctx_[idx]; }
+
+    /** @return Number of contexts (1024). */
+    static constexpr uint32_t size() noexcept { return cNumCabacCtx; }
+
+    /** Take a snapshot (copy) of the entire context set.
+     *  Used for debugging: snapshot before decode, compare after.
+     */
+    CabacContextSet snapshot() const noexcept { return *this; }
+
+    /** Find the first context index where this set differs from another.
+     *  @return Index of first difference, or cNumCabacCtx if identical.
+     */
+    uint32_t firstDifference(const CabacContextSet& other) const noexcept
+    {
+        for (uint32_t i = 0U; i < cNumCabacCtx; ++i)
+        {
+            if (ctx_[i].mpsState != other.ctx_[i].mpsState)
+                return i;
+        }
+        return cNumCabacCtx;
+    }
+
+    /** Count how many contexts differ from another set. */
+    uint32_t countDifferences(const CabacContextSet& other) const noexcept
+    {
+        uint32_t count = 0U;
+        for (uint32_t i = 0U; i < cNumCabacCtx; ++i)
+        {
+            if (ctx_[i].mpsState != other.ctx_[i].mpsState)
+                ++count;
+        }
+        return count;
+    }
+
+    /** Dump context state to a char buffer (printf-safe, no iostream).
+     *  Writes up to maxLen chars of "ctx[i]=0xNN ..." for the first N contexts.
+     *  @return Number of chars written (excluding null terminator).
+     */
+    uint32_t dump(char* buf, uint32_t maxLen,
+                  uint32_t startIdx = 0U, uint32_t count = 16U) const noexcept
+    {
+        if (maxLen == 0U) return 0U;
+        uint32_t pos = 0U;
+        uint32_t end = startIdx + count;
+        if (end > cNumCabacCtx) end = cNumCabacCtx;
+        for (uint32_t i = startIdx; i < end && pos + 12U < maxLen; ++i)
+        {
+            int written = std::snprintf(buf + pos, maxLen - pos,
+                                        "ctx[%u]=0x%02X ", i,
+                                        static_cast<unsigned>(ctx_[i].mpsState));
+            if (written > 0) pos += static_cast<uint32_t>(written);
+        }
+        if (pos < maxLen) buf[pos] = '\0';
+        return pos;
+    }
+
+private:
+    std::array<CabacCtx, cNumCabacCtx> ctx_ = {};
+};
+
 // ── CABAC arithmetic decoder engine ─────────────────────────────────────
 
 /** CABAC arithmetic decoding engine.
@@ -271,6 +386,17 @@ public:
         // Renormalize when range drops below 256
         if (codIRange_ < 256U)
             renormalize();
+
+        // CABAC bin trace (always available, guarded by binTraceEnabled_ flag)
+        if (binTraceEnabled_ && binTraceCount_ < binTraceMax_)
+        {
+            if (binTraceLog_)
+                std::fprintf(binTraceLog_, "%lu %lu %u %lu %lu %lu\n",
+                    (unsigned long)binTraceCount_, (unsigned long)state,
+                    (unsigned)ctx.mpsState, (unsigned long)symbol,
+                    (unsigned long)codIRange_, (unsigned long)codIOffset_);
+            ++binTraceCount_;
+        }
 
         return symbol;
     }
@@ -357,10 +483,53 @@ public:
     /** Get current offset (for diagnostic comparison). */
     uint32_t offset() const noexcept { return codIOffset_; }
 
+    /** Enable per-bin trace to a file — for CABAC debugging. */
+    void enableBinTrace(FILE* log, uint32_t maxBins = 200U) noexcept
+    {
+        binTraceLog_ = log;
+        binTraceEnabled_ = true;
+        binTraceMax_ = maxBins;
+        binTraceCount_ = 0U;
+    }
+    void disableBinTrace() noexcept { binTraceEnabled_ = false; }
+
+    /** Capture a snapshot of the engine's arithmetic state.
+     *  The snapshot includes codIRange, codIOffset, and the bitstream position.
+     */
+    CabacState snapshot() const noexcept
+    {
+        return { codIRange_, codIOffset_, br_ ? br_->bitOffset() : 0U };
+    }
+
+    /** Restore the engine to a previously captured state.
+     *  The BitReader must be the same one used during the original decode.
+     *  @param state  Previously captured CabacState
+     *  @param br     BitReader to seek back to the saved position
+     */
+    void restore(const CabacState& state, BitReader& br) noexcept
+    {
+        codIRange_ = state.codIRange;
+        codIOffset_ = state.codIOffset;
+        br.seekToBit(state.bitPosition);
+        br_ = &br;
+    }
+
+    /** Check if the engine's current state matches a snapshot. */
+    bool matches(const CabacState& other) const noexcept
+    {
+        return snapshot() == other;
+    }
+
 private:
     BitReader* br_ = nullptr;
     uint32_t codIRange_ = 510U;
     uint32_t codIOffset_ = 0U;
+
+    // Bin trace (for CABAC debugging)
+    FILE* binTraceLog_ = nullptr;
+    bool binTraceEnabled_ = false;
+    uint32_t binTraceMax_ = 0U;
+    uint32_t binTraceCount_ = 0U;
 
     void renormalize() noexcept
     {
@@ -450,6 +619,15 @@ inline void initCabacContexts(CabacCtx* ctx, uint32_t sliceType,
     // to match the spec's preCtxState=63 default (state 0, MPS=0).
     for (uint32_t i = cNumCabacCtxBase; i < cNumCabacCtx; ++i)
         ctx[i].mpsState = 0U;
+}
+
+// ── CabacContextSet deferred implementation ────────────────────────────
+// Must appear after initCabacContexts() is defined (above).
+
+inline void CabacContextSet::init(uint32_t sliceType, uint32_t cabacInitIdc,
+                                   int32_t sliceQpY) noexcept
+{
+    initCabacContexts(ctx_.data(), sliceType, cabacInitIdc, sliceQpY);
 }
 
 } // namespace sub0h264

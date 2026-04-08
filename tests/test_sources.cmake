@@ -40,4 +40,10 @@ set(SUB0H264_TEST_SOURCES
     test_synthetic_quality.cpp
     test_spec_tables.cpp
     test_cabac_engine.cpp
+    test_full_trace.cpp
+    test_bitstream_edge.cpp
+    test_crosscheck.cpp
+    test_cabac_diag.cpp
+    test_cabac_small.cpp
+    test_hbands_pixel.cpp
 )

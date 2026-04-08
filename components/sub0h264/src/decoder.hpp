@@ -139,6 +139,7 @@ public:
 
     /** Access trace for setting callbacks from tests. */
     DecodeTrace& trace() noexcept { return trace_; }
+    CabacEngine& cabacEngine() noexcept { return cabacEngine_; }
 
     /** Enable per-section profiling. Pass nullptr to disable. */
     void setProfile(SectionProfile* profile) noexcept { profile_ = profile; }
@@ -179,10 +180,11 @@ private:
 
     // CABAC state
     CabacEngine cabacEngine_;
-    std::array<CabacCtx, cNumCabacCtx> cabacCtx_ = {};
+    CabacContextSet cabacCtx_;
     std::vector<bool> mbIsSkip_;   // [mbIdx] — for CABAC skip context
     std::vector<bool> mbIsI4x4_;   // [mbIdx] — for CABAC mb_type context (I_NxN flag)
     std::vector<uint8_t> mbCbp_;   // [mbIdx] — for CABAC CBP context (4 luma bits + 2 chroma)
+    std::vector<uint8_t> mbChromaMode_; // [mbIdx] — intra_chroma_pred_mode per MB (§9.3.3.1.1.7)
 
     uint16_t widthInMbs_ = 0U;
     uint16_t heightInMbs_ = 0U;
@@ -379,8 +381,9 @@ private:
         // Compute effective QP
         int32_t sliceQp = pps->picInitQp_ + sh.sliceQpDelta_;
 
-        // Get reference frame for P-slices
-        const Frame* refFrame = dpb_.getReference(0U);
+        // Reference frame is obtained AFTER buildRefListL0() for P-slices
+        // (moved below to avoid using stale L0 list from previous frame)
+        const Frame* refFrame = nullptr;
 
         // Initialize CABAC engine if High profile
         bool useCabac = pps->isCabac();
@@ -392,11 +395,11 @@ private:
             // Initialize CABAC contexts — §9.3.1.1
             uint32_t sliceTypeIdx = (sh.sliceType_ == SliceType::I) ? 2U :
                                     (sh.sliceType_ == SliceType::P) ? 0U : 1U;
-            initCabacContexts(cabacCtx_.data(), sliceTypeIdx,
-                              sh.cabacInitIdc_, sliceQp);
+            cabacCtx_.init(sliceTypeIdx, sh.cabacInitIdc_, sliceQp);
 
             // Initialize arithmetic engine — §9.3.1.2
             cabacEngine_.init(br);
+
 
             // Resize per-MB CABAC tracking vectors
             mbIsSkip_.resize(totalMbs, false);
@@ -405,6 +408,8 @@ private:
             std::fill(mbIsI4x4_.begin(), mbIsI4x4_.end(), false);
             mbCbp_.resize(totalMbs, 0U);
             std::fill(mbCbp_.begin(), mbCbp_.end(), static_cast<uint8_t>(0x2FU));
+            mbChromaMode_.resize(totalMbs, 0U);
+            std::fill(mbChromaMode_.begin(), mbChromaMode_.end(), static_cast<uint8_t>(0U));
         }
 
         // Set active frame: decode directly into DPB target when possible.
@@ -428,12 +433,22 @@ private:
 
                 if (useCabac)
                 {
+                    // Stop decoding if bitstream exhausted — prevents CABAC overrun
+                    if (br.isExhausted())
+                        break;
                     trace_.onMbStart(mbX, mbY, 200U,
                                      static_cast<uint32_t>(cabacEngine_.bitPosition()));
                     int64_t cT0 = profile_ ? sub0h264TimerUs() : 0;
                     if (!decodeCabacIntraMb(br, *sps, *pps, sh, mbQp, mbX, mbY))
                         break;
                     if (profile_) profile_->intraPredUs += sub0h264TimerUs() - cT0;
+
+                    // §7.3.4: decode end_of_slice_flag after each MB
+                    if (mbAddr < totalMbs - 1U)
+                    {
+                        if (cabacEngine_.decodeTerminate() == 1U)
+                            break; // end of slice
+                    }
                 }
                 else
                 {
@@ -450,9 +465,16 @@ private:
         }
         else if (sh.sliceType_ == SliceType::P)
         {
+            // Build L0 reference list per §8.2.4.2.1, apply reordering per §8.2.4.3.
+            uint32_t maxFrameNum = 1U << sps->bitsInFrameNum_;
+            dpb_.buildRefListL0(sh.frameNum_, maxFrameNum,
+                                sh.numReorderCmdsL0_,
+                                sh.refPicListModificationL0_ ? sh.reorderCmdsL0_ : nullptr);
+
+            // Get reference frame AFTER building L0 list (avoids stale reference)
+            refFrame = dpb_.getReference(0U);
             if (!refFrame)
                 return DecodeStatus::Error;
-
 
             // QPY accumulates across MBs — ITU-T H.264 §7.4.5.
             int32_t mbQp = sliceQp;
@@ -465,6 +487,10 @@ private:
                     uint32_t mbX = mbAddr % widthInMbs_;
                     uint32_t mbY = mbAddr / widthInMbs_;
 
+                    // Stop decoding if bitstream exhausted
+                    if (br.isExhausted())
+                        break;
+
                     // Decode mb_skip_flag
                     bool leftSkip = (mbX > 0U) && mbIsSkip_[mbY * widthInMbs_ + mbX - 1U];
                     bool topSkip = (mbY > 0U) && mbIsSkip_[(mbY - 1U) * widthInMbs_ + mbX];
@@ -476,7 +502,7 @@ private:
                         mbIsSkip_[mbAddr] = true;
                         mbIsI4x4_[mbAddr] = false;
                         int64_t skipT0 = profile_ ? sub0h264TimerUs() : 0;
-                        decodePSkipMb(*decodeTarget, *refFrame, mbX, mbY);
+                        decodePSkipMb(*decodeTarget, *refFrame, mbX, mbY, sh);
                         if (profile_) profile_->interPredUs += sub0h264TimerUs() - skipT0;
                         // Skip MBs inherit QP — no mb_qp_delta per §7.4.5.
                     }
@@ -484,11 +510,11 @@ private:
                     {
                         mbIsSkip_[mbAddr] = false;
 
-                        // §9.3.3.1.2: neighbor I_NxN state for intra suffix context
-                        bool leftIsI4x4 = (mbX > 0U) && mbIsI4x4_[mbAddr - 1U];
-                        bool topIsI4x4 = (mbY > 0U) && mbIsI4x4_[mbAddr - widthInMbs_];
+                        // §9.3.3.1.2: condTermFlagN = 0 for unavailable OR I_NxN
+                        bool leftCondZero = (mbX == 0U) || mbIsI4x4_[mbAddr - 1U];
+                        bool topCondZero  = (mbY == 0U) || mbIsI4x4_[mbAddr - widthInMbs_];
                         uint32_t mbTypeRaw = cabacDecodeMbTypeP(cabacEngine_, cabacCtx_.data(),
-                                                                 leftIsI4x4, topIsI4x4);
+                                                                 leftCondZero, topCondZero);
 
                         if (mbTypeRaw >= 5U)
                         {
@@ -503,11 +529,19 @@ private:
                         {
                             mbIsI4x4_[mbAddr] = false;
                             int64_t ciT0 = profile_ ? sub0h264TimerUs() : 0;
-                            decodeCabacPInterMb(br, *sps, *pps, mbQp,
+                            decodeCabacPInterMb(br, *sps, *pps, sh, mbQp,
                                                 mbTypeRaw, *decodeTarget, *refFrame, mbX, mbY);
                             if (profile_) profile_->interPredUs += sub0h264TimerUs() - ciT0;
                         }
                     }
+
+                    // §7.3.4: decode end_of_slice_flag after each MB
+                    if (mbAddr < totalMbs - 1U)
+                    {
+                        if (cabacEngine_.decodeTerminate() == 1U)
+                            break;
+                    }
+
                     // Store accumulated QP for deblocking pass — §8.7.2.2.
                     mbQps_[mbAddr] = mbQp;
                 }
@@ -534,7 +568,7 @@ private:
                     {
                         trace_.onMbStart(mbX, mbY, 99U, static_cast<uint32_t>(br.bitOffset()));
                         int64_t mcT0 = profile_ ? sub0h264TimerUs() : 0;
-                        decodePSkipMb(*decodeTarget, *refFrame, mbX, mbY);
+                        decodePSkipMb(*decodeTarget, *refFrame, mbX, mbY, sh);
                         if (profile_) profile_->interPredUs += sub0h264TimerUs() - mcT0;
                         --mbSkipRun;
                         // §7.3.4: after skip_run exhausted, next MB is coded
@@ -558,7 +592,7 @@ private:
                         else
                         {
                             int64_t interT0 = profile_ ? sub0h264TimerUs() : 0;
-                            decodePInterMb(br, *sps, *pps, mbQp,
+                            decodePInterMb(br, *sps, *pps, sh, mbQp,
                                            mbTypeRaw, *decodeTarget, mbX, mbY,
                                            sh.numRefIdxActiveL0_);
                             if (profile_) profile_->interPredUs += sub0h264TimerUs() - interT0;
@@ -619,9 +653,21 @@ private:
 
         if (profile_) profile_->overheadUs += sub0h264TimerUs() - syncT0;
 
-        // Mark as reference for future P-frames
+        // Mark as reference for future P-frames — §8.2.5
         if (nal.refIdc != 0U)
+        {
             dpb_.markAsReference(sh.frameNum_);
+
+            // Apply MMCO commands for non-IDR adaptive marking — §8.2.5.4
+            if (!sh.isIdr_ && sh.decRefPicMarking_.adaptiveRefPicMarking_ &&
+                sh.decRefPicMarking_.numMmcoCommands_ > 0U)
+            {
+                uint32_t maxFrameNum = 1U << sps->bitsInFrameNum_;
+                dpb_.applyMmco(sh.frameNum_, maxFrameNum,
+                               sh.decRefPicMarking_.numMmcoCommands_,
+                               sh.decRefPicMarking_.mmcoCommands_);
+            }
+        }
 
         ++frameCount_;
         if (profile_) ++profile_->frameCount;
@@ -923,7 +969,21 @@ private:
             uint32_t rasterIdx = cLuma4x4ToRaster[i];
             uint8_t leftMode = getNeighborIntra4x4Mode(mbX, mbY, rasterIdx, true, predModes);
             uint8_t topMode  = getNeighborIntra4x4Mode(mbX, mbY, rasterIdx, false, predModes);
-            uint8_t mpm = (leftMode < topMode) ? leftMode : topMode;
+
+            // §8.3.1.1: MPM derivation. When either neighboring block is
+            // from an unavailable MB, MPM = DC(2) per the spec's intent:
+            // the default mode for unavailable neighbors forces MPM to DC
+            // so that rem_intra4x4_pred_mode maps correctly.
+            // Verified against ffmpeg pixel output on hbands fixture.
+            bool leftFromOtherMb = (rasterIdx % 4U == 0U);
+            bool topFromOtherMb  = (rasterIdx < 4U);
+            bool leftMbAvail = !(leftFromOtherMb && mbX == 0U);
+            bool topMbAvail  = !(topFromOtherMb && mbY == 0U);
+            uint8_t mpm;
+            if (!leftMbAvail || !topMbAvail)
+                mpm = 2U; // DC — §8.3.1.1 default for unavailable neighbor
+            else
+                mpm = (leftMode < topMode) ? leftMode : topMode;
             mpmPerBlock[rasterIdx] = mpm;
 
             uint32_t prevFlag = br.readBit();
@@ -957,12 +1017,10 @@ private:
         uint8_t cbpLuma = cbp & 0x0FU;
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
 
-#if SUB0H264_TRACE
-        if (mbY == 0U && (mbX == 9U || mbX == 10U))
-            std::printf("[DBG] MB(%lu,0) cbpCode=%lu → cbp=0x%02x cbpL=%u cbpC=%u bitOff=%lu\n",
-                (unsigned long)mbX, (unsigned long)cbpCode, cbp, cbpLuma, cbpChroma,
-                (unsigned long)br.bitOffset());
-#endif
+        // Trace CBP for all MBs (using BlockResidual with blkIdx=99 as marker)
+        trace_.onBlockResidual(mbX, mbY, 99U, static_cast<int32_t>(cbpCode),
+                               cbpLuma | (cbpChroma << 4U),
+                               static_cast<uint32_t>(br.bitOffset()));
 
         // QP delta (only if CBP > 0)
         if (cbp > 0U)
@@ -1420,7 +1478,8 @@ private:
      *  residual parsing that shifts the skip_run read position.
      */
     void decodePSkipMb(Frame& target, const Frame& ref,
-                        uint32_t mbX, uint32_t mbY) noexcept
+                        uint32_t mbX, uint32_t mbY,
+                        const SliceHeader& sh = {}) noexcept
     {
         // Neighbor derivation — §6.4.11.7 for 16x16 partition, mbPartIdx=0.
         // VALIDATED: getMbMotionNeighbor reads correct 4x4 block per partition layout.
@@ -1443,6 +1502,8 @@ private:
 
         // Store MV for this MB (all 16 blocks same MV for skip)
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
+
+
         setMbMotion(mbIdx, skipMv, 0);
 
         // Motion compensation: copy 16x16 block from reference
@@ -1468,6 +1529,18 @@ private:
                          cChromaBlockSize, cChromaBlockSize, false,
                          target.vMb(mbX, mbY), target.uvStride());
 
+        // Weighted prediction — §8.4.2.3.1 (P_Skip uses ref_idx=0)
+        if (sh.hasWeightTable_)
+        {
+            const auto& w = sh.weightL0_[0];
+            applyWeightedPred(target.yMb(mbX, mbY), target.yStride(), cMbSize, cMbSize,
+                              sh.lumaLog2WeightDenom_, w.lumaWeight, w.lumaOffset, w.lumaWeightFlag);
+            applyWeightedPred(target.uMb(mbX, mbY), target.uvStride(), cChromaBlockSize, cChromaBlockSize,
+                              sh.chromaLog2WeightDenom_, w.chromaWeight[0], w.chromaOffset[0], w.chromaWeightFlag);
+            applyWeightedPred(target.vMb(mbX, mbY), target.uvStride(), cChromaBlockSize, cChromaBlockSize,
+                              sh.chromaLog2WeightDenom_, w.chromaWeight[1], w.chromaOffset[1], w.chromaWeightFlag);
+        }
+
         // NNZ = 0 for skip MBs
         std::fill_n(&nnzLuma_[mbIdx * 16U], 16U, static_cast<uint8_t>(0U));
     }
@@ -1486,6 +1559,7 @@ private:
      *  @param mbQp  [in/out] Accumulated QP — ITU-T H.264 §7.4.5.
      */
     void decodePInterMb(BitReader& br, const Sps& sps, const Pps& pps,
+                         const SliceHeader& sh,
                          int32_t& mbQp, uint32_t mbTypeRaw,
                          Frame& target, uint32_t mbX, uint32_t mbY,
                          uint8_t numRefIdxL0Active = 1U) noexcept
@@ -1764,6 +1838,17 @@ private:
             chromaMotionComp(ref, cRefX, cRefY, static_cast<uint32_t>(mv.x) & 7U,
                              static_cast<uint32_t>(mv.y) & 7U,
                              cChromaBlockSize, cChromaBlockSize, false, predV, cChromaBlockSize);
+            // Weighted prediction — §8.4.2.3.1
+            if (sh.hasWeightTable_)
+            {
+                const auto& w = sh.weightL0_[refIdxL0[0]];
+                applyWeightedPred(predLuma, cMbSize, cMbSize, cMbSize,
+                                  sh.lumaLog2WeightDenom_, w.lumaWeight, w.lumaOffset, w.lumaWeightFlag);
+                applyWeightedPred(predU, cChromaBlockSize, cChromaBlockSize, cChromaBlockSize,
+                                  sh.chromaLog2WeightDenom_, w.chromaWeight[0], w.chromaOffset[0], w.chromaWeightFlag);
+                applyWeightedPred(predV, cChromaBlockSize, cChromaBlockSize, cChromaBlockSize,
+                                  sh.chromaLog2WeightDenom_, w.chromaWeight[1], w.chromaOffset[1], w.chromaWeightFlag);
+            }
         }
         else if (mbTypeRaw == 1U)
         {
@@ -1794,6 +1879,17 @@ private:
                                  static_cast<uint32_t>(mv.y) & 7U,
                                  8U, 4U, false,
                                  predV + cPartOffY * cChromaBlockSize, cChromaBlockSize);
+                // Weighted prediction — §8.4.2.3.1 (per 16x8 partition)
+                if (sh.hasWeightTable_)
+                {
+                    const auto& w = sh.weightL0_[refIdxL0[p]];
+                    applyWeightedPred(predLuma + partOffY * cMbSize, cMbSize, 16U, 8U,
+                                      sh.lumaLog2WeightDenom_, w.lumaWeight, w.lumaOffset, w.lumaWeightFlag);
+                    applyWeightedPred(predU + cPartOffY * cChromaBlockSize, cChromaBlockSize, 8U, 4U,
+                                      sh.chromaLog2WeightDenom_, w.chromaWeight[0], w.chromaOffset[0], w.chromaWeightFlag);
+                    applyWeightedPred(predV + cPartOffY * cChromaBlockSize, cChromaBlockSize, 8U, 4U,
+                                      sh.chromaLog2WeightDenom_, w.chromaWeight[1], w.chromaOffset[1], w.chromaWeightFlag);
+                }
             }
         }
         else if (mbTypeRaw == 2U)
@@ -1825,6 +1921,17 @@ private:
                                  static_cast<uint32_t>(mv.y) & 7U,
                                  4U, 8U, false,
                                  predV + cPartOffX, cChromaBlockSize);
+                // Weighted prediction — §8.4.2.3.1 (per 8x16 partition)
+                if (sh.hasWeightTable_)
+                {
+                    const auto& w = sh.weightL0_[refIdxL0[p]];
+                    applyWeightedPred(predLuma + partOffX, cMbSize, 8U, 16U,
+                                      sh.lumaLog2WeightDenom_, w.lumaWeight, w.lumaOffset, w.lumaWeightFlag);
+                    applyWeightedPred(predU + cPartOffX, cChromaBlockSize, 4U, 8U,
+                                      sh.chromaLog2WeightDenom_, w.chromaWeight[0], w.chromaOffset[0], w.chromaWeightFlag);
+                    applyWeightedPred(predV + cPartOffX, cChromaBlockSize, 4U, 8U,
+                                      sh.chromaLog2WeightDenom_, w.chromaWeight[1], w.chromaOffset[1], w.chromaWeightFlag);
+                }
             }
         }
         else
@@ -1862,6 +1969,17 @@ private:
                                  static_cast<uint32_t>(mv.y) & 7U,
                                  4U, 4U, false,
                                  predV + coy * cChromaBlockSize + cox, cChromaBlockSize);
+                // Weighted prediction — §8.4.2.3.1 (per 8x8 sub-MB)
+                if (sh.hasWeightTable_)
+                {
+                    const auto& w = sh.weightL0_[refIdxL0[s]];
+                    applyWeightedPred(predLuma + loy * cMbSize + lox, cMbSize, 8U, 8U,
+                                      sh.lumaLog2WeightDenom_, w.lumaWeight, w.lumaOffset, w.lumaWeightFlag);
+                    applyWeightedPred(predU + coy * cChromaBlockSize + cox, cChromaBlockSize, 4U, 4U,
+                                      sh.chromaLog2WeightDenom_, w.chromaWeight[0], w.chromaOffset[0], w.chromaWeightFlag);
+                    applyWeightedPred(predV + coy * cChromaBlockSize + cox, cChromaBlockSize, 4U, 4U,
+                                      sh.chromaLog2WeightDenom_, w.chromaWeight[1], w.chromaOffset[1], w.chromaWeightFlag);
+                }
             }
         }
 
@@ -2049,17 +2167,19 @@ private:
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
         setMbMotion(mbIdx, {0, 0}, -1);
 
-        // §9.3.3.1.2: condTermFlagN = 0 when neighbor is I_NxN (I_4x4),
-        // = 1 when NOT I_NxN (I_16x16, inter, unavailable).
-        bool leftIsI4x4 = (mbX > 0U) && mbIsI4x4_[mbIdx - 1U];
-        bool topIsI4x4 = (mbY > 0U) && mbIsI4x4_[mbIdx - widthInMbs_];
+        // §9.3.3.1.2: condTermFlagN for mb_type in I-slices.
+        // condTermFlagN = 0 when neighbor unavailable OR is I_NxN.
+        // condTermFlagN = 1 ONLY when neighbor available AND NOT I_NxN.
+        // Verified: ffmpeg/NXPlay both use condTerm=0 for unavailable.
+        // Pass true="treat as I_NxN (condTerm=0)" to the decode function.
+        bool leftCondZero = (mbX == 0U) || mbIsI4x4_[mbIdx - 1U]; // unavailable OR I_NxN
+        bool topCondZero  = (mbY == 0U) || mbIsI4x4_[mbIdx - widthInMbs_];
 
         uint32_t mbTypeRaw = cabacDecodeMbTypeI(cabacEngine_, cabacCtx_.data(),
-                                                 leftIsI4x4, topIsI4x4);
+                                                 leftCondZero, topCondZero);
 
         // Track I_NxN (I_4x4) for future neighbor context derivation
         mbIsI4x4_[mbIdx] = (mbTypeRaw == 0U);
-
         if (mbTypeRaw == 25U) return true; // I_PCM
         if (mbTypeRaw == 0U)
         {
@@ -2088,10 +2208,6 @@ private:
                 cabacCtx_[cCtxTransform8x8]) != 0U;
         }
 
-        // Decode prediction modes: 4 modes for I_8x8, 16 for I_4x4.
-        // Both use prev_intra_pred_mode_flag + rem via the same CABAC context
-        // (§9.3.3.1.3: prev_intra8x8 uses same ctxIdx 68 as prev_intra4x4).
-        // §8.3.1.1 / §8.3.2.1: MPM = min(leftMode, topMode).
         uint8_t predModes[16] = {};
         uint32_t numModeBlocks = use8x8Transform ? 4U : 16U;
         for (uint32_t i = 0U; i < numModeBlocks; ++i)
@@ -2113,7 +2229,17 @@ private:
 
             uint8_t leftMode = getNeighborIntra4x4Mode(mbX, mbY, rasterIdx, true, predModes);
             uint8_t topMode  = getNeighborIntra4x4Mode(mbX, mbY, rasterIdx, false, predModes);
-            uint8_t mpm = (leftMode < topMode) ? leftMode : topMode;
+
+            // §8.3.1.1: MPM = DC(2) when either neighbor MB is unavailable
+            bool leftFromOtherMb = (rasterIdx % 4U == 0U);
+            bool topFromOtherMb  = (rasterIdx < 4U);
+            bool leftMbAvail = !(leftFromOtherMb && mbX == 0U);
+            bool topMbAvail  = !(topFromOtherMb && mbY == 0U);
+            uint8_t mpm;
+            if (!leftMbAvail || !topMbAvail)
+                mpm = 2U;
+            else
+                mpm = (leftMode < topMode) ? leftMode : topMode;
 
             uint8_t result = cabacDecodeIntra4x4PredMode(cabacEngine_, cabacCtx_.data());
             uint8_t mode;
@@ -2138,7 +2264,7 @@ private:
             }
         }
 
-        // Chroma pred mode
+        // Chroma pred mode — §9.3.3.1.1.7
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
         bool leftIntra = (mbX == 0U) || (mbMotion_[(mbIdx - 1U) * 16U + 15U].refIdx == -1);
         bool topIntra = (mbY == 0U) || (mbMotion_[(mbIdx - widthInMbs_) * 16U + 12U].refIdx == -1);
@@ -2154,6 +2280,7 @@ private:
         uint8_t cbpLuma = cbp & 0x0FU;
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
         mbCbp_[mbIdx] = cbp;
+
 
         // QP delta
         if (cbp > 0U)
@@ -2255,12 +2382,28 @@ private:
                     for (uint32_t k = 0U; k < 16U; ++k)
                         coeffs[cZigzag4x4[k]] = scanCoeffs[k];
                     nnzLuma_[mbIdx * 16U + rasterIdx] = (numNonZero > 0U) ? 1U : 0U;
+
+                    // Trace: raw scan coefficients before dequant (CABAC path)
+                    trace_.onBlockResidual(mbX, mbY, blkIdx,
+                                           static_cast<int32_t>(cbfCtxInc),
+                                           numNonZero,
+                                           static_cast<uint32_t>(cabacEngine_.bitPosition()));
+                    // Trace: dequantized coefficients (CABAC path)
+                    trace_.emit({TraceEventType::BlockCoeffs,
+                                 static_cast<uint16_t>(mbX), static_cast<uint16_t>(mbY),
+                                 blkIdx, 0U, 0U, 0U, scanCoeffs, 16U});
+
                     inverseQuantize4x4(coeffs, qp);
                 }
                 else
                 {
                     nnzLuma_[mbIdx * 16U + rasterIdx] = 0U;
                 }
+
+                // Trace: prediction + output pixels (CABAC path)
+                trace_.emit({TraceEventType::BlockPixels,
+                             static_cast<uint16_t>(mbX), static_cast<uint16_t>(mbY),
+                             blkIdx, 0U, 0U, 0U, nullptr, 0U});
 
                 uint8_t* outPtr = mbLuma + blkY * yStride + blkX;
                 inverseDct4x4AddPred(coeffs, pred4x4, 4U, outPtr, yStride);
@@ -2285,22 +2428,22 @@ private:
 
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
         mbCbp_[mbIdx] = cbpLuma | (cbpChroma << 4U); // Store for neighbor context
-        bool leftIntra = (mbX == 0U) || (mbMotion_[(mbIdx - 1U) * 16U + 15U].refIdx == -1);
-        bool topIntra = (mbY == 0U) || (mbMotion_[(mbIdx - widthInMbs_) * 16U + 12U].refIdx == -1);
+        // §7.3.5: intra_chroma_pred_mode is always present for intra MBs
+        bool leftIntra2 = (mbX == 0U) || (mbMotion_[(mbIdx - 1U) * 16U + 15U].refIdx == -1);
+        bool topIntra2 = (mbY == 0U) || (mbMotion_[(mbIdx - widthInMbs_) * 16U + 12U].refIdx == -1);
         uint32_t chromaPredMode = cabacDecodeIntraChromaMode(cabacEngine_, cabacCtx_.data(),
-                                                              leftIntra, topIntra);
+                                                              leftIntra2, topIntra2);
 
         // QP delta
         int32_t qpDelta = cabacDecodeMbQpDelta(cabacEngine_, cabacCtx_.data(), false);
         qp += qpDelta;
-        qp = ((qp % 52) + 52) % 52; // Proper modular wrapping for any delta
+        qp = ((qp % 52) + 52) % 52;
 
         // Generate 16x16 prediction
         uint8_t lumaPred[256];
         intraPred16x16(static_cast<Intra16x16Mode>(predMode), *activeFrame_, mbX, mbY, lumaPred);
 
         // Decode DC block via CABAC (category 0 = Luma DC)
-        // CABAC outputs in scan order; reorder to raster for Hadamard.
         int16_t dcScan[16] = {};
         cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), dcScan, 16U, 0U);
 
@@ -2313,6 +2456,7 @@ private:
         int32_t qpDiv6 = qp / 6;
         int32_t qpMod6 = qp % 6;
         int32_t dcScale = cDequantScale[qpMod6][0];
+
         for (uint32_t i = 0U; i < 16U; ++i)
         {
             if (dcCoeffs[i] != 0)
@@ -2378,6 +2522,7 @@ private:
      *  @param mbQp  [in/out] Accumulated QP — ITU-T H.264 §7.4.5.
      */
     void decodeCabacPInterMb(BitReader& br, const Sps& sps, const Pps& pps,
+                              const SliceHeader& sh,
                               int32_t& mbQp, uint32_t mbTypeRaw,
                               Frame& target, const Frame& ref,
                               uint32_t mbX, uint32_t mbY) noexcept
@@ -2420,7 +2565,19 @@ private:
         chromaMotionComp(ref, chromaRefX, chromaRefY, cdx, cdy,
                          cChromaBlockSize, cChromaBlockSize, false, predV, cChromaBlockSize);
 
-        // CBP via CABAC — ��9.3.3.1.1.4 with per-block neighbor CBP
+        // Weighted prediction — §8.4.2.3.1 (CABAC P_L0_16x16, ref_idx=0)
+        if (sh.hasWeightTable_)
+        {
+            const auto& w = sh.weightL0_[0];
+            applyWeightedPred(predLuma, cMbSize, cMbSize, cMbSize,
+                              sh.lumaLog2WeightDenom_, w.lumaWeight, w.lumaOffset, w.lumaWeightFlag);
+            applyWeightedPred(predU, cChromaBlockSize, cChromaBlockSize, cChromaBlockSize,
+                              sh.chromaLog2WeightDenom_, w.chromaWeight[0], w.chromaOffset[0], w.chromaWeightFlag);
+            applyWeightedPred(predV, cChromaBlockSize, cChromaBlockSize, cChromaBlockSize,
+                              sh.chromaLog2WeightDenom_, w.chromaWeight[1], w.chromaOffset[1], w.chromaWeightFlag);
+        }
+
+        // CBP via CABAC — §9.3.3.1.1.4 with per-block neighbor CBP
         uint8_t cbp;
         {
             uint8_t lCbp = (mbX > 0U) ? mbCbp_[mbIdx - 1U] : 0x2FU;
@@ -2435,10 +2592,10 @@ private:
 
         // §7.3.5: For inter MBs with transform_8x8_mode_flag AND cbp != 0,
         // decode transform_size_8x8_flag after CBP.
+        bool use8x8Inter = false;
         if (cbp != 0U && pps.transform8x8Mode_ != 0U)
         {
-            /* bool use8x8 = */ cabacEngine_.decodeBin(cabacCtx_[cCtxTransform8x8]);
-            // TODO: use 8x8 inverse transform when flag is set
+            use8x8Inter = cabacEngine_.decodeBin(cabacCtx_[cCtxTransform8x8]) != 0U;
         }
 
         int32_t qp = mbQp;
@@ -2451,26 +2608,61 @@ private:
         }
         mbQp = qp; // Propagate accumulated QP
 
-        // Luma residual via CABAC (spec scan order §6.4.3)
+        // Luma residual via CABAC
         uint32_t yStride = target.yStride();
-        for (uint32_t blkIdx = 0U; blkIdx < 16U; ++blkIdx)
+
+        if (use8x8Inter)
         {
-            uint32_t blkX = cLuma4x4BlkX[blkIdx];
-            uint32_t blkY = cLuma4x4BlkY[blkIdx];
-            uint32_t rasterIdx = cLuma4x4ToRaster[blkIdx];
-            uint32_t group8x8 = blkIdx >> 2U;
-
-            int16_t coeffs[16] = {};
-            if ((cbpLuma >> group8x8) & 1U)
+            // 8x8 inter transform — §7.3.5.3 with ctxBlockCat=5
+            for (uint32_t blk8 = 0U; blk8 < 4U; ++blk8)
             {
-                cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), coeffs, 16U, 2U);
-                nnzLuma_[mbIdx * 16U + rasterIdx] = 1U;
-                inverseQuantize4x4(coeffs, qp);
-            }
+                uint32_t blkX = (blk8 & 1U) * 8U;
+                uint32_t blkY = (blk8 >> 1U) * 8U;
+                bool hasResidual = (cbpLuma >> blk8) & 1U;
 
-            uint8_t* predPtr = predLuma + blkY * cMbSize + blkX;
-            uint8_t* outPtr = target.yMb(mbX, mbY) + blkY * yStride + blkX;
-            inverseDct4x4AddPred(coeffs, predPtr, cMbSize, outPtr, yStride);
+                int16_t coeffs[64] = {};
+                if (hasResidual)
+                {
+                    int16_t scanCoeffs[64] = {};
+                    cabacDecodeResidual8x8(cabacEngine_, cabacCtx_.data(), scanCoeffs);
+                    for (uint32_t k = 0U; k < 64U; ++k)
+                        coeffs[cZigzag8x8[k]] = scanCoeffs[k];
+                    inverseQuantize8x8(coeffs, qp);
+                }
+
+                // Mark constituent 4x4 blocks NNZ
+                uint32_t base4x4 = (blk8 >> 1U) * 8U + (blk8 & 1U) * 2U;
+                for (uint32_t ny = 0U; ny < 2U; ++ny)
+                    for (uint32_t nx = 0U; nx < 2U; ++nx)
+                        nnzLuma_[mbIdx * 16U + base4x4 + ny * 4U + nx] = hasResidual ? 1U : 0U;
+
+                uint8_t* predPtr = predLuma + blkY * cMbSize + blkX;
+                uint8_t* outPtr = target.yMb(mbX, mbY) + blkY * yStride + blkX;
+                inverseDct8x8AddPred(coeffs, predPtr, cMbSize, outPtr, yStride);
+            }
+        }
+        else
+        {
+            // 4x4 inter transform (spec scan order §6.4.3)
+            for (uint32_t blkIdx = 0U; blkIdx < 16U; ++blkIdx)
+            {
+                uint32_t blkX = cLuma4x4BlkX[blkIdx];
+                uint32_t blkY = cLuma4x4BlkY[blkIdx];
+                uint32_t rasterIdx = cLuma4x4ToRaster[blkIdx];
+                uint32_t group8x8 = blkIdx >> 2U;
+
+                int16_t coeffs[16] = {};
+                if ((cbpLuma >> group8x8) & 1U)
+                {
+                    cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), coeffs, 16U, 2U);
+                    nnzLuma_[mbIdx * 16U + rasterIdx] = 1U;
+                    inverseQuantize4x4(coeffs, qp);
+                }
+
+                uint8_t* predPtr = predLuma + blkY * cMbSize + blkX;
+                uint8_t* outPtr = target.yMb(mbX, mbY) + blkY * yStride + blkX;
+                inverseDct4x4AddPred(coeffs, predPtr, cMbSize, outPtr, yStride);
+            }
         }
 
         // Chroma residual

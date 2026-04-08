@@ -6,6 +6,9 @@ set -e
 
 echo "Running tests before push..."
 
+# H.264 spec workflow compliance
+python scripts/check_spec_compliance.py --diff-range HEAD~1...HEAD
+
 # Configure if build directory doesn't exist
 if [ ! -d "build" ]; then
     echo "Build directory not found, configuring..."

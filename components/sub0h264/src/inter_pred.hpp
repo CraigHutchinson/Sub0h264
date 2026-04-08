@@ -402,6 +402,49 @@ inline void chromaMotionComp(const Frame& ref,
     }
 }
 
+/** Apply explicit weighted prediction to a prediction block — §8.4.2.3.1.
+ *
+ *  predWeighted[x][y] = Clip1Y( ((w * pred[x][y] + 2^(logWD-1)) >> logWD) + offset )
+ *
+ *  When the weight flag is false, the prediction is used as-is (identity).
+ *
+ *  @param pred       Prediction samples (modified in place)
+ *  @param stride     Stride of the prediction buffer
+ *  @param width      Block width in samples
+ *  @param height     Block height in samples
+ *  @param logWD      log2_weight_denom (luma or chroma)
+ *  @param weight     Weight value for this ref_idx
+ *  @param offset     Offset value for this ref_idx
+ *  @param weightFlag True if explicit weight was signaled
+ */
+inline void applyWeightedPred(uint8_t* pred, uint32_t stride,
+                               uint32_t width, uint32_t height,
+                               uint32_t logWD, int16_t weight,
+                               int16_t offset, bool weightFlag) noexcept
+{
+    if (!weightFlag)
+        return; // Default weight — identity, no change needed
+
+    // §8.4.2.3.1: round = 2^(logWD - 1) for logWD >= 1, else 0
+    int32_t round = (logWD >= 1U) ? (1 << (logWD - 1U)) : 0;
+
+    for (uint32_t row = 0U; row < height; ++row)
+    {
+        for (uint32_t col = 0U; col < width; ++col)
+        {
+            int32_t val = pred[row * stride + col];
+            if (logWD >= 1U)
+                val = ((weight * val + round) >> logWD) + offset;
+            else
+                val = weight * val + offset;
+            // Clip to [0, 255]
+            if (val < 0) val = 0;
+            if (val > 255) val = 255;
+            pred[row * stride + col] = static_cast<uint8_t>(val);
+        }
+    }
+}
+
 } // namespace sub0h264
 
 #endif // CROG_SUB0H264_INTER_PRED_HPP

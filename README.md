@@ -81,6 +81,22 @@ cmake --build --preset esp32p4
 ESPPORT=COM9 ctest --preset esp32p4
 ```
 
+## Spec Reference Source
+
+- Canonical ITU source (always resolve latest in-force first):
+	[H.264 Recommendation Index](https://www.itu.int/rec/T-REC-H.264)
+- Revision-specific source page example (superseded revisions may still exist):
+	[H.264 (08/21)](https://www.itu.int/rec/T-REC-H.264-202108-S)
+- Rebuild local mirror and normalized index under `docs/reference/itu/h264/{revision}/`:
+
+```bash
+python scripts/sync_h264_spec.py
+```
+
+- The sync script writes a per-revision manifest at:
+	`docs/reference/itu/h264/{revision}/normalized/manifest.json`
+	which records the resolved current in-force revision link.
+
 ## Project Structure
 
 | Directory | Purpose |
