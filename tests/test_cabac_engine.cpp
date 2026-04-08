@@ -1316,13 +1316,12 @@ TEST_CASE("CABAC hack: trace coeff level decode for u100 DC block")
     MESSAGE("Pre-DC engine: R=" << preDC.codIRange << " O=" << preDC.codIOffset
             << " bit=" << preDC.bitPosition);
 
-    // Check ctx states for level contexts
-    for (uint32_t i = 0; i < 10; ++i)
+    // Check ctx states for key contexts
+    MESSAGE("Key context states at init:");
+    for (uint32_t ci : {85U, 105U, 166U, 227U, 228U})
     {
-        uint32_t ci = 227U + i;
         MESSAGE("  ctx[" << ci << "]: state=" << (int)ctxSet[ci].state()
-                << " mps=" << (int)ctxSet[ci].mps()
-                << " (mpsState=0x" << std::hex << (int)ctxSet[ci].mpsState << std::dec << ")");
+                << " mps=" << (int)ctxSet[ci].mps());
     }
 
     // Now decode the DC residual
