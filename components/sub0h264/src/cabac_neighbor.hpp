@@ -142,6 +142,26 @@ public:
         };
     }
 
+    /** Chroma prediction mode context for intra_chroma_pred_mode — §9.3.3.1.1.7.
+     *
+     *  ctxInc = (chromaPredMode_left != 0 ? 1 : 0) + (chromaPredMode_top != 0 ? 1 : 0).
+     *  Unavailable or inter neighbors contribute 0 (mode assumed DC=0).
+     *
+     *  @return ctxInc value [0-2] for use with cCtxIntraChroma base.
+     */
+    uint32_t chromaModeCtxInc(uint32_t mbX, uint32_t mbY) const noexcept
+    {
+        uint32_t mbIdx = mbY * widthMbs_ + mbX;
+        uint32_t ctxInc = 0U;
+        // Left neighbor: non-zero chroma mode contributes 1
+        if (mbX > 0U && mbs_[mbIdx - 1U].chromaMode != 0U)
+            ctxInc += 1U;
+        // Top neighbor: non-zero chroma mode contributes 1
+        if (mbY > 0U && mbs_[mbIdx - widthMbs_].chromaMode != 0U)
+            ctxInc += 1U;
+        return ctxInc;
+    }
+
     /** @return Width in MBs. */
     uint32_t widthMbs() const noexcept { return widthMbs_; }
 

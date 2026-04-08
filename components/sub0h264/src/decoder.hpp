@@ -2263,12 +2263,12 @@ private:
             }
         }
 
-        // Chroma pred mode — §9.3.3.1.1.7
+        // Chroma pred mode — §9.3.3.1.1.7: ctxInc from neighbor chroma modes
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
-        bool leftIntra = (mbX == 0U) || (mbMotion_[(mbIdx - 1U) * 16U + 15U].refIdx == -1);
-        bool topIntra = (mbY == 0U) || (mbMotion_[(mbIdx - widthInMbs_) * 16U + 12U].refIdx == -1);
+        uint32_t chromaCtxInc = cabacNeighbor_.chromaModeCtxInc(mbX, mbY);
         uint32_t chromaPredMode = cabacDecodeIntraChromaMode(cabacEngine_, cabacCtx_.data(),
-                                                              leftIntra, topIntra);
+                                                              chromaCtxInc);
+        cabacNeighbor_[mbIdx].chromaMode = static_cast<uint8_t>(chromaPredMode);
 
         // CBP via CABAC — §9.3.3.1.1.4 with per-block neighbor CBP
         auto cbpN = cabacNeighbor_.cbpNeighbors(mbX, mbY);
@@ -2426,11 +2426,11 @@ private:
 
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
         cabacNeighbor_[mbIdx].cbp = cbpLuma | (cbpChroma << 4U); // Store for neighbor context
-        // §7.3.5: intra_chroma_pred_mode is always present for intra MBs
-        bool leftIntra2 = (mbX == 0U) || (mbMotion_[(mbIdx - 1U) * 16U + 15U].refIdx == -1);
-        bool topIntra2 = (mbY == 0U) || (mbMotion_[(mbIdx - widthInMbs_) * 16U + 12U].refIdx == -1);
+        // §9.3.3.1.1.7: intra_chroma_pred_mode — ctxInc from neighbor chroma modes
+        uint32_t chromaCtxInc = cabacNeighbor_.chromaModeCtxInc(mbX, mbY);
         uint32_t chromaPredMode = cabacDecodeIntraChromaMode(cabacEngine_, cabacCtx_.data(),
-                                                              leftIntra2, topIntra2);
+                                                              chromaCtxInc);
+        cabacNeighbor_[mbIdx].chromaMode = static_cast<uint8_t>(chromaPredMode);
 
         // QP delta
         int32_t qpDelta = cabacDecodeMbQpDelta(cabacEngine_, cabacCtx_.data(), false);

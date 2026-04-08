@@ -664,12 +664,14 @@ inline uint8_t cabacDecodeIntra4x4PredMode(CabacEngine& engine, CabacCtx* ctx) n
     return static_cast<uint8_t>(b0 | (b1 << 1U) | (b2 << 2U));
 }
 
-/** Decode intra_chroma_pred_mode (CABAC). */
+/** Decode intra_chroma_pred_mode (CABAC) — §9.3.3.1.1.7.
+ *
+ *  @param ctxInc  Pre-computed context increment [0-2] from neighbor chroma modes.
+ *                 ctxInc = (chromaMode_left != 0 ? 1 : 0) + (chromaMode_top != 0 ? 1 : 0)
+ */
 inline uint32_t cabacDecodeIntraChromaMode(CabacEngine& engine, CabacCtx* ctx,
-                                            bool leftIsIntra, bool topIsIntra) noexcept
+                                            uint32_t ctxInc) noexcept
 {
-    uint32_t ctxInc = (leftIsIntra ? 0U : 1U) + (topIsIntra ? 0U : 1U);
-
     if (engine.decodeBin(ctx[cCtxIntraChroma + ctxInc]) == 0U)
         return 0U; // DC
 

@@ -101,12 +101,17 @@ public:
     }
 
     /** Decode intra_chroma_pred_mode — §9.3.3.1.1.7.
+     *  Uses neighbor chroma modes from CabacNeighborCtx for context derivation.
+     *  Also stores the decoded mode in the neighbor context.
      *  @return 0=DC, 1=H, 2=V, 3=Plane.
      */
-    uint32_t decodeIntraChromaMode(bool leftIntra, bool topIntra) noexcept
+    uint32_t decodeIntraChromaMode(uint32_t mbX, uint32_t mbY) noexcept
     {
-        return cabacDecodeIntraChromaMode(*engine_, ctx_->data(),
-                                          leftIntra, topIntra);
+        uint32_t ctxInc = neighbor_->chromaModeCtxInc(mbX, mbY);
+        uint32_t mode = cabacDecodeIntraChromaMode(*engine_, ctx_->data(), ctxInc);
+        uint32_t mbIdx = mbY * neighbor_->widthMbs() + mbX;
+        (*neighbor_)[mbIdx].chromaMode = static_cast<uint8_t>(mode);
+        return mode;
     }
 
     /** Decode coded_block_pattern — §9.3.3.1.1.4.
