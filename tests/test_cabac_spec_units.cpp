@@ -15,6 +15,7 @@
 #include "../components/sub0h264/src/sps.hpp"
 #include "../components/sub0h264/src/pps.hpp"
 #include "../components/sub0h264/src/slice.hpp"
+#include "../components/sub0h264/src/cabac_neighbor.hpp"
 #include "../components/sub0h264/src/tables.hpp"
 #include "../components/sub0h264/src/transform.hpp"
 #include "test_fixtures.hpp"
@@ -375,6 +376,55 @@ TEST_CASE("Spec §9.3.3.1.1.7: chroma mode condTermFlag negative clause exhausti
 
     // Mixed: left unavailable, top available+intra+non-DC → 1
     CHECK(spec::ctxIdxIncChromaMode(false, true, false, true, 0, 2) == 1U);
+}
+
+TEST_CASE("CabacNeighborCtx::mbTypeCtxI matches spec for all neighbor states")
+{
+    // Verify the CabacNeighborCtx implementation produces the same ctxInc
+    // as the spec-verbatim function for all relevant neighbor configurations.
+    CabacNeighborCtx neighbor;
+    neighbor.init(3U, 3U); // 3x3 grid to test interior + edge MBs
+
+    // MB(0,0): both unavailable → ctxInc should be 0
+    {
+        bool leftI4x4, topI4x4;
+        neighbor.mbTypeCtxI(0, 0, leftI4x4, topI4x4);
+        uint32_t ctxInc = (leftI4x4 ? 0U : 1U) + (topI4x4 ? 0U : 1U);
+        uint32_t specCtxInc = spec::ctxIdxIncMbTypeI(false, false, false, false);
+        CHECK(ctxInc == specCtxInc);
+    }
+
+    // MB(1,0): left available (default=not I_NxN), top unavailable → ctxInc=1
+    {
+        bool leftI4x4, topI4x4;
+        neighbor.mbTypeCtxI(1, 0, leftI4x4, topI4x4);
+        uint32_t ctxInc = (leftI4x4 ? 0U : 1U) + (topI4x4 ? 0U : 1U);
+        // Left is available, default MbCabacInfo has isI4x4=false → condTerm=1
+        // Top is unavailable → condTerm=0
+        uint32_t specCtxInc = spec::ctxIdxIncMbTypeI(true, false, false, false);
+        CHECK(ctxInc == specCtxInc);
+    }
+
+    // MB(1,1): both available, both default (not I_NxN) → ctxInc=2
+    {
+        bool leftI4x4, topI4x4;
+        neighbor.mbTypeCtxI(1, 1, leftI4x4, topI4x4);
+        uint32_t ctxInc = (leftI4x4 ? 0U : 1U) + (topI4x4 ? 0U : 1U);
+        uint32_t specCtxInc = spec::ctxIdxIncMbTypeI(true, true, false, false);
+        CHECK(ctxInc == specCtxInc);
+    }
+
+    // Set MB(0,1) to I_4x4, then check MB(1,1)
+    neighbor[3].setI4x4(true); // MB(0,1) in a 3-wide grid
+    {
+        bool leftI4x4, topI4x4;
+        neighbor.mbTypeCtxI(1, 1, leftI4x4, topI4x4);
+        uint32_t ctxInc = (leftI4x4 ? 0U : 1U) + (topI4x4 ? 0U : 1U);
+        // Left = MB(0,1) = I_4x4 → condTerm=0
+        // Top = MB(1,0) = not I_4x4 → condTerm=1
+        uint32_t specCtxInc = spec::ctxIdxIncMbTypeI(true, true, true, false);
+        CHECK(ctxInc == specCtxInc);
+    }
 }
 
 // Helper: spec-verbatim decodeBin with context update
