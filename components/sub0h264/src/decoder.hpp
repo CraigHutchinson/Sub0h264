@@ -1026,8 +1026,7 @@ private:
         {
             int32_t qpDelta = br.readSev();
             qp += qpDelta;
-            if (qp < 0) qp += 52;
-            if (qp > 51) qp -= 52;
+            qp = ((qp % 52) + 52) % 52; // §7.4.5: proper modular wrapping
         }
 
 #if SUB0H264_TRACE
@@ -1998,8 +1997,7 @@ private:
         {
             int32_t qpDelta = br.readSev();
             qp += qpDelta;
-            if (qp < 0) qp += 52;
-            if (qp > 51) qp -= 52;
+            qp = ((qp % 52) + 52) % 52; // §7.4.5: proper modular wrapping
         }
 
         // Decode luma residual and reconstruct (spec scan order §6.4.3)
@@ -2226,7 +2224,7 @@ private:
                 rasterIdx = cLuma4x4ToRaster[i];
             }
 
-            //TODO: Shoudl we still do these when !leftMbAvail || !topMbAvail makes them redundant!?
+            // §8.3.1.2.1: neighbor mode derivation (always needed — MPM uses both)
             uint8_t leftMode = getNeighborIntra4x4Mode(mbX, mbY, rasterIdx, true, predModes);
             uint8_t topMode  = getNeighborIntra4x4Mode(mbX, mbY, rasterIdx, false, predModes);
 
@@ -2288,8 +2286,7 @@ private:
         {
             int32_t qpDelta = cabacDecodeMbQpDelta(cabacEngine_, cabacCtx_.data(), false);
             qp += qpDelta;
-            if (qp < 0) qp += 52;
-            if (qp > 51) qp -= 52;
+            qp = ((qp % 52) + 52) % 52; // §7.4.5: proper modular wrapping
         }
 
         // Decode luma residual — §7.3.5.3
@@ -2401,7 +2398,7 @@ private:
                 }
                 else
                 {
-                    //TODO: coeffs not initiaslised? or intended to be zeroed - could be fine
+                    // CBF=0: no residual for this block, coeffs remain zero-initialized
                     nnzLuma_[mbIdx * 16U + rasterIdx] = 0U;
                 }
 
@@ -2608,8 +2605,7 @@ private:
         {
             int32_t qpDelta = cabacDecodeMbQpDelta(cabacEngine_, cabacCtx_.data(), false);
             qp += qpDelta;
-            if (qp < 0) qp += 52;
-            if (qp > 51) qp -= 52;
+            qp = ((qp % 52) + 52) % 52; // §7.4.5: proper modular wrapping
         }
         mbQp = qp; // Propagate accumulated QP
 
