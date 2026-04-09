@@ -129,11 +129,28 @@ def get_total_pages(pdf_path: Path) -> int | None:
         return None
 
 
+def _label_depth(label: str) -> int:
+    """Return hierarchical depth of a section label.
+
+    Examples: "9" -> 1, "9.3" -> 2, "9.3.3.1.3" -> 5,
+              "Annex A" -> 1, "A.1" -> 2, "A.2.4" -> 3.
+    """
+    if label.startswith("Annex "):
+        return 1
+    return label.count(".") + 1
+
+
 def build_page_index(
     toc_sections: list[dict[str, str]],
     page_map: dict[str, int],
 ) -> list[dict]:
-    """Annotate toc entries with page and endPage from the PDF map."""
+    """Annotate toc entries with page and endPage from the PDF map.
+
+    endPage is the last page of the full section *including* all its
+    subsections — i.e. one page before the next sibling at the same depth
+    or any ancestor.  This lets agents read a complete section without
+    stopping at the first sub-heading.
+    """
     result: list[dict] = []
     for i, entry in enumerate(toc_sections):
         label = entry["label"]
@@ -141,13 +158,17 @@ def build_page_index(
         if page is None:
             continue
 
-        # endPage: start of the next section that has a known page, minus 1.
-        # Use max(page, ...) so sections on the same page get endPage == page.
+        current_depth = _label_depth(label)
+
+        # endPage: page before the next section at the SAME OR SHALLOWER depth
+        # (i.e. the next sibling or parent), so subsections are included.
         end_page = page
-        for j in range(i + 1, min(i + 30, len(toc_sections))):
-            nxt = page_map.get(toc_sections[j]["label"])
-            if nxt is not None:
-                end_page = max(page, nxt - 1)
+        for j in range(i + 1, len(toc_sections)):
+            next_label = toc_sections[j]["label"]
+            if _label_depth(next_label) <= current_depth:
+                nxt = page_map.get(next_label)
+                if nxt is not None:
+                    end_page = max(page, nxt - 1)
                 break
 
         result.append(
