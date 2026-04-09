@@ -87,9 +87,9 @@ public:
 
         if (oldest)
         {
+            // §8.2.5: Evict oldest non-reference — mark as non-ref, reuse slot
             oldest->isReference = false;
-            oldest->occupied = false;
-            oldest->occupied = true;
+            oldest->occupied = true; // Reuse this slot for new frame
             currentEntry_ = oldest;
             return &oldest->frame;
         }
