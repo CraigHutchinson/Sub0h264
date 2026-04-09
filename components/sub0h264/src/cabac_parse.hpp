@@ -126,6 +126,9 @@ inline uint32_t cabacDecodeMbTypeI(CabacEngine& engine, CabacCtx* ctx,
     if (cbpChromaFlag != 0U)
         cbpChroma = engine.decodeBin(ctx[base + 2U]) == 0U ? 1U : 2U; // ctx[8]
 
+    // §9.3.2.5: predMode uses FL binarization (2 bins) at ctx[9,10]
+    // Context indices: ctxIdxOffset(3) + ctxIdxInc(6) = 9, +7 = 10
+    // Confirmed by x264 encoder which passes ctx[3+6]=9, ctx[3+7]=10
     uint32_t predMode = (engine.decodeBin(ctx[base + 3U]) << 1U) | // ctx[9]
                           engine.decodeBin(ctx[base + 4U]);          // ctx[10]
 
