@@ -480,6 +480,16 @@ TEST_CASE("Spec complete: u100 full I_16x16 MB decode with DC residual §7.3.5/�
 
     uint32_t R = 510U;
     uint32_t O = br.readBits(9U);
+    // Verify RBSP bytes match Python extraction
+    {
+        char hex[64];
+        uint32_t pos = 0;
+        for (uint32_t i = 0; i < 11 && i < idrNal.rbspData.size(); ++i)
+            pos += std::snprintf(hex + pos, sizeof(hex) - pos, "%02x ",
+                                 idrNal.rbspData[i]);
+        MESSAGE("RBSP hex: " << hex);
+        MESSAGE("RBSP size: " << idrNal.rbspData.size() << " bytes");
+    }
     MESSAGE("§9.3.1.2 Init: R=" << R << " O=" << O << " QP=" << sliceQp);
 
     // ── §9.3.3.1.2: mb_type bin0 ──────────────────────────────────────
