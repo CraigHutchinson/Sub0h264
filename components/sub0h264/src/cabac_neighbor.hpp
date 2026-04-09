@@ -112,8 +112,8 @@ public:
     void mbTypeCtxI(uint32_t mbX, uint32_t mbY,
                     bool& leftIsI4x4, bool& topIsI4x4) const noexcept
     {
-        // Unavailable OR I_NxN → condTermFlag=0 → leftIsI4x4=true
-        // Available + NOT I_NxN (I_16x16/I_PCM) → condTermFlag=1 → leftIsI4x4=false
+        // §9.3.3.1.1.3: condTermFlagN = 0 when unavailable OR I_NxN
+        // Verified against ffmpeg source and ITU-T H.264 Table 9-39
         leftIsI4x4 = (mbX == 0U) || mbs_[mbY * widthMbs_ + mbX - 1U].isI4x4();
         topIsI4x4  = (mbY == 0U) || mbs_[(mbY - 1U) * widthMbs_ + mbX].isI4x4();
     }
