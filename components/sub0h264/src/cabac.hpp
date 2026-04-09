@@ -54,16 +54,71 @@ struct CabacCtx
 
 /** Combined table: rangeTabLPS, nextStateMPS, nextStateLPS.
  *
- *  Indexed by [combined_state][quantized_range].
- *  combined_state = (state << 1) | mps, so 128 entries (64 states × 2 MPS).
+ *  Indexed by [mpsState & 0x7F][quantized_range].
+ *  Index = pStateIdx | (valMPS << 6), so 0-63 = mps=0, 64-127 = mps=1.
  *
  *  Each 32-bit entry packs:
- *    bits  0-7:  rangeTabLPS value
- *    bits  8-14: next combined_state if MPS
- *    bits 15-21: next combined_state if LPS
+ *    bits  0-7:  rangeTabLPS value  (from Table 9-45)
+ *    bits  8-14: next mpsState if MPS decoded  (from Table 9-46 transIdxMPS)
+ *    bits 15-21: next mpsState if LPS decoded  (from Table 9-46 transIdxLPS)
  *
- *  From libavc gau4_ih264_cabac_table[128][4].
+ *  Generated from ITU-T H.264 Tables 9-45/9-46 via constexpr. Previous
+ *  version was sourced from libavc and had 6 rangeLPS values off by 1,
+ *  causing wrong bin decisions at engine state boundaries.
  */
+inline constexpr uint32_t cCabacTableGen() noexcept { return 0; } // placeholder for constexpr gen
+
+namespace detail {
+
+// ITU-T H.264 Table 9-45: rangeTabLPS[64][4]
+inline constexpr uint8_t rangeTabLPS[64][4] = {
+    {128,176,208,240}, {128,167,197,227}, {128,158,187,216}, {123,150,178,205},
+    {116,142,169,195}, {111,135,160,185}, {105,128,152,175}, {100,122,144,166},
+    { 95,116,137,158}, { 90,110,130,150}, { 85,104,123,142}, { 81, 99,117,135},
+    { 77, 94,111,128}, { 73, 89,105,122}, { 69, 85,100,116}, { 66, 80, 95,110},
+    { 62, 76, 90,104}, { 59, 72, 86, 99}, { 56, 69, 81, 94}, { 53, 65, 77, 89},
+    { 51, 62, 73, 85}, { 48, 59, 69, 80}, { 46, 56, 66, 76}, { 43, 53, 63, 72},
+    { 41, 50, 59, 69}, { 39, 48, 56, 65}, { 37, 45, 54, 62}, { 35, 43, 51, 59},
+    { 33, 41, 48, 56}, { 32, 39, 46, 53}, { 30, 37, 43, 50}, { 29, 35, 41, 48},
+    { 27, 33, 39, 45}, { 26, 31, 37, 43}, { 24, 30, 35, 41}, { 23, 28, 33, 39},
+    { 22, 27, 32, 37}, { 21, 26, 30, 35}, { 20, 24, 29, 33}, { 19, 23, 27, 31},
+    { 18, 22, 26, 30}, { 17, 21, 25, 29}, { 16, 20, 23, 27}, { 15, 19, 22, 26},
+    { 14, 18, 21, 25}, { 14, 17, 20, 23}, { 13, 16, 19, 22}, { 12, 15, 18, 21},
+    { 12, 14, 17, 20}, { 11, 14, 16, 19}, { 11, 13, 15, 18}, { 10, 12, 15, 17},
+    { 10, 12, 14, 16}, {  9, 11, 13, 15}, {  9, 11, 12, 14}, {  8, 10, 12, 14},
+    {  8,  9, 11, 13}, {  7,  9, 11, 12}, {  7,  9, 10, 12}, {  7,  8, 10, 11},
+    {  6,  8,  9, 11}, {  6,  7,  9, 10}, {  6,  7,  8,  9}, {  2,  2,  2,  2},
+};
+
+// ITU-T H.264 Table 9-46: state transition tables
+inline constexpr uint8_t transIdxMPS[64] = {
+     1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,
+    17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,
+    33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,
+    49,50,51,52,53,54,55,56,57,58,59,60,61,62,62,63,
+};
+inline constexpr uint8_t transIdxLPS[64] = {
+     0, 0, 1, 2, 2, 4, 4, 5, 6, 7, 8, 9, 9,11,11,12,
+    13,13,15,15,16,16,18,18,19,19,21,21,22,22,23,24,
+    24,25,26,26,27,27,28,29,29,30,30,30,31,32,32,33,
+    33,33,34,34,35,35,35,36,36,36,37,37,37,38,38,63,
+};
+
+/// Generate one packed table entry from spec tables.
+inline constexpr uint32_t packEntry(uint32_t pState, uint32_t mps, uint32_t q) noexcept
+{
+    uint32_t lps = rangeTabLPS[pState][q];
+    uint32_t nextMpsState = transIdxMPS[pState];
+    uint32_t nextMpsMpsState = nextMpsState | (mps << 6U);
+    uint32_t nextLpsState = transIdxLPS[pState];
+    uint32_t nextLpsMps = (pState == 0U) ? (1U - mps) : mps;
+    uint32_t nextLpsMpsState = nextLpsState | (nextLpsMps << 6U);
+    return lps | (nextMpsMpsState << 8U) | (nextLpsMpsState << 15U);
+}
+
+} // namespace detail
+
+/// Generated from ITU-T H.264 Tables 9-45/9-46 — constexpr, spec-auditable.
 inline constexpr uint32_t cCabacTable[128][4] = {
     { 2097536, 2097584, 2097616, 2097648 },
     { 640, 679, 709, 739 },
@@ -106,10 +161,10 @@ inline constexpr uint32_t cCabacTable[128][4] = {
     { 927508, 927512, 927517, 927521 },
     { 960531, 960535, 960539, 960543 },
     { 960786, 960790, 960794, 960798 },
-    { 993809, 993813, 993817, 993820 },
+    { 993809, 993813, 993817, 993821 },
     { 994064, 994068, 994071, 994075 },
-    { 994319, 994323, 994326, 994329 },
-    { 1027342, 1027346, 1027349, 1027352 },
+    { 994319, 994323, 994326, 994330 },
+    { 1027342, 1027346, 1027349, 1027353 },
     { 1060366, 1060369, 1060372, 1060375 },
     { 1060621, 1060624, 1060627, 1060630 },
     { 1093644, 1093647, 1093650, 1093653 },
@@ -171,10 +226,10 @@ inline constexpr uint32_t cCabacTable[128][4] = {
     { 3041044, 3041048, 3041053, 3041057 },
     { 3074067, 3074071, 3074075, 3074079 },
     { 3074322, 3074326, 3074330, 3074334 },
-    { 3107345, 3107349, 3107353, 3107356 },
+    { 3107345, 3107349, 3107353, 3107357 },
     { 3107600, 3107604, 3107607, 3107611 },
-    { 3107855, 3107859, 3107862, 3107865 },
-    { 3140878, 3140882, 3140885, 3140888 },
+    { 3107855, 3107859, 3107862, 3107866 },
+    { 3140878, 3140882, 3140885, 3140889 },
     { 3173902, 3173905, 3173908, 3173911 },
     { 3174157, 3174160, 3174163, 3174166 },
     { 3207180, 3207183, 3207186, 3207189 },

@@ -98,18 +98,24 @@ public:
 
     /** mb_type context increment for I-slices — §9.3.3.1.1.3 Table 9-39.
      *
-     *  condTermFlagN = 0 if neighbor unavailable OR neighbor is I_NxN (I_4x4/I_8x8).
-     *  condTermFlagN = 1 otherwise (neighbor is I_16x16, I_PCM, etc).
-     *  ctxInc = condTermFlagA + condTermFlagB (left + top).
+     *  condTermFlagN for mb_type in I-slices (verified against ffmpeg):
+     *  - Unavailable neighbor → condTermFlagN = 0 (treated as I_NxN)
+     *  - Available, mb_type = I_NxN (I_4x4/I_8x8) → condTermFlagN = 0
+     *  - Available, mb_type = I_16x16/I_PCM → condTermFlagN = 1
      *
-     *  @return Pair {leftCondZero, topCondZero} for cabacDecodeMbTypeI().
+     *  ffmpeg logic: ctx++ only when neighbor IS available AND is I_16x16 or I_PCM.
+     *
+     *  ctxInc = condTermFlagA + condTermFlagB (left + top).
+     *  @return Pair {leftIsI4x4, topIsI4x4} for cabacDecodeMbTypeI().
+     *          leftIsI4x4=true means condTermFlag=0 for that neighbor.
      */
     void mbTypeCtxI(uint32_t mbX, uint32_t mbY,
-                    bool& leftCondZero, bool& topCondZero) const noexcept
+                    bool& leftIsI4x4, bool& topIsI4x4) const noexcept
     {
-        // §9.3.3.1.1.3: condTermFlagN = 0 when unavailable
-        leftCondZero = (mbX == 0U) || mbs_[mbY * widthMbs_ + mbX - 1U].isI4x4();
-        topCondZero  = (mbY == 0U) || mbs_[(mbY - 1U) * widthMbs_ + mbX].isI4x4();
+        // Unavailable OR I_NxN → condTermFlag=0 → leftIsI4x4=true
+        // Available + NOT I_NxN (I_16x16/I_PCM) → condTermFlag=1 → leftIsI4x4=false
+        leftIsI4x4 = (mbX == 0U) || mbs_[mbY * widthMbs_ + mbX - 1U].isI4x4();
+        topIsI4x4  = (mbY == 0U) || mbs_[(mbY - 1U) * widthMbs_ + mbX].isI4x4();
     }
 
     /** mb_skip_flag context increment for P-slices — §9.3.3.1.1.1.
