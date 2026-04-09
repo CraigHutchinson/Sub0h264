@@ -90,18 +90,37 @@ def parse_pdf_url(landing_html: str, landing_url: str, revision: str, suffix: st
 
 
 def parse_toc_sections(toc_html: str) -> list[dict[str, str]]:
-    text = re.sub(r"<[^>]+>", " ", toc_html)
-    text = unescape(re.sub(r"\s+", " ", text))
-    found = set()
+    # The TOC is a <pre> block with one entry per line: indentation + label + space + title.
+    # Parse line-by-line to avoid adjacent labels bleeding into each other.
+    #
+    # Two line formats exist:
+    #   Top-level Annex:  "A  Annex A  Profiles and levels"
+    #   All others:       "[indent] <label> <title>"
+    #     where label is e.g. "9.3.3.1.3", "A.1", "A.2.4", or bare "0"
+    annex_top_re = re.compile(r"^\s*[A-Z]\s+(Annex\s+[A-Z])\s+(.+)")
+    section_re = re.compile(r"^\s*((?:[A-Z]\.\d+(?:\.\d+){0,4}|\d+(?:\.\d+){0,5}))\s+(.+)")
+    text = re.sub(r"<[^>]+>", "", toc_html)
+    found: set[str] = set()
     sections: list[dict[str, str]] = []
-    for match in re.finditer(r"(Annex\s+[A-Z]|\d+(?:\.\d+){0,4})\s+([^\d][^\.;]{2,160})", text):
-        label = match.group(1).strip()
-        title = match.group(2).strip(" -\n\r\t")
-        key = f"{label}|{title[:80]}"
-        if key in found:
+    for raw_line in text.splitlines():
+        # Top-level Annex line: "A  Annex A  Profiles and levels"
+        m = annex_top_re.match(raw_line)
+        if m:
+            label = m.group(1).strip()
+            title = unescape(m.group(2)).strip(" -\t")
+            if label not in found:
+                found.add(label)
+                sections.append({"label": label, "title": title})
             continue
-        found.add(key)
-        sections.append({"label": label, "title": title})
+        # Numeric and Annex subsection lines: "6.4.11.2 ..." / "A.1 ..."
+        m = section_re.match(raw_line)
+        if not m:
+            continue
+        label = m.group(1).strip()
+        title = unescape(m.group(2)).strip(" -\t")
+        if label not in found:
+            found.add(label)
+            sections.append({"label": label, "title": title})
     return sections[:5000]
 
 

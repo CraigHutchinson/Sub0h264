@@ -23,6 +23,17 @@ python scripts/sync_h264_spec.py
   `docs/reference/itu/h264/{revision}/normalized/`
 - Source provenance and resolved in-force revision are recorded in:
   `docs/reference/itu/h264/{revision}/normalized/manifest.json`
+- **Look up specific spec text** (sections, tables, equations, pseudocode) with the `/spec-lookup` skill:
+  ```
+  /spec-lookup §9.3.3.1.3
+  /spec-lookup Table 9-45
+  /spec-lookup 8.5.12.1
+  ```
+  Requires `page-index.json` — generate it once after syncing:
+  ```bash
+  pip install pymupdf
+  python scripts/extract_spec_page_index.py
+  ```
 
 ## Bash — Command Execution Rules
 
