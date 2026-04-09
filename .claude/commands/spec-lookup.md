@@ -4,66 +4,64 @@ Look up a specific section, table, figure, or topic from the ITU-T H.264 (202408
 
 ## Instructions
 
-### 1. Understand what is being requested
+Spawn a subagent using the Agent tool to perform the lookup. This keeps the PDF page images out of the caller's context window.
 
-Classify the query:
-- **Section reference**: `§9.3.3.1.3`, `8.5.12.1`, `Annex B`, `A.2.4` → look up by label
-- **Table/Figure reference**: `Table 9-45`, `Figure 9-3` → no direct label match; use chapter heuristic
-- **Keyword**: `rangeTabLPS`, `condTermFlag`, `CAVLC` → search titles
+Pass the following as the subagent prompt, substituting the query:
 
-Normalize the reference: strip leading §, trailing punctuation.
+---
 
-### 2. Read the page index
+**Subagent prompt:**
+
+Look up "$ARGUMENTS" in the ITU-T H.264 (202408, V15) specification stored locally. Return the verbatim spec text — section headings, normative text, syntax tables, equations, pseudocode — as plain text. Do NOT return images; transcribe the content.
+
+### Step 1 — Classify and normalize the query
+
+- Section ref: `§9.3.3.1.3`, `8.5.12.1`, `Annex B`, `A.2.4` → strip §, use as label
+- Table/Figure ref: `Table 9-45`, `Figure 9-3` → use chapter heuristic (see Step 2c)
+- Keyword: `rangeTabLPS`, `condTermFlag` → search titles
+
+### Step 2 — Find the page range
 
 Read `docs/reference/itu/h264/202408/normalized/page-index.json`.
 
-Search for a matching entry using this priority order:
-1. **Exact label match**: `entry.label == normalized_reference`
-2. **Prefix match**: entry.label starts with the query (e.g. `9.3.3` → finds `9.3.3.1.3`)
-3. **Title keyword search** (case-insensitive): `entry.title` contains the query text
+Search order:
+1. **Exact label match**: `entry.label == normalized_query`
+2. **Title keyword search** (case-insensitive): `entry.title` contains the query
 
 **For Table/Figure references** (e.g. `Table 9-45`):
-- Table numbers embed the chapter: `Table 9-45` → chapter 9 → read §9.3.3.2.x pages, which contain the CABAC tables
-- `Table 7-x` → chapter 7 syntax, `Table 8-x` → chapter 8 reconstruction, etc.
-- Read the most likely containing section (usually the section whose label starts with the table's chapter number and covers the relevant algorithm)
-- **V15 renumbering note**: V15 (08/2024) removed Annex F and renumbered subsequent content. Table and figure numbers in code comments citing older revisions may be off by 1 or more. Cross-check against the actual table content, not just the number.
+- Chapter prefix = first digit(s) before dash: `Table 9-45` → chapter 9
+- Read the section in that chapter most likely to contain the table (use common locations below)
+- V15 renumbering note: V15 removed Annex F; table/figure numbers from old code comments may be off by 1.
 
-**For keyword searches** (e.g. `rangeTabLPS`, `condTermFlag`):
-- Find sections whose titles contain the keyword
-- Also check nearby sections (often the table is inside a section rather than named in its title)
+If page-index.json is missing, stop and return:
+`page-index.json missing — run: pip install pymupdf && python scripts/extract_spec_page_index.py`
 
-### 3. Read the PDF pages
+### Step 3 — Read the PDF pages
 
-If page-index.json is missing, tell the user:
-```
-page-index.json is missing. Generate it with:
-  pip install pymupdf
-  python scripts/extract_spec_page_index.py
-```
+Use the Read tool on `docs/reference/itu/h264/202408/raw/spec.pdf` with `pages: "<page>-<endPage>"`.
+- Read at most 5 pages at a time. If the section spans more, read the first 5 pages then read the next batch if the content is incomplete.
 
-Use the Read tool on `docs/reference/itu/h264/202408/raw/spec.pdf` with the `pages` parameter.
-- Set `pages` to `"<page>-<endPage>"` from the matched entry
-- Cap the range: read at most 5 pages at a time (`page` to `min(endPage, page+4)`)
-- If the content spans more than 5 pages, read the first 5 and offer to continue
+### Step 4 — Return transcribed text only
 
-### 4. Return the spec text
+Transcribe all visible text from the PDF pages relevant to the query:
+- Section heading and number
+- Normative text, definitions, constraints
+- Tables: reproduce as markdown tables or structured text
+- Equations/pseudocode: reproduce verbatim using ASCII math
 
-Extract and present verbatim:
-- The section heading and number
-- All normative text, syntax tables, equations, and pseudocode
-- Any cross-references to related sections
+Cite at the top: **ITU-T H.264 §\<label\>, page \<page\> (V15, 08/2024)**
 
-Always cite: **ITU-T H.264 §\<label\>, Table/Figure \<N\>, page \<page\> (V15, 08/2024)**
+Do not return images or describe page layout — only the spec content.
 
-### 5. Common section locations (for fast lookup)
+### Common section locations
 
 | Topic | Section | ~Pages |
 |-------|---------|--------|
 | CABAC init (m, n tables) | 9.3.1.1 | 253–275 |
 | CABAC engine init | 9.3.1.2 | 276 |
-| Binarization (Table 9-34) | 9.3.2 | 280–284 |
+| Binarization table (Table 9-34) | 9.3.2 | 280–284 |
 | ctxIdx derivation | 9.3.3.1 | 285–304 |
-| Arithmetic decode | 9.3.3.2.1 | 299 |
+| Arithmetic decode flowchart | 9.3.3.2.1 | 299 |
 | rangeTabLPS (Table 9-44) | 9.3.3.2.1.1 | 300 |
 | State transitions (Table 9-45) | 9.3.3.2.1.1 | 301–302 |
 | CAVLC coeff_token | 9.2.1 | 241 |
@@ -73,4 +71,9 @@ Always cite: **ITU-T H.264 §\<label\>, Table/Figure \<N\>, page \<page\> (V15, 
 | Deblocking | 8.7 | 228 |
 | SPS syntax | 7.3.2.1 | 69 |
 | Slice header syntax | 7.3.3 | 79 |
+| NAL unit semantics | 7.4.1 | 89–99 |
 | Annex B byte stream | Annex B | 335 |
+
+---
+
+Return the subagent's response directly to the user.
