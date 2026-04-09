@@ -294,6 +294,89 @@ TEST_CASE("Spec §9.3.3.2.1: cCabacTable matches Table 9-45 for all states")
     CHECK(mismatches == 0U);
 }
 
+// ── Negative-clause tests: exercise both branches of every conditional ──
+
+TEST_CASE("Spec §9.3.3.1.1.3: mb_type condTermFlag negative clause exhaustive")
+{
+    // Test EVERY combination of availability × mb_type to catch inversion bugs.
+    // The spec says: condTermFlagN = 0 if unavailable, = (mb_type != I_NxN) if available.
+    // These tests verify both the positive AND negative branches.
+
+    // Case 1: Both unavailable → ctxInc=0
+    CHECK(spec::ctxIdxIncMbTypeI(false, false, false, false) == 0U);
+    CHECK(spec::ctxIdxIncMbTypeI(false, false, true, true) == 0U); // I_NxN ignored when unavail
+
+    // Case 2: Left available + I_NxN (I_4x4) → condTerm=0
+    CHECK(spec::ctxIdxIncMbTypeI(true, false, true, false) == 0U);
+
+    // Case 3: Left available + NOT I_NxN (I_16x16) → condTerm=1
+    CHECK(spec::ctxIdxIncMbTypeI(true, false, false, false) == 1U);
+
+    // Case 4: Top available + I_NxN → condTerm=0
+    CHECK(spec::ctxIdxIncMbTypeI(false, true, false, true) == 0U);
+
+    // Case 5: Top available + NOT I_NxN → condTerm=1
+    CHECK(spec::ctxIdxIncMbTypeI(false, true, false, false) == 1U);
+
+    // Case 6: Both available + both I_NxN → ctxInc=0
+    CHECK(spec::ctxIdxIncMbTypeI(true, true, true, true) == 0U);
+
+    // Case 7: Both available + both NOT I_NxN → ctxInc=2
+    CHECK(spec::ctxIdxIncMbTypeI(true, true, false, false) == 2U);
+
+    // Case 8: Mixed — left I_NxN, top NOT I_NxN → ctxInc=1
+    CHECK(spec::ctxIdxIncMbTypeI(true, true, true, false) == 1U);
+
+    // Case 9: Mixed — left NOT I_NxN, top I_NxN → ctxInc=1
+    CHECK(spec::ctxIdxIncMbTypeI(true, true, false, true) == 1U);
+}
+
+TEST_CASE("Spec §9.3.3.1.1.1: mb_skip_flag condTermFlag negative clause exhaustive")
+{
+    // condTermFlagN = 0 if unavailable, = (!mb_skip_flag) if available
+
+    // Both unavailable → ctxInc=0
+    CHECK(spec::ctxIdxIncMbSkipP(false, false, false, false) == 0U);
+
+    // Available + skipped → condTerm=0
+    CHECK(spec::ctxIdxIncMbSkipP(true, false, true, false) == 0U);
+
+    // Available + NOT skipped → condTerm=1
+    CHECK(spec::ctxIdxIncMbSkipP(true, false, false, false) == 1U);
+
+    // Both available + both not skipped → ctxInc=2
+    CHECK(spec::ctxIdxIncMbSkipP(true, true, false, false) == 2U);
+
+    // Both available + both skipped → ctxInc=0
+    CHECK(spec::ctxIdxIncMbSkipP(true, true, true, true) == 0U);
+}
+
+TEST_CASE("Spec §9.3.3.1.1.7: chroma mode condTermFlag negative clause exhaustive")
+{
+    // condTermFlagN = 0 if unavailable, 0 if not intra, (chromaMode!=0) if intra
+
+    // Unavailable → 0 regardless
+    CHECK(spec::ctxIdxIncChromaMode(false, false, true, true, 3, 3) == 0U);
+
+    // Available but not intra → 0
+    CHECK(spec::ctxIdxIncChromaMode(true, true, false, false, 3, 3) == 0U);
+
+    // Available, intra, DC mode (0) → 0
+    CHECK(spec::ctxIdxIncChromaMode(true, true, true, true, 0, 0) == 0U);
+
+    // Available, intra, non-DC left → 1
+    CHECK(spec::ctxIdxIncChromaMode(true, true, true, true, 1, 0) == 1U);
+
+    // Available, intra, non-DC top → 1
+    CHECK(spec::ctxIdxIncChromaMode(true, true, true, true, 0, 2) == 1U);
+
+    // Available, intra, both non-DC → 2
+    CHECK(spec::ctxIdxIncChromaMode(true, true, true, true, 3, 1) == 2U);
+
+    // Mixed: left unavailable, top available+intra+non-DC → 1
+    CHECK(spec::ctxIdxIncChromaMode(false, true, false, true, 0, 2) == 1U);
+}
+
 // Helper: spec-verbatim decodeBin with context update
 static uint32_t specBin(uint32_t& R, uint32_t& O, CabacCtx& ctx, BitReader& br)
 {
