@@ -333,6 +333,7 @@ private:
         heightInMbs_ = sps->heightInMbs_;
         uint32_t totalMbs = static_cast<uint32_t>(widthInMbs_) * heightInMbs_;
 
+        //TODO: We should reason about the best way to manage DPB initialization and resizing. Currently we check if dpbInitialized_ is false, and if so we call dpb_.init() with the width, height, and numRefFrames from the SPS. This means that the DPB will be initialized on the first frame that uses a valid SPS. However, we should also consider what happens if we encounter a new SPS with different dimensions or reference frame requirements later in the stream. In that case, we might need to reinitialize or resize the DPB to accommodate the new parameters. We should ensure that our DPB implementation can handle such changes gracefully, either by allowing dynamic resizing or by enforcing that all frames use the same SPS parameters. Additionally, we should consider how this interacts with frame buffers that are currently in use as references in the DPB when reinitializing or resizing.
         if (!dpbInitialized_)
         {
             dpb_.init(sps->width(), sps->height(), sps->numRefFrames_);
@@ -344,6 +345,7 @@ private:
         if (!decodeTarget)
             return DecodeStatus::Error;
 
+        //TODO: We should reason about the best way to manage the active frame buffer for decoding. Currently we call dpb_.getDecodeTarget() to get a frame to decode into, and we also have a separate currentFrame_ that we use for backwards compatibility. We need to ensure that we are correctly managing the lifecycle of these frames, especially when it comes to reference counting and ensuring that we don't overwrite frames that are still needed as references. We might want to consider having a clear ownership model where the DPB manages all frame buffers and we only have pointers or references to those frames in the decoder, rather than having a separate currentFrame_ that is allocated independently. This would help avoid confusion and potential bugs related to frame management.
         // Also keep a reference in currentFrame_ for backwards compatibility
         if (!currentFrame_.isAllocated() ||
             currentFrame_.width() != sps->width() ||
@@ -353,6 +355,9 @@ private:
         }
 
         // Resize context arrays
+        // TODO: we could optimize this by only resizing on resolution change
+        // TODO: We should use a custom allocator or some more specific batch allocating approach so we can ensure memory locality of table allocations?
+        // TODO: We could just allocate a static maximal-bounded size -embedded friendly.
         nnzLuma_.resize(totalMbs * 16U, 0U);
         nnzCb_.resize(totalMbs * 4U, 0U);
         nnzCr_.resize(totalMbs * 4U, 0U);
@@ -368,6 +373,8 @@ private:
             decodeTarget = dpb_.getDecodeTarget();
         }
 
+        // TODO; We should reason over if these all need to be zeroed - document if they do or don't etc.
+        //TODO: We should consider using a more efficient way to clear these large context arrays, such as std::fill or memset, instead of a loop. For example, we could use std::fill(nnzLuma_.begin(), nnzLuma_.end(), 0U) to set all values to zero in one call, which is likely optimized and more efficient than a manual loop. This would also improve readability by clearly indicating that we are initializing the entire array to zero.
         std::fill(nnzLuma_.begin(), nnzLuma_.end(), static_cast<uint8_t>(0U));
         std::fill(nnzCb_.begin(), nnzCb_.end(), static_cast<uint8_t>(0U));
         std::fill(nnzCr_.begin(), nnzCr_.end(), static_cast<uint8_t>(0U));
@@ -389,10 +396,11 @@ private:
         const Frame* refFrame = nullptr;
 
         // Initialize CABAC engine if High profile
-        bool useCabac = pps->isCabac();
+        const bool useCabac = pps->isCabac();
         if (useCabac)
         {
             // Align to byte boundary after slice header
+            //TODO: We should reason about the best way to handle bitstream alignment after the slice header when using CABAC. Currently we call br.alignToByte() before initializing the CABAC engine, which is necessary because the slice header may not end on a byte boundary and CABAC decoding operates on bytes. However, we should ensure that this alignment is correctly handled in all cases, especially if there are any optional fields in the slice header that could affect the bit offset. We might also want to consider encapsulating this alignment logic into a helper function that is called whenever we switch from parsing syntax elements to initializing the CABAC engine, to ensure consistency and reduce the chance of errors.
             br.alignToByte();
 
             // Initialize CABAC contexts — §9.3.1.1
@@ -402,7 +410,6 @@ private:
 
             // Initialize arithmetic engine — §9.3.1.2
             cabacEngine_.init(br);
-
 
             // Initialize per-MB CABAC neighbor context
             cabacNeighbor_.init(widthInMbs_, heightInMbs_);
@@ -551,11 +558,14 @@ private:
                 uint32_t mbSkipRun = 0U;
                 bool needSkipRun = true;
 
+                //TODO: We should reason about how to optimize the skip_run handling in CAVLC P-slice decoding. Currently we read skip_run at the start of the loop when needSkipRun is true, and then decrement mbSkipRun for each skipped MB until it reaches zero. This means we check the needSkipRun condition on every MB, which adds some overhead. We could consider restructuring this to read skip_run once and then have an inner loop that processes all the skipped MBs before reading the next skip_run, which would reduce the number of condition checks and might be more efficient. Alternatively, we could encapsulate the skip_run logic into a helper function that manages the state and returns whether the current MB is skipped or coded, which would simplify the main decoding loop and potentially improve readability.
                 for (uint32_t mbAddr = sh.firstMbInSlice_; mbAddr < totalMbs; ++mbAddr)
                 {
                     uint32_t mbX = mbAddr % widthInMbs_;
                     uint32_t mbY = mbAddr / widthInMbs_;
 
+                    //TODO: Optimize - occurs always first iteraton, we can just read this once before the loop and then only read again when needed.
+                    //TODO: We should reason about the best way to handle the skip_run state in the CAVLC P-slice decoding. Currently we have a boolean flag needSkipRun that indicates when we need to read a new skip_run value from the bitstream, and then we decrement mbSkipRun for each skipped MB until it reaches zero. This works, but it might be cleaner to structure this as an explicit loop that reads skip_run and then processes that many skipped MBs before reading the next coded MB. This would more closely follow the structure of the bitstream and might be easier to understand and maintain. We could also consider encapsulating this logic into a helper function that manages the skip_run state and returns whether the current MB is skipped or coded, which would simplify the main decoding loop.
                     if (needSkipRun)
                     {
                         mbSkipRun = br.readUev();
@@ -581,6 +591,7 @@ private:
 
                         trace_.onMbStart(mbX, mbY, mbTypeRaw, static_cast<uint32_t>(br.bitOffset()));
 
+                        //TODO: We should reason about how to unify the intra-in-P handling between CAVLC and CABAC. Currently we have separate code paths for each, which leads to some duplication and potential for divergence. We could consider refactoring to have a common function for decoding intra MBs in P-slices that is called from both CAVLC and CABAC paths, with the only difference being how we read the mb_type (raw value from CAVLC vs decoded value from CABAC). This would help ensure consistency in intra MB handling across both entropy coding methods and reduce code duplication.
                         if (mbTypeRaw >= 5U)
                         {
                             mbTypeRaw -= 5U;
@@ -624,6 +635,9 @@ private:
             {
                 for (uint32_t mx = 0U; mx < widthInMbs_; ++mx)
                 {
+                    //TODO: We should reason about how to efficiently determine intra vs inter MBs for deblocking. Currently we check the reference index of the first 4x4 block's MV, which is a common heuristic since intra MBs have no references. However, this relies on the assumption that all blocks in an intra MB are marked with refIdx = -1, which should be true but we should verify this is always the case in our decoding logic. Alternatively, we could maintain a separate per-MB flag during decoding to explicitly track intra vs inter MBs, which might be more robust and slightly faster to check during deblocking.
+                    //TODO: We should also consider the implications of this intra/inter check for edge cases, such as MBs with mixed intra/inter blocks (if such a thing is possible), or how this interacts with the I_NxN types in P-slices. We should verify that our decoding logic correctly sets the refIdx for all blocks in an intra MB to -1, and that we don't have any cases where an inter MB might have a block with refIdx = -1 that could cause a false positive for intra detection.
+                    //TODO: We could also consider if there are any performance implications of this check, especially if we have a large number of MBs to deblock. If this becomes a bottleneck, we might want to optimize by maintaining an explicit intra/inter flag per MB during decoding, as mentioned above.
                     bool mbIsIntra = (mbMotion_[(my * widthInMbs_ + mx) * 16U].refIdx == -1);
                     deblockMb(dbFrame, mx, my,
                               mbIsIntra, alphaOff, betaOff,
@@ -635,6 +649,10 @@ private:
             if (profile_) profile_->deblockUs += sub0h264TimerUs() - dbT0;
         }
 
+        //TODO: Is this the right place for this? It needs to be after deblocking, but should it be here or at the end of the function?
+        //TODO: We should reason about the memory management strategy here - currently we have the DPB manage frame buffers and we copy to currentFrame_ for output. With the activeFrame_ refactor, we decode directly into the DPB target when possible, eliminating the copy. We should consider if we can eliminate currentFrame_ entirely and just have currentFrame() return a pointer to the DPB frame when available.
+        //TODO: We could also consider a more explicit memory management strategy where we have a pool of frame buffers and we manage allocation and reuse more directly, rather than having the DPB implicitly manage frame buffers. This could allow for better performance and memory locality, especially on embedded platforms.
+        //TODO: We should also consider the implications of multi-threaded decoding on memory management and synchronization, especially if we want to decode multiple frames in parallel or use separate threads for decoding and output.
         // Frame sync: only needed if activeFrame_ differs from decodeTarget.
         // With the activeFrame_ refactor, I-slices decode directly into DPB
         // when possible, eliminating the ~460KB copy.
@@ -652,6 +670,7 @@ private:
 
         if (profile_) profile_->overheadUs += sub0h264TimerUs() - syncT0;
 
+        //TODO: We should reason about when frames are marked as reference and when they are output. Currently we mark as reference here after decoding, but before output. This means that the current frame is available as a reference for the next frame before it is output. This is necessary for correct reference management, but we should consider if there are any implications for output latency or memory management, especially if we want to support low-latency streaming or real-time applications.
         // Mark as reference for future P-frames — §8.2.5
         if (nal.refIdc != 0U)
         {
@@ -681,7 +700,10 @@ private:
                        const SliceHeader& sh, int32_t& currentQp,
                        uint32_t mbX, uint32_t mbY) noexcept
     {
+        //TODO: is sh needed here? We need to pass it in for intraPred16x16 and intraPred4x4, but is there any other reason we need it in this function? If not, we could consider only passing the necessary parameters to intraPred16x16 and intraPred4x4 and not the entire sh, which would make those functions more modular and easier to test. For example, we could extract the relevant parameters from the sh (such as slice type, QP, etc.) and pass those directly to the prediction functions, rather than passing the entire sh object.
         (void)sh;
+
+        //TODO: Is hasBits ewrroneously guarding the wrong thing here? We currently check hasBits(1) before reading mb_type, but mb_type is a ue(v) which can be more than 1 bit. We should verify that we are correctly checking for sufficient bits in the bitstream before attempting to read mb_type, and that we are accounting for the variable-length nature of the ue(v) coding. It might be more appropriate to check for a minimum number of bits that would be required to read a valid mb_type, or to handle the case where we attempt to read mb_type and catch any errors or exceptions that indicate insufficient bits.
         if (!br.hasBits(1U))
             return false;
 
@@ -728,6 +750,7 @@ private:
                          uint32_t mbTypeRaw, int32_t& qp,
                          uint32_t mbX, uint32_t mbY) noexcept
     {
+        //TODO: Is sps needed here? We need to pass it in for intraPred16x16, but is there any other reason we need it in this function? If not, we could consider only passing the necessary parameters to intraPred16x16 and not the entire sps, which would make the function more modular and easier to test. For example, we could extract the relevant parameters from the sps (such as width, height, etc.) and pass those directly to intraPred16x16, rather than passing the entire sps object.
         (void)sps;
         uint8_t predMode = i16x16PredMode(static_cast<uint8_t>(mbTypeRaw));
         uint8_t cbpLuma  = i16x16CbpLuma(static_cast<uint8_t>(mbTypeRaw));
@@ -748,6 +771,8 @@ private:
             std::printf("[DBG]   MB(%lu) Before chroma_pred: bitOff=%lu\n",
                 (unsigned long)mbX, (unsigned long)br.bitOffset());
 #endif
+
+        //TODO: We should reason about the best way to handle the chroma prediction mode parsing and its interaction with the bitstream. Currently we read the chroma prediction mode as a ue(v) after reading the mb_type and before decoding the luma DC block. We should verify that this is the correct order according to the H.264 specification, and that we are correctly handling any cases where the chroma prediction mode might not be present (e.g., if cbpChroma is zero). We might also want to consider encapsulating the chroma prediction mode parsing into a helper function that takes care of checking whether it should be present based on cbpChroma and returns an optional value, which would make the code cleaner and more robust.
         uint32_t chromaPredMode = br.readUev();
 
 #if SUB0H264_TRACE
@@ -756,6 +781,7 @@ private:
                 (unsigned long)mbX, (unsigned long)chromaPredMode, (unsigned long)br.bitOffset());
 #endif
 
+        //TODO: We should reason about the best way to handle the QP delta parsing and accumulation. Currently we read the qp_delta as a signed Exp-Golomb value and then accumulate it into the current QP, applying modular wrapping to ensure it stays within the valid range of 0-51. We should verify that this correctly follows the H.264 specification for how QP deltas are applied across MBs, and that we are correctly handling any edge cases (e.g., large positive or negative deltas). We might also want to consider encapsulating this logic into a helper function that takes the current QP and the bitstream, reads the qp_delta, applies it, and returns the new QP, which would make the code cleaner and easier to test.
         // QP delta
         int32_t qpDelta = br.readSev();
 #if SUB0H264_TRACE
@@ -764,6 +790,7 @@ private:
                 (unsigned long)mbX, qpDelta, (unsigned long)br.bitOffset());
 #endif
         qp += qpDelta;
+        //TODO: We should verify that this modular wrapping logic for QP is correct and follows the H.264 specification. The current implementation uses a common technique for modular arithmetic that handles negative values correctly, but we should ensure that it behaves as expected for all possible QP deltas and initial QP values. We might want to write some unit tests for this function to verify that it correctly wraps QP values into the 0-51 range for a variety of inputs.
         qp = ((qp % 52) + 52) % 52; // Proper modular wrapping for any delta
 
         // 1. Generate 16x16 luma prediction
@@ -1562,6 +1589,13 @@ private:
                          Frame& target, uint32_t mbX, uint32_t mbY,
                          uint8_t numRefIdxL0Active = 1U) noexcept
     {
+        //TODO: refactor to separate MV decode from residual decode, to avoid shadow var confusion and enable more granular tracing.
+        //TODO: consider refactoring to separate partition-level MV decode from per-4x4 storage, to avoid shadow var confusion and enable more granular tracing.
+        //TODO: consider refactoring to separate chroma residual decode from luma, to avoid bitstream alignment issues and enable more granular tracing.
+        //TODO: consider refactoring to separate residual decode from reconstruction, to enable more granular tracing and avoid confusion about when MVs vs residuals are available.
+        //TODO: consider refactoring to separate prediction from reconstruction, to enable more granular tracing and avoid confusion about when residuals vs output pixels are available.
+        //TODO: add specification references for the sequencing (high importance) and the logic at all steps
+
         (void)sps;
         // Trace numRefIdxL0Active for first MB of each frame
         if (mbX == 0U && mbY == 0U)
@@ -1802,7 +1836,6 @@ private:
         }
         // P_8x8 MVs were stored incrementally in the sub-partition loop above.
 
-
         // Per-partition motion compensation — ITU-T H.264 §8.4.2
         // Reference frame lookup per partition via DPB L0 list.
         auto getRef = [this](uint8_t idx) -> const Frame& {
@@ -1819,6 +1852,7 @@ private:
 
         if (mbTypeRaw <= 2U && numParts == 1U)
         {
+            //TODO: refactor to unify with partition loop below (currently separate loops for partitions and sub-partitions, but could unify with appropriate indexing and offsets)
             // P_L0_16x16: single 16x16 partition
             const Frame& ref = getRef(refIdxL0[0]);
             MotionVector& mv = mvPart[0];
@@ -1853,6 +1887,7 @@ private:
             // P_L0_L0_16x8: two 16x8 partitions (top half, bottom half)
             for (uint32_t p = 0U; p < 2U; ++p)
             {
+                //TODO: refactor to avoid code duplication with partition loop below (currently separate loops for partitions and sub-partitions, but could unify with appropriate indexing and offsets)
                 const Frame& ref = getRef(refIdxL0[p]);
                 MotionVector& mv = mvPart[p];
                 uint32_t partOffY = p * 8U;
@@ -1895,6 +1930,7 @@ private:
             // P_L0_L0_8x16: two 8x16 partitions (left half, right half)
             for (uint32_t p = 0U; p < 2U; ++p)
             {
+                //TODO: refactor to avoid code duplication with partition loop above (currently separate loops for partitions and sub-partitions, but could unify with appropriate indexing and offsets)
                 const Frame& ref = getRef(refIdxL0[p]);
                 MotionVector& mv = mvPart[p];
                 uint32_t partOffX = p * 8U;
@@ -1943,6 +1979,7 @@ private:
 
             for (uint32_t s = 0U; s < 4U; ++s)
             {
+                //TODO: refactor to avoid code duplication with partition loop above (currently separate loops for partitions and sub-partitions, but could unify with appropriate indexing and offsets)
                 const Frame& ref = getRef(refIdxL0[s]);
                 MotionVector& mv = mvSub8x8[s];
                 uint32_t lox = subLumaOffX[s], loy = subLumaOffY[s];
@@ -1985,8 +2022,11 @@ private:
         trace_.onMbEnd(mbX, mbY, static_cast<uint32_t>(br.bitOffset())); // pre-CBP bit
         uint32_t cbpCode = br.readUev();
         uint8_t cbp = 0U;
+        //TODO: consider validating cbpCode against max possible value from cCbpTable (currently just checking <48, but could be more precise based on actual table size and contents)
+        //TODO: Magic numbers need to be fixed here and elsehwere (currently using 48U as upper bound for cbpCode based on cCbpTable size, but should be defined constant or derived from actual table dimensions for clarity and maintainability)
         if (cbpCode < 48U)
             cbp = cCbpTable[cbpCode][1]; // Inter CBP mapping
+        
         uint8_t cbpLuma = cbp & 0x0FU;
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
         // Trace CBP: use BlockResidual with blkIdx=99 as CBP marker
@@ -1997,6 +2037,8 @@ private:
         {
             int32_t qpDelta = br.readSev();
             qp += qpDelta;
+            //TODO: consider tracking qpDelta separately for trace and/or debugging (currently only final qp stored in trace via mbQp, but qpDelta could be useful for debugging or analysis)
+            //TODO: DRY with encoder's QP handling (currently separate code in encoder and decoder for applying qpDelta and modular wrapping, but could be unified in shared function)
             qp = ((qp % 52) + 52) % 52; // §7.4.5: proper modular wrapping
         }
 
@@ -2008,9 +2050,12 @@ private:
             uint32_t blkY = cLuma4x4BlkY[blkIdx];
             uint32_t rasterIdx = cLuma4x4ToRaster[blkIdx];
 
+            //TODO: consider tracking non-zero coeffs count per block for early zeroing and/or skipping inverse transform if zero (currently tracked in nnzLuma_ but not used for skipping)
             uint32_t group8x8 = blkIdx >> 2U;
             bool hasResidual = (cbpLuma >> group8x8) & 1U;
 
+            //TODO: comment if coeffs need to be zeroed or not (depends on how inverseQuantize4x4 handles coeffs with zero totalCoeff)
+            //TODO: consider unifying coeffs storage for luma/chroma (currently separate ResidualBlock4x4 structs for luma DC, chroma DC, chroma AC, and direct coeffs array for luma AC)
             int16_t coeffs[16] = {};
             if (hasResidual)
             {
@@ -2026,6 +2071,7 @@ private:
                 inverseQuantize4x4(coeffs, qp);
             }
 
+            //TODO: consider separate handling for DC vs AC blocks (currently combined in single ResidualBlock4x4 and decodeResidualBlock4x4 calls with nc=-1 for DC and nc from getLumaNc for AC, but could be split into separate paths for clarity and/or optimization)
             uint8_t* predPtr = predLuma + blkY * cMbSize + blkX;
             uint8_t* outPtr = target.yMb(mbX, mbY) + blkY * yStride + blkX;
             inverseDct4x4AddPred(coeffs, predPtr, cMbSize, outPtr, yStride);
@@ -2135,6 +2181,7 @@ private:
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
         setMbMotion(mbIdx, {0, 0}, -1);
 
+        //TODO: Should we track I_NxN here for future neighbor context derivation? It's not needed for intra decode since no CABAC, but it would be needed if we later switch to CABAC for intra in P-slices.
         if (mbTypeRaw == 25U) return true; // I_PCM
 
         // With activeFrame_ pointing to the DPB target, intra decoders write
@@ -2146,6 +2193,7 @@ private:
         if (isI16x16(static_cast<uint8_t>(mbTypeRaw)))
             ok = decodeI16x16Mb(br, sps, pps, mbTypeRaw, mbQp, mbX, mbY);
         else
+        //TODO: We currently treat all non-I_16x16 MBs in P-slices as I_4x4, but we should ideally support both I_4x4 and I_8x8 (with transform8x8Mode_) in P-slices. This requires separate neighbor context handling since the left/top neighbors could be either I_4x4 or I_16x16.
             ok = decodeI4x4Mb(br, sps, pps, mbQp, mbX, mbY);
 
         return ok;
@@ -2194,6 +2242,9 @@ private:
     bool decodeCabacI4x4Mb(const Sps& sps, const Pps& pps,
                             int32_t& qp, uint32_t mbX, uint32_t mbY) noexcept
     {
+        //TODO: This function is currently only used for I_4x4 MBs in P-slices, but it should ideally also be used for I_4x4 MBs in I-slices when CABAC is enabled for intra. This requires some adjustments to neighbor context handling since the left/top neighbors could be either I_4x4 or I_16x16, and the current implementation assumes all neighbors are I_4x4 for simplicity. We may need to track I_NxN status separately for each neighbor to handle this correctly.
+        //TODO: add specification references for the sequencing (high importance) and the logic at all steps
+
         (void)sps;
 
         // §7.3.5: For I_NxN with transform_8x8_mode_flag=1, decode
@@ -2239,17 +2290,20 @@ private:
             else
                 mpm = (leftMode < topMode) ? leftMode : topMode;
 
-            //TODO: THis is missing any specification reference/validation for this logic!
+            // §8.3.1.1: Derivation of Intra4x4PredMode
+            // prev_intra4x4_pred_mode_flag=1 → mode = predIntra4x4PredMode (MPM)
+            // prev_intra4x4_pred_mode_flag=0 → mode = rem if rem < MPM, else rem + 1
+            // CABAC: flag at ctx[68], rem at ctx[69] (3 context-coded bins, LSB-first)
             uint8_t result = cabacDecodeIntra4x4PredMode(cabacEngine_, cabacCtx_.data());
             uint8_t mode;
             if (result == 0xFFU)
-                mode = mpm;
+                mode = mpm; // prev_flag=1: use most probable mode
             else
                 mode = (result < mpm) ? result : static_cast<uint8_t>(result + 1U);
 
             if (use8x8Transform)
             {
-                //TODO: THis is missing any specification reference/validation for this logic!
+                // §6.4.3: scan order maps 8x8 block to constituent 4x4 blocks
                 // Propagate mode to all 4 constituent 4x4 blocks for neighbor lookup
                 static constexpr uint32_t c8x8Sub[4][4] = {
                     {0U, 1U, 4U, 5U}, {2U, 3U, 6U, 7U},
@@ -2280,8 +2334,9 @@ private:
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
         cabacNeighbor_[mbIdx].cbp = cbp;
 
-        //TODO: THis is missing any specification reference/validation for this logic!
-        // QP delta
+        // §7.3.5.1: mb_qp_delta present when CodedBlockPatternLuma > 0 OR
+        // CodedBlockPatternChroma > 0 (NOT for Intra_16x16 which is always present)
+        // For I_4x4: cbp = cbpLuma | (cbpChroma << 4), so cbp > 0 covers both.
         if (cbp > 0U)
         {
             int32_t qpDelta = cabacDecodeMbQpDelta(cabacEngine_, cabacCtx_.data(), false);
@@ -2324,8 +2379,9 @@ private:
                     inverseQuantize8x8(coeffs, qp);
                 }
             
-                //TODO: THis is missing any specification reference/validation for this logic!
-                // Mark all constituent 4x4 blocks NNZ
+                // §6.4.3: 8x8→4x4 raster index mapping. blk8 is in raster scan order:
+                // blk8=0→(0,0), blk8=1→(1,0), blk8=2→(0,1), blk8=3→(1,1)
+                // base4x4 = top-left 4x4 raster index of the 8x8 block
                 uint32_t base4x4 = (blk8 >> 1U) * 8U + (blk8 & 1U) * 2U;
                 for (uint32_t dy = 0U; dy < 2U; ++dy)
                     for (uint32_t dx = 0U; dx < 2U; ++dx)
@@ -2340,14 +2396,15 @@ private:
             // I_4x4: 16 × 4x4 residual blocks (spec scan order §6.4.3)
             for (uint32_t blkIdx = 0U; blkIdx < 16U; ++blkIdx)
             {
+                //TODO: consider precomputing absolute positions for each block in a separate table for clarity and/or performance (currently computed on the fly using cLuma4x4BlkX/Y and mbX/Y, but could be simplified with a direct lookup)
                 uint32_t blkX = cLuma4x4BlkX[blkIdx];
                 uint32_t blkY = cLuma4x4BlkY[blkIdx];
                 uint32_t rasterIdx = cLuma4x4ToRaster[blkIdx];
                 uint32_t absX = mbX * cMbSize + blkX;
                 uint32_t absY = mbY * cMbSize + blkY;
 
-                //TODO: THis is missing any specification reference/validation for this logic!
-                // Prediction
+                // §6.4.2: Availability of neighboring samples for intra prediction
+                // §8.3.1.2: Intra_4x4 prediction process
                 uint8_t pred4x4[16];
                 uint8_t topBuf[8] = {}, leftBuf[4] = {}, topLeftVal = cDefaultPredValue;
                 const uint8_t *top = nullptr, *topRight = nullptr, *left = nullptr, *topLeft = nullptr;
@@ -2357,8 +2414,8 @@ private:
 
                 intraPred4x4(static_cast<Intra4x4Mode>(predModes[rasterIdx]), top, topRight, left, topLeft, pred4x4);
 
-                //TODO: THis is missing any specification reference/validation for this logic!
-                // Residual via CABAC
+                // §7.3.5.3: Residual data syntax — cbpLuma bit per 8x8 group
+                // §7.4.5: CodedBlockPatternLuma bit i corresponds to 8x8 block i
                 uint32_t group8x8 = blkIdx >> 2U;
                 bool hasResidual = (cbpLuma >> group8x8) & 1U;
 
@@ -2423,6 +2480,16 @@ private:
                               uint32_t mbTypeRaw, int32_t& qp,
                               uint32_t mbX, uint32_t mbY) noexcept
     {
+        // §7.3.5: macroblock_layer() for Intra_16x16 — sequencing:
+        //   1. mb_type already decoded (includes predMode, cbpLuma, cbpChroma)
+        //   2. intra_chroma_pred_mode (§7.3.5.1)
+        //   3. mb_qp_delta (§7.3.5.1, ALWAYS present for I_16x16)
+        //   4. Intra16x16DCLevel residual (§7.3.5.3, ALWAYS present)
+        //   5. Intra16x16ACLevel residual (§7.3.5.3, only if cbpLuma != 0)
+        //   6. ChromaDCLevel residual (§7.3.5.3, only if cbpChroma != 0)
+        //   7. ChromaACLevel residual (§7.3.5.3, only if cbpChroma == 2)
+        // Note: Used for both I-slices and intra-in-P-slices (neighbor context
+        // handled by CabacNeighborCtx which tracks I_NxN per MB).
         (void)sps;
         uint8_t predMode = i16x16PredMode(static_cast<uint8_t>(mbTypeRaw));
         uint8_t cbpLuma  = i16x16CbpLuma(static_cast<uint8_t>(mbTypeRaw));
@@ -2460,6 +2527,10 @@ private:
         int32_t qpMod6 = qp % 6;
         int32_t dcScale = cDequantScale[qpMod6][0];
 
+        // §8.5.12.1 Eq. 8-324..8-326: Scaling of Intra16x16 luma DC coefficients
+        // f[i] = d[i] * LevelScale(qP%6, 0, 0)  (where LevelScale = V[qP%6][0][0])
+        // If qP/6 >= 2: dcY[i] = f[i] << (qP/6 - 2)
+        // If qP/6 < 2:  dcY[i] = (f[i] + (1 << (1 - qP/6))) >> (2 - qP/6)
         for (uint32_t i = 0U; i < 16U; ++i)
         {
             if (dcCoeffs[i] != 0)
@@ -2485,6 +2556,7 @@ private:
 
             if (cbpLuma)
             {
+                //TODO: We should consider splitting the AC decode into a separate function for clarity, since the DC decode is already handled via the Hadamard path and the AC decode has a different context derivation (cbfInc) than the I_4x4 case. This would also allow us to add more specific specification references for the AC decode logic, which is currently missing and important for validation.
                 // §9.3.3.1.1.3: coded_block_flag ctxIdxInc = condTermFlagA + 2*condTermFlagB
                 uint32_t leftNnz = 0U, topNnz = 0U;
                 if (rasterIdx % 4U > 0U)
@@ -2530,6 +2602,9 @@ private:
                               Frame& target, const Frame& ref,
                               uint32_t mbX, uint32_t mbY) noexcept
     {
+        //TODO: add specification references for the sequencing (high importance) and the logic at all steps
+        //TODO: This function is currently only used for P-inter MBs in P-slices, but it should ideally also be used for P-inter MBs in I-slices when CABAC is enabled for inter. This requires some adjustments to neighbor context handling since the left/top neighbors could be either inter or intra, and the current implementation assumes all neighbors are inter for simplicity. We may need to track inter/intra status separately for each neighbor to handle this correctly.
+
         (void)br; (void)sps; (void)mbTypeRaw;
         // Decode MVD via CABAC
         int16_t mvdX = cabacDecodeMvd(cabacEngine_, cabacCtx_.data(), cCtxMvdX, 0);
