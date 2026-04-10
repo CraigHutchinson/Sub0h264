@@ -2569,9 +2569,20 @@ private:
                              blkIdx, 0U, 0U, 0U, nullptr, 0U});
 
                 uint8_t* outPtr = mbLuma + blkY * yStride + blkX;
-                inverseDct4x4AddPred(coeffs, pred4x4, 4U, outPtr, yStride);
 
-                // (debug traces removed — see git history for investigation)
+// Experiment: write prediction to frame buffer first, then add IDCT residual
+// in-place. This matches ffmpeg's approach where pred is written to dst first,
+// then idct_add reads prediction from dst and adds residual to it.
+// Result: No change — prediction stride doesn't affect values.
+// #define SUB0H264_EXP_PRED_INPLACE
+#ifdef SUB0H264_EXP_PRED_INPLACE
+                for (uint32_t pr = 0U; pr < 4U; ++pr)
+                    for (uint32_t pc = 0U; pc < 4U; ++pc)
+                        outPtr[pr * yStride + pc] = pred4x4[pr * 4U + pc];
+                inverseDct4x4AddPred(coeffs, outPtr, yStride, outPtr, yStride);
+#else
+                inverseDct4x4AddPred(coeffs, pred4x4, 4U, outPtr, yStride);
+#endif
             }
         }
 
