@@ -29,6 +29,12 @@
 // but drops absolute PSNR due to 16× normalization factor — see cabac-quality-fix.md)
 // #define SUB0H264_SPEC_DEQUANT
 
+// When defined, apply >>6 normalization at dequant level (per-coefficient),
+// not at the IDCT output level. This matches ffmpeg's convention and produces
+// correct rounding for multi-coefficient blocks. Without this, the IDCT output
+// >>6 causes different rounding behavior that diverges from ffmpeg on noisy content.
+// #define SUB0H264_DEQUANT_NORM
+
 #include <cstdint>
 #include <algorithm>
 #include <array>
@@ -145,10 +151,18 @@ inline void inverseDct4x4AddPred(const int16_t* coeffs,
         int32_t z2 = (block[1 + 4 * i] >> 1) - block[3 + 4 * i];
         int32_t z3 = block[1 + 4 * i] + (block[3 + 4 * i] >> 1);
 
+#ifdef SUB0H264_DEQUANT_NORM
+        // >>6 already applied at dequant level — just add prediction and clip.
+        out[i * outStride + 0] = static_cast<uint8_t>(clipU8(pred[i * predStride + 0] + (z0 + z3)));
+        out[i * outStride + 1] = static_cast<uint8_t>(clipU8(pred[i * predStride + 1] + (z1 + z2)));
+        out[i * outStride + 2] = static_cast<uint8_t>(clipU8(pred[i * predStride + 2] + (z1 - z2)));
+        out[i * outStride + 3] = static_cast<uint8_t>(clipU8(pred[i * predStride + 3] + (z0 - z3)));
+#else
         out[i * outStride + 0] = static_cast<uint8_t>(clipU8(pred[i * predStride + 0] + ((z0 + z3 + 32) >> 6)));
         out[i * outStride + 1] = static_cast<uint8_t>(clipU8(pred[i * predStride + 1] + ((z1 + z2 + 32) >> 6)));
         out[i * outStride + 2] = static_cast<uint8_t>(clipU8(pred[i * predStride + 2] + ((z1 - z2 + 32) >> 6)));
         out[i * outStride + 3] = static_cast<uint8_t>(clipU8(pred[i * predStride + 3] + ((z0 - z3 + 32) >> 6)));
+#endif
     }
 }
 
@@ -159,7 +173,11 @@ inline void inverseDcOnly4x4AddPred(int16_t dcCoeff,
                                      const uint8_t* pred, uint32_t predStride,
                                      uint8_t* out, uint32_t outStride) noexcept
 {
+#ifdef SUB0H264_DEQUANT_NORM
+    int32_t dcVal = dcCoeff; // >>6 already applied at dequant
+#else
     int32_t dcVal = (dcCoeff + 32) >> 6;
+#endif
 
     for (uint32_t row = 0U; row < 4U; ++row)
     {
@@ -271,28 +289,20 @@ inline void inverseQuantize4x4(int16_t* coeffs, int32_t qp, bool isDc = false) n
 
         if (isDc)
         {
-            // I_16x16 Hadamard DC: ITU-T H.264 §8.5.12.1.
-            // Hadamard includes its own normalization, so full << qpDiv6.
             val <<= qpDiv6;
         }
         else
         {
 #ifdef SUB0H264_SPEC_DEQUANT
-            // §8.5.12.1 Eqs 8-336/8-337: spec-correct 4x4 residual scaling.
-            //   if qP >= 24 (qpDiv6 >= 4): d = (c * LevelScale) << (qpDiv6 - 4)
-            //   if qP <  24 (qpDiv6 <  4): d = (c * LevelScale + 2^(3-qpDiv6)) >> (4-qpDiv6)
-            // The IDCT (Eq 8-354) applies (h + 32) >> 6.
-            // When enabled: CABAC-CAVLC gap closes to 0.5 dB (proving CABAC parse correct).
-            // Disabled by default: absolute PSNR drops 52→16 dB due to unknown 16× compensating
-            // factor elsewhere in the pipeline. See cabac-quality-fix.md.
             if (qpDiv6 >= 4)
                 val <<= (qpDiv6 - 4);
             else
                 val = (val + (1 << (3 - qpDiv6))) >> (4 - qpDiv6);
 #else
-            // libavc convention: absorbs full << qpDiv6 into dequant.
-            // Produces pixel-perfect CAVLC output (52 dB) but 16× over-scaled vs spec.
             val <<= qpDiv6;
+#endif
+#ifdef SUB0H264_DEQUANT_NORM
+            val = (val + 32) >> 6;
 #endif
         }
 
