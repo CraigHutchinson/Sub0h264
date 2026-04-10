@@ -2434,6 +2434,10 @@ private:
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
         cabacNeighbor_[mbIdx].cbp = cbp;
 
+        if (mbX == 0U && mbY == 0U)
+            std::fprintf(stderr, "[I4x4] MB(%u,%u) cbpLuma=0x%X cbpChroma=%u cbp=0x%02X\n",
+                mbX, mbY, cbpLuma, cbpChroma, cbp);
+
         // §7.3.5: mb_qp_delta ae(v) — only if cbp > 0 for I_NxN (NOT always like I_16x16).
         // [CHECKED §7.3.5] (FM-3: cbp encodes both luma and chroma; cbp>0 correctly covers both.)
         if (cbp > 0U)

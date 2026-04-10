@@ -124,10 +124,13 @@ inline void inverseDct4x4AddPred(const int16_t* coeffs,
                                   uint8_t* out, uint32_t outStride) noexcept
 {
     // ITU-T H.264 §8.5.12.2: 4x4 inverse integer transform. [CHECKED §8.5.12.2]
-    // Column pass first, then row pass. Butterfly: z0=d0+d2, z1=d0-d2,
-    // z2=(d1>>1)-d3, z3=d1+(d3>>1). Output (val+32)>>6 rounding. [CHECKED FM-6]
+    // ffmpeg-style: add rounding bias to block[0] before butterfly, then >>6 at output.
+    // This matches ffmpeg's ff_h264_idct_add exactly. [CHECKED FM-6]
     int16_t block[16];
     std::memcpy(block, coeffs, 16 * sizeof(int16_t));
+
+    // ffmpeg: block[0] += 1 << 5 (rounding bias for the >>6 at output)
+    block[0] += 32;
 
     // Pass 1: Column transform
     for (uint32_t i = 0U; i < 4U; ++i)
@@ -151,18 +154,11 @@ inline void inverseDct4x4AddPred(const int16_t* coeffs,
         int32_t z2 = (block[1 + 4 * i] >> 1) - block[3 + 4 * i];
         int32_t z3 = block[1 + 4 * i] + (block[3 + 4 * i] >> 1);
 
-#ifdef SUB0H264_DEQUANT_NORM
-        // >>6 already applied at dequant level — just add prediction and clip.
-        out[i * outStride + 0] = static_cast<uint8_t>(clipU8(pred[i * predStride + 0] + (z0 + z3)));
-        out[i * outStride + 1] = static_cast<uint8_t>(clipU8(pred[i * predStride + 1] + (z1 + z2)));
-        out[i * outStride + 2] = static_cast<uint8_t>(clipU8(pred[i * predStride + 2] + (z1 - z2)));
-        out[i * outStride + 3] = static_cast<uint8_t>(clipU8(pred[i * predStride + 3] + (z0 - z3)));
-#else
-        out[i * outStride + 0] = static_cast<uint8_t>(clipU8(pred[i * predStride + 0] + ((z0 + z3 + 32) >> 6)));
-        out[i * outStride + 1] = static_cast<uint8_t>(clipU8(pred[i * predStride + 1] + ((z1 + z2 + 32) >> 6)));
-        out[i * outStride + 2] = static_cast<uint8_t>(clipU8(pred[i * predStride + 2] + ((z1 - z2 + 32) >> 6)));
-        out[i * outStride + 3] = static_cast<uint8_t>(clipU8(pred[i * predStride + 3] + ((z0 - z3 + 32) >> 6)));
-#endif
+        // ffmpeg-style: >>6 at output. Rounding bias was added to block[0] before butterfly.
+        out[i * outStride + 0] = static_cast<uint8_t>(clipU8(pred[i * predStride + 0] + ((z0 + z3) >> 6)));
+        out[i * outStride + 1] = static_cast<uint8_t>(clipU8(pred[i * predStride + 1] + ((z1 + z2) >> 6)));
+        out[i * outStride + 2] = static_cast<uint8_t>(clipU8(pred[i * predStride + 2] + ((z1 - z2) >> 6)));
+        out[i * outStride + 3] = static_cast<uint8_t>(clipU8(pred[i * predStride + 3] + ((z0 - z3) >> 6)));
     }
 }
 
@@ -173,11 +169,8 @@ inline void inverseDcOnly4x4AddPred(int16_t dcCoeff,
                                      const uint8_t* pred, uint32_t predStride,
                                      uint8_t* out, uint32_t outStride) noexcept
 {
-#ifdef SUB0H264_DEQUANT_NORM
-    int32_t dcVal = dcCoeff; // >>6 already applied at dequant
-#else
+    // ffmpeg-style: rounding at block[0] then >>6
     int32_t dcVal = (dcCoeff + 32) >> 6;
-#endif
 
     for (uint32_t row = 0U; row < 4U; ++row)
     {
@@ -284,27 +277,27 @@ inline void inverseQuantize4x4(int16_t* coeffs, int32_t qp, bool isDc = false) n
             continue;
 
         int32_t posClass = cDequantPosClass[i];
-        int32_t scale = cDequantScale[qpMod6][posClass];
-        int32_t val = static_cast<int32_t>(coeffs[i]) * scale;
+        int32_t normAdjust = cDequantScale[qpMod6][posClass];
 
         if (isDc)
         {
+            // DC path: not changed (used by I_16x16 Hadamard which has its own normalization)
+            int32_t val = static_cast<int32_t>(coeffs[i]) * normAdjust;
             val <<= qpDiv6;
+            coeffs[i] = static_cast<int16_t>(val);
+            continue;
         }
-        else
-        {
-#ifdef SUB0H264_SPEC_DEQUANT
-            if (qpDiv6 >= 4)
-                val <<= (qpDiv6 - 4);
-            else
-                val = (val + (1 << (3 - qpDiv6))) >> (4 - qpDiv6);
-#else
-            val <<= qpDiv6;
-#endif
-#ifdef SUB0H264_DEQUANT_NORM
-            val = (val + 32) >> 6;
-#endif
-        }
+
+        // AC path: ffmpeg-style qmul with default flat scaling matrix (weightScale=16).
+        // qmul = normAdjust * weightScale << (qpDiv6 + 2)
+        //      = normAdjust * 16 << (qpDiv6 + 2)
+        // Then: d = (coeff * qmul + 32) >> 6
+        // This produces the IDCT input which the IDCT then applies another >> 6 to.
+        // Net: coeff * normAdjust * 16 << (qpDiv6+2) >> 6 >> 6 = coeff * normAdjust << (qpDiv6-6)
+        // Matches the spec when combined with the weightScale.
+        static constexpr int32_t cDefaultWeightScale = 16;
+        int32_t qmul = normAdjust * cDefaultWeightScale << (qpDiv6 + 2);
+        int32_t val = (static_cast<int32_t>(coeffs[i]) * qmul + 32) >> 6;
 
         coeffs[i] = static_cast<int16_t>(val);
     }
