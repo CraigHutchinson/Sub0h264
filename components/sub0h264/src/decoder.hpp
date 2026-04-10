@@ -2434,10 +2434,6 @@ private:
         uint8_t cbpChroma = (cbp >> 4U) & 0x03U;
         cabacNeighbor_[mbIdx].cbp = cbp;
 
-        if (mbX == 0U && mbY == 0U)
-            std::fprintf(stderr, "[I4x4] MB(%u,%u) cbpLuma=0x%X cbpChroma=%u cbp=0x%02X\n",
-                mbX, mbY, cbpLuma, cbpChroma, cbp);
-
         // §7.3.5: mb_qp_delta ae(v) — only if cbp > 0 for I_NxN (NOT always like I_16x16).
         // [CHECKED §7.3.5] (FM-3: cbp encodes both luma and chroma; cbp>0 correctly covers both.)
         if (cbp > 0U)
@@ -2519,18 +2515,7 @@ private:
                                         top, topRight, left, topLeft);
 
                 intraPred4x4(static_cast<Intra4x4Mode>(predModes[rasterIdx]), top, topRight, left, topLeft, pred4x4);
-                if (mbX == 0U && mbY == 0U && blkIdx >= 7U && blkIdx <= 9U)
-                {
-                    std::fprintf(stderr, "[I4x4] scan%u raster%u (%u,%u) mode=%u\n",
-                        blkIdx, rasterIdx, absX, absY, predModes[rasterIdx]);
-                    std::fprintf(stderr, "  pred=[%d %d %d %d][%d %d %d %d][%d %d %d %d][%d %d %d %d]\n",
-                        pred4x4[0], pred4x4[1], pred4x4[2], pred4x4[3],
-                        pred4x4[4], pred4x4[5], pred4x4[6], pred4x4[7],
-                        pred4x4[8], pred4x4[9], pred4x4[10], pred4x4[11],
-                        pred4x4[12], pred4x4[13], pred4x4[14], pred4x4[15]);
-                    if (top) std::fprintf(stderr, "  top=[%d %d %d %d]\n", top[0], top[1], top[2], top[3]);
-                    if (left) std::fprintf(stderr, "  left=[%d %d %d %d]\n", left[0], left[1], left[2], left[3]);
-                }
+                // (debug traces removed — see git history for investigation)
 
                 // §7.3.5.3: Residual data syntax — cbpLuma bit per 8x8 group
                 // §7.4.5: CodedBlockPatternLuma bit i corresponds to 8x8 block i
@@ -2586,19 +2571,7 @@ private:
                 uint8_t* outPtr = mbLuma + blkY * yStride + blkX;
                 inverseDct4x4AddPred(coeffs, pred4x4, 4U, outPtr, yStride);
 
-                if (mbX == 0U && mbY == 0U && blkIdx == 8U)
-                {
-                    std::fprintf(stderr, "[I4x4] scan8 after IDCT: out=[%d %d %d %d][%d %d %d %d]\n",
-                        outPtr[0], outPtr[1], outPtr[2], outPtr[3],
-                        outPtr[yStride], outPtr[yStride+1], outPtr[yStride+2], outPtr[yStride+3]);
-                    std::fprintf(stderr, "  coeffs=[%d %d %d %d][%d %d %d %d][%d %d %d %d][%d %d %d %d]\n",
-                        coeffs[0], coeffs[1], coeffs[2], coeffs[3],
-                        coeffs[4], coeffs[5], coeffs[6], coeffs[7],
-                        coeffs[8], coeffs[9], coeffs[10], coeffs[11],
-                        coeffs[12], coeffs[13], coeffs[14], coeffs[15]);
-                    std::fprintf(stderr, "  blkX=%u blkY=%u yStride=%u outPtr offset=%td\n",
-                        blkX, blkY, yStride, outPtr - mbLuma);
-                }
+                // (debug traces removed — see git history for investigation)
             }
         }
 
