@@ -14,6 +14,8 @@
 #include "../components/sub0h264/src/annexb.hpp"
 #include "test_fixtures.hpp"
 #include <cmath>
+#include <ios>
+#include <string>
 
 using namespace sub0h264;
 

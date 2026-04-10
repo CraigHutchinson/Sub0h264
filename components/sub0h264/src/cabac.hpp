@@ -13,6 +13,7 @@
 
 #include "bitstream.hpp"
 
+#include <cinttypes>
 #include <cstdint>
 #include <cstdio> // for FILE* in bin trace
 #include <cstring>
@@ -375,7 +376,7 @@ public:
         for (uint32_t i = startIdx; i < end && pos + 12U < maxLen; ++i)
         {
             int written = std::snprintf(buf + pos, maxLen - pos,
-                                        "ctx[%u]=0x%02X ", i,
+                                        "ctx[%" PRIu32 "]=0x%02X ", i,
                                         static_cast<unsigned>(ctx_[i].mpsState));
             if (written > 0) pos += static_cast<uint32_t>(written);
         }
