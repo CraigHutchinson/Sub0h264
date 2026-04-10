@@ -732,9 +732,13 @@ TEST_CASE("CAVLC: bouncing ball per-MB bit offset trace")
     MESSAGE("  Delta MB(0)->MB(1): " << (mbBits[1].bitAfter - mbBits[0].bitAfter) << " bits");
 }
 
-TEST_CASE("CABAC bin trace: first 200 bins of cabac_idr_only")
+TEST_CASE("CABAC bin trace: first 200 bins of cabac_4mb_noisy")
 {
-    auto h264 = getFixture("cabac_idr_only.h264");
+    auto h264 = getFixture("cabac_4mb_noisy.h264");
+    if (h264.empty()) {
+        // Fallback to cabac_idr_only if 4mb_noisy not found
+        h264 = getFixture("cabac_idr_only.h264");
+    }
     if (h264.empty()) { MESSAGE("fixture not found"); return; }
 
     H264Decoder decoder;
