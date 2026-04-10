@@ -42,48 +42,55 @@ inline int16_t median3(int16_t a, int16_t b, int16_t c) noexcept
 
 /** Compute the MV predictor from three spatial neighbors.
  *
+ *  §8.4.1.3.1 Step 1: When BOTH B and C are unavailable and A is available,
+ *    substitute B=A, C=A. No substitution otherwise — unavailable neighbors
+ *    use default mv=(0,0), refIdx=-1.
+ *  §8.4.1.3.1 Step 2: If exactly one of A/B/C has matching refIdx, use that
+ *    MV directly. Otherwise median of all three.
+ *  [CHECKED §8.4.1.3.1]
+ *
+ *  [UNCHECKED §8.4.1.3.1] Directional shortcuts for 16x8/8x16 partitions
+ *  not implemented here — handled at call site.
+ *
  *  @param left     Left neighbor motion info (partition A)
  *  @param top      Top neighbor motion info (partition B)
  *  @param topRight Top-right neighbor motion info (partition C, or top-left D)
  *  @param refIdx   Reference index of the current partition
  *  @return Predicted motion vector
- *
- *  Reference: ITU-T H.264 §8.4.1.3.1
  */
 inline MotionVector computeMvPredictor(const MbMotionInfo& left,
                                         const MbMotionInfo& top,
                                         const MbMotionInfo& topRight,
                                         int8_t refIdx) noexcept
 {
-    // Count available neighbors
-    uint32_t availCount = 0U;
+    // §8.4.1.3.1 Step 1: substitute ONLY when both B and C are unavailable.
+    // When only one is unavailable, it keeps default mv=(0,0), refIdx=-1.
+    // [CHECKED §8.4.1.3.1 Eqs 8-207..8-210]
+    MbMotionInfo effA = left;
+    MbMotionInfo effB = top;
+    MbMotionInfo effC = topRight;
+
+    if (!effB.available && !effC.available && effA.available)
+    {
+        effB = effA;
+        effC = effA;
+    }
+
+    // §8.4.1.3.1 Step 2: count matching refIdx among effective neighbors.
     uint32_t matchCount = 0U;
     int32_t lastMatchIdx = -1;
-
-    if (left.available)      { ++availCount; if (left.refIdx == refIdx) { ++matchCount; lastMatchIdx = 0; } }
-    if (top.available)       { ++availCount; if (top.refIdx == refIdx) { ++matchCount; lastMatchIdx = 1; } }
-    if (topRight.available)  { ++availCount; if (topRight.refIdx == refIdx) { ++matchCount; lastMatchIdx = 2; } }
-
-    // §8.4.1.3: If B is not available, set B = A (both MV and refIdx).
-    // If C is not available, set C = A. This happens BEFORE ref_idx matching.
-    MbMotionInfo effA = left;
-    MbMotionInfo effB = top.available ? top : left;
-    MbMotionInfo effC = topRight.available ? topRight : left;
-
-    // Recount matches with effective neighbors
-    matchCount = 0U;
-    lastMatchIdx = -1;
     if (effA.available && effA.refIdx == refIdx) { ++matchCount; lastMatchIdx = 0; }
     if (effB.available && effB.refIdx == refIdx) { ++matchCount; lastMatchIdx = 1; }
     if (effC.available && effC.refIdx == refIdx) { ++matchCount; lastMatchIdx = 2; }
 
     const MbMotionInfo* effNeighbors[3] = { &effA, &effB, &effC };
 
-    // §8.4.1.3: If exactly one has matching ref_idx → use that MV.
+    // §8.4.1.3.1: If exactly one has matching refIdx → use that MV directly.
     if (matchCount == 1U)
         return effNeighbors[lastMatchIdx]->mv;
 
-    // Default: median of all three effective MVs.
+    // Otherwise: median of all three effective MVs.
+    // Unavailable neighbors contribute mv=(0,0) per §8.4.1.3.2.
     int16_t mvA_x = effA.available ? effA.mv.x : 0;
     int16_t mvA_y = effA.available ? effA.mv.y : 0;
     int16_t mvB_x = effB.available ? effB.mv.x : 0;

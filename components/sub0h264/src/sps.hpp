@@ -123,7 +123,15 @@ struct Sps
 };
 
 /** Parse a scaling list from the bitstream.
- *  Reference: ITU-T H.264 §7.3.2.1.1.1
+ *
+ *  §7.3.2.1.1.1 scaling_list() pseudo-code:
+ *    lastScale=8; nextScale=8;
+ *    for j in [0,size): if nextScale!=0: delta_scale se(v);
+ *      nextScale = (lastScale+delta_scale+256)%256;
+ *      useDefaultFlag = (j==0 && nextScale==0);
+ *    scalingList[j] = (nextScale==0) ? lastScale : nextScale;
+ *    lastScale = scalingList[j];
+ *  [CHECKED §7.3.2.1.1.1]
  */
 inline Result parseScalingList(BitReader& br, int16_t* list, uint32_t size,
                                bool& useDefault) noexcept
@@ -155,18 +163,22 @@ inline Result parseSps(BitReader& br, Sps& sps) noexcept
 {
     sps = Sps{};
 
-    // profile_idc (8 bits)
+    // §7.3.2.1.1 seq_parameter_set_data() — field ordering verified [CHECKED §7.3.2.1.1]
+
+    // profile_idc u(8) — §7.3.2.1.1
     sps.profileIdc_ = static_cast<uint8_t>(br.readBits(8U));
 
-    // constraint_set flags + reserved
+    // constraint_set0_flag u(1) + constraint_set1_flag u(1) + constraint_set2_flag u(1)
+    // + constraint_set3_flag u(1) + constraint_set4_flag u(1) + constraint_set5_flag u(1)
+    // + reserved_zero_2bits u(2) = 8 bits total. [CHECKED §7.3.2.1.1]
     sps.constraintSet0_ = static_cast<uint8_t>(br.readBit());
     sps.constraintSet1_ = static_cast<uint8_t>(br.readBit());
-    br.skipBits(6U); // constraint_set2..3 + reserved_zero_4bits
+    br.skipBits(6U); // constraint_set2-5 + reserved_zero_2bits
 
-    // level_idc (8 bits)
+    // level_idc u(8) — §7.3.2.1.1
     sps.levelIdc_ = static_cast<uint8_t>(br.readBits(8U));
 
-    // seq_parameter_set_id
+    // seq_parameter_set_id ue(v) — §7.3.2.1.1
     sps.spsId_ = static_cast<uint8_t>(br.readUev());
     if (sps.spsId_ >= cMaxSpsCount)
         return Result::ErrorInvalidParam;
@@ -183,7 +195,12 @@ inline Result parseSps(BitReader& br, Sps& sps) noexcept
             return Result::ErrorUnsupported;
     }
 
-    // High profile extensions
+    // §7.3.2.1.1: High extension block — spec condition covers profile_idc in
+    // {100,110,122,244,44,83,86,118,128,138,139,134,135}. We check only profile
+    // 100 (High); unsupported profiles (110, 122, etc.) are rejected by the
+    // ErrorUnsupported check above before reaching this block. [PARTIAL §7.3.2.1.1]
+    // Defaults per §7.4.2.1: chroma_format_idc=1, bit_depth_luma_minus8=0,
+    // bit_depth_chroma_minus8=0 when not present. [CHECKED §7.4.2.1]
     sps.chromaFormatIdc_ = 1;
     sps.bitDepthLuma_ = 8;
     sps.bitDepthChroma_ = 8;
@@ -220,7 +237,9 @@ inline Result parseSps(BitReader& br, Sps& sps) noexcept
         }
     }
 
-    // log2_max_frame_num_minus4
+    // §7.3.2.1.1: remaining fields — all in spec order. [CHECKED §7.3.2.1.1]
+
+    // log2_max_frame_num_minus4 ue(v)
     sps.bitsInFrameNum_ = static_cast<uint8_t>(br.readUev() + 4U);
     if (sps.bitsInFrameNum_ > 16U)
         return Result::ErrorInvalidParam;
@@ -271,8 +290,10 @@ inline Result parseSps(BitReader& br, Sps& sps) noexcept
     if (!sps.frameMbsOnly_)
     {
         sps.mbAdaptiveFrameField_ = static_cast<uint8_t>(br.readBit());
-        // We only support progressive (frame_mbs_only=1) for simplicity
-        // but parse the field anyway for compatibility
+        // We only support progressive (frame_mbs_only=1).
+        // Interlaced/MBAFF decode requires field-aware neighbor derivation,
+        // field/frame adaptive MB-level decode, and field-scan zigzag tables.
+        return Result::ErrorUnsupported;
     }
 
     // direct_8x8_inference_flag

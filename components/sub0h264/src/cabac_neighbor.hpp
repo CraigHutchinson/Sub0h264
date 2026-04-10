@@ -1,15 +1,17 @@
 /** Sub0h264 — CABAC neighbor context for spatial prediction
  *
  *  Consolidates per-MB state needed for CABAC context derivation into a
- *  single cache-friendly structure. Replaces the 4 separate vectors
- *  (mbIsSkip_, mbIsI4x4_, mbCbp_, mbChromaMode_) that were scattered
- *  across the decoder.
- *
- *  All condTermFlagN derivation logic for neighbor-dependent syntax elements
- *  (mb_type, mb_skip_flag, CBP, intra_chroma_pred_mode) lives here with
- *  ITU-T H.264 spec references.
+ *  single cache-friendly structure.
  *
  *  Reference: ITU-T H.264 §9.3.3.1.1
+ *
+ *  Spec-annotated review (2026-04-09):
+ *    §9.3.3.1.1.1 skipCtx: condTermFlag=0 when unavailable OR skip [CHECKED]
+ *      BUG FIXED: was returning condTermFlag=1 for unavailable neighbors.
+ *    §9.3.3.1.1.3 mbTypeCtxI: condTermFlag=0 when unavail OR I_NxN [CHECKED]
+ *    §9.3.3.1.1.4 cbpNeighbors: unavailable→0x2F (all coded)→condTermFlag=0 [CHECKED]
+ *    §9.3.3.1.1.8 chromaModeCtxInc: unavailable→0, mode!=0→1 [CHECKED]
+ *    Default MbCabacInfo: cbp=0x2F matches spec unavailable defaults [CHECKED]
  *
  *  SPDX-License-Identifier: MIT
  */
@@ -118,20 +120,25 @@ public:
         topIsI4x4  = (mbY == 0U) || mbs_[(mbY - 1U) * widthMbs_ + mbX].isI4x4();
     }
 
-    /** mb_skip_flag context increment for P-slices — §9.3.3.1.1.1.
+    /** mb_skip_flag context increment for P-slices — §9.3.3.1.1.1 Eq 9-7.
      *
-     *  ctxInc = (leftIsSkip ? 0 : 1) + (topIsSkip ? 0 : 1) — but inverted:
-     *  skip_flag ctxInc counts neighbors that are NOT skip.
-     *  Actually: condTermFlagN = mbSkipFlag of neighbor.
+     *  condTermFlagN = 0 when mbAddrN is NOT available OR mb_skip_flag == 1.
+     *  condTermFlagN = 1 when mbAddrN IS available AND mb_skip_flag == 0.
+     *  ctxIdxInc = condTermFlagA + condTermFlagB.
+     *
+     *  The caller uses: ctxInc = (leftSkip ? 0 : 1) + (topSkip ? 0 : 1),
+     *  so leftSkip=true → condTermFlag=0 (unavailable OR skip). [CHECKED §9.3.3.1.1.1]
      *
      *  @return Pair {leftSkip, topSkip} for cabacDecodeMbSkipP().
+     *          TRUE means condTermFlag=0 (unavailable or skipped).
      */
     void skipCtx(uint32_t mbX, uint32_t mbY,
                  bool& leftSkip, bool& topSkip) const noexcept
     {
         uint32_t mbIdx = mbY * widthMbs_ + mbX;
-        leftSkip = (mbX > 0U) && mbs_[mbIdx - 1U].isSkip();
-        topSkip  = (mbY > 0U) && mbs_[mbIdx - widthMbs_].isSkip();
+        // §9.3.3.1.1.1: unavailable → condTermFlag=0 → treat as "skip"
+        leftSkip = (mbX == 0U) || mbs_[mbIdx - 1U].isSkip();
+        topSkip  = (mbY == 0U) || mbs_[mbIdx - widthMbs_].isSkip();
     }
 
     /** CBP neighbor values for CABAC CBP decode — §9.3.3.1.1.4.

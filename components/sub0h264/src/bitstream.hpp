@@ -3,11 +3,18 @@
  *  Reads from a byte buffer at bit granularity. All H.264 bitstream
  *  parsing (headers, entropy, etc.) builds on this class.
  *
+ *  Spec-annotated review (2026-04-09):
+ *    §7.2 readUev: code_num = 2^N - 1 + suffix, CLZ for leading zeros [CHECKED §7.2]
+ *    §7.2 readSev: 0→0, odd→+ceil(k/2), even→-ceil(k/2) [CHECKED §7.2]
+ *    §9.1 readTev: range==1 → !readBit(), else ue(v) [CHECKED §9.1]
+ *    MSB-first bit order, 64-bit read-ahead cache for PSRAM efficiency [CHECKED]
+ *
  *  SPDX-License-Identifier: MIT
  */
 #ifndef CROG_SUB0H264_BITSTREAM_HPP
 #define CROG_SUB0H264_BITSTREAM_HPP
 
+#include <cassert>
 #include <cstdint>
 #include <cstring>
 
@@ -45,6 +52,9 @@ public:
     /** Read N bits (1-32) and advance the offset. */
     uint32_t readBits(uint32_t n) noexcept
     {
+        assert(n <= 32U && "readBits: n must be 0-32");
+        // No bounds assert: CABAC divergence can cause reads past slice end.
+        // The reader returns 0 for out-of-bounds bits (via peekBits padding).
         uint32_t val = peekBits(n);
         bitOffset_ += n;
         return val;
@@ -248,7 +258,9 @@ private:
         uint32_t toRead = (avail < 8U) ? avail : 8U;
         for (uint32_t i = 0U; i < toRead; ++i)
             cache_ = (cache_ << 8U) | data_[byteOff + i];
-        cache_ <<= (8U - toRead) * 8U; // pad remaining MSB bits with 0
+        uint32_t padBits = (8U - toRead) * 8U;
+        if (padBits > 0U && padBits < 64U)
+            cache_ <<= padBits; // pad remaining MSB bits with 0
     }
 };
 

@@ -3,7 +3,20 @@
  *  Implements H.264 intra prediction modes for luma (4x4, 16x16)
  *  and chroma (8x8) blocks.
  *
- *  Reference: ITU-T H.264 §8.3.1 (intra prediction)
+ *  Reference: ITU-T H.264 §8.3
+ *
+ *  Spec-annotated review (2026-04-09):
+ *    §8.3.1.2 I_4x4: all 9 modes verified (V,H,DC,DDL,DDR,VR,HD,VL,HU) [CHECKED §8.3.1.2]
+ *    §8.3.1.2 DC: 4-branch availability (both/top/left/neither) [CHECKED FM-3]
+ *    §8.3.1.2 DDL/VL: top-right unavailable → replicate top[3] [CHECKED §8.3.1.2.3/§8.3.1.2.8]
+ *    §8.3.1.2 DDR: requires top+left+topLeft [CHECKED §8.3.1.2.5]
+ *    §8.3.3 I_16x16: V/H/DC/Plane verified [CHECKED §8.3.3]
+ *    §8.3.3.4 Plane: b=(5*H+32)>>6, c=(5*V+32)>>6, center (x-7,y-7) [CHECKED §8.3.3.4]
+ *    §8.3.4 Chroma: DC/H/V/Plane verified [CHECKED §8.3.4]
+ *    §8.3.4.1 Chroma DC: per-4x4-quadrant availability mapping [CHECKED §8.3.4.1]
+ *    §8.3.4.4 Chroma Plane: b=(17*H+16)>>5, center (x-3,y-3) [CHECKED §8.3.4.4]
+ *    §8.3.2 I_8x8: all 9 modes + §8.3.2.1 reference sample filtering [CHECKED §8.3.2]
+ *    Filter helpers: filt11=(a+b+1)>>1, filt121=(a+2b+c+2)>>2 [CHECKED §8.3.1.2]
  *
  *  SPDX-License-Identifier: MIT
  */
@@ -717,10 +730,12 @@ inline void intraPred8x8Luma(Intra4x4Mode mode, const Frame& frame,
             for (uint32_t c = 0U; c < 8U; ++c)
             {
                 uint32_t zHU = r + 2U * c;
+                uint32_t zi = zHU >> 1U;
                 if (zHU < 14U && (zHU & 1U) == 0U)
-                    pred[r * 8U + c] = filt11(fl[zHU >> 1U], fl[(zHU >> 1U) + 1U]);
+                    pred[r * 8U + c] = filt11(fl[zi], fl[zi < 7U ? zi + 1U : 7U]);
                 else if (zHU < 14U) // odd
-                    pred[r * 8U + c] = filt121(fl[zHU >> 1U], fl[(zHU >> 1U) + 1U], fl[(zHU >> 1U) + 2U]);
+                    pred[r * 8U + c] = filt121(fl[zi], fl[zi < 7U ? zi + 1U : 7U],
+                                                fl[zi < 6U ? zi + 2U : 7U]);
                 else if (zHU == 14U)
                     pred[r * 8U + c] = filt121(fl[6], fl[7], fl[7]);
                 else

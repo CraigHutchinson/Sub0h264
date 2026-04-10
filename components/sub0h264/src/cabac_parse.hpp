@@ -17,25 +17,26 @@
 namespace sub0h264 {
 
 // ── Context offsets for syntax elements — ITU-T H.264 Table 9-11 ────────
+// All ctxIdxOffset values verified against Table 9-11/9-39. [CHECKED Table 9-11]
 
-inline constexpr uint32_t cCtxMbTypeI       = 3U;
-inline constexpr uint32_t cCtxMbTypeP       = 14U;
-inline constexpr uint32_t cCtxMbSkipP       = 11U;
-inline constexpr uint32_t cCtxSubMbTypeP    = 21U;
-inline constexpr uint32_t cCtxRefIdx        = 54U;
-inline constexpr uint32_t cCtxMvdX          = 40U;
-inline constexpr uint32_t cCtxMvdY          = 47U;
-inline constexpr uint32_t cCtxMbQpDelta     = 60U;
-inline constexpr uint32_t cCtxIntraChroma   = 64U;
-inline constexpr uint32_t cCtxCbpLuma       = 73U;
-inline constexpr uint32_t cCtxCbpChroma     = 77U;
-inline constexpr uint32_t cCtxCbf           = 85U;
-inline constexpr uint32_t cCtxSigCoeff      = 105U;
-inline constexpr uint32_t cCtxLastSigCoeff  = 166U;
-inline constexpr uint32_t cCtxCoeffAbsLevel = 227U;
-inline constexpr uint32_t cCtxTransform8x8  = 399U;
-inline constexpr uint32_t cCtxPrevIntra4x4  = 68U;
-inline constexpr uint32_t cCtxRemIntra4x4   = 69U;
+inline constexpr uint32_t cCtxMbTypeI       = 3U;   ///< mb_type I-slice
+inline constexpr uint32_t cCtxMbTypeP       = 14U;  ///< mb_type P/SP-slice
+inline constexpr uint32_t cCtxMbSkipP       = 11U;  ///< mb_skip_flag P/SP-slice
+inline constexpr uint32_t cCtxSubMbTypeP    = 21U;  ///< sub_mb_type P/SP-slice
+inline constexpr uint32_t cCtxRefIdx        = 54U;  ///< ref_idx_l0/l1
+inline constexpr uint32_t cCtxMvdX          = 40U;  ///< mvd_l0/l1[...][0]
+inline constexpr uint32_t cCtxMvdY          = 47U;  ///< mvd_l0/l1[...][1]
+inline constexpr uint32_t cCtxMbQpDelta     = 60U;  ///< mb_qp_delta
+inline constexpr uint32_t cCtxIntraChroma   = 64U;  ///< intra_chroma_pred_mode
+inline constexpr uint32_t cCtxCbpLuma       = 73U;  ///< coded_block_pattern luma
+inline constexpr uint32_t cCtxCbpChroma     = 77U;  ///< coded_block_pattern chroma
+inline constexpr uint32_t cCtxCbf           = 85U;  ///< coded_block_flag (cat 0-4)
+inline constexpr uint32_t cCtxSigCoeff      = 105U; ///< significant_coeff_flag (cat 0-4)
+inline constexpr uint32_t cCtxLastSigCoeff  = 166U; ///< last_significant_coeff_flag (cat 0-4)
+inline constexpr uint32_t cCtxCoeffAbsLevel = 227U; ///< coeff_abs_level_minus1 (cat 0-4)
+inline constexpr uint32_t cCtxTransform8x8  = 399U; ///< transform_size_8x8_flag
+inline constexpr uint32_t cCtxPrevIntra4x4  = 68U;  ///< prev_intra4x4_pred_mode_flag
+inline constexpr uint32_t cCtxRemIntra4x4   = 69U;  ///< rem_intra4x4_pred_mode
 
 // ── High profile 8x8 block context offsets — ITU-T H.264 Table 9-42 ───
 //
@@ -61,27 +62,31 @@ inline constexpr uint32_t cCtxCoeffAbsLevel8x8  = 426U;
 /// Requires context array expanded to 1024 entries.
 inline constexpr uint32_t cCtxCbf8x8            = 1012U;
 
-// ── mb_skip_flag (P-slice) — §9.3.3.1.1 ────────────────────────────────
+// ── mb_skip_flag (P-slice) — §9.3.3.1.1.1 ──────────────────────────────
 
 /** Decode mb_skip_flag for P-slice.
- *  @param engine  CABAC engine
- *  @param ctx     Context array (460 entries)
- *  @param leftSkip  True if left MB was skipped
- *  @param topSkip   True if top MB was skipped
- *  @return 1 if MB is skipped, 0 otherwise
+ *  §9.3.3.1.1.1 Eq 9-7: ctxIdxInc = condTermFlagA + condTermFlagB.
+ *  condTermFlagN = 0 when neighbor skipped or unavailable, 1 otherwise.
+ *  [CHECKED §9.3.3.1.1.1]
  */
 inline uint32_t cabacDecodeMbSkipP(CabacEngine& engine, CabacCtx* ctx,
                                     bool leftSkip, bool topSkip) noexcept
 {
+    // condTermFlagA = (leftSkip ? 0 : 1), condTermFlagB = (topSkip ? 0 : 1)
     uint32_t ctxInc = (leftSkip ? 0U : 1U) + (topSkip ? 0U : 1U);
     return engine.decodeBin(ctx[cCtxMbSkipP + ctxInc]);
 }
 
-// ── mb_type (I-slice) — §9.3.3.1.2 ─────────────────────────────────────
+// ── mb_type (I-slice) — §9.3.3.1.1.3 Table 9-36 ───────────────────────
 
 /** Decode mb_type for I-slice (CABAC).
- *  §9.3.3.1.2: condTermFlagN = 0 when neighbor is I_NxN (I_4x4),
+ *  §9.3.3.1.1.3: ctxIdxInc = condTermFlagA + condTermFlagB (Eq 9-10).
+ *  condTermFlagN = 0 when neighbor is I_NxN (I_4x4),
  *  = 1 when neighbor is NOT I_NxN (I_16x16, inter, or unavailable).
+ *  Table 9-36: I_NxN→0, I_16x16 suffix→6 bins, I_PCM→terminate.
+ *  Table 9-39 ctxIdx verified: bin[0]→3+ctxInc, bin[1]→276,
+ *  bin[2]→6, bin[3]→7, bin[4]→8(b3=1), bin[5]→9, bin[6]→10.
+ *  [CHECKED §9.3.3.1.1.3] [CHECKED Table 9-36] [CHECKED Table 9-39]
  *  @param leftIsI4x4  true when left neighbor is I_NxN (I_4x4)
  *  @param topIsI4x4   true when top neighbor is I_NxN (I_4x4)
  *  @return mb_type raw value [0=I_4x4, 1-24=I_16x16 variants, 25=I_PCM]
@@ -139,32 +144,39 @@ inline uint32_t cabacDecodeMbTypeI(CabacEngine& engine, CabacCtx* ctx,
 // ── mb_type (P-slice, inter) — §9.3.3.1.2 ──────────────────────────────
 
 /** Decode mb_type for P-slice (CABAC).
+ *  §9.3.3.1.2 Table 9-37: P-inter prefix is exactly 3 bins (binIdx 0-2).
+ *  P_8x8ref0 (mb_type=4) is not allowed in CABAC (Table 9-37: "na").
  *  @param leftIsI4x4  true when left neighbor is I_NxN (for intra suffix context)
  *  @param topIsI4x4   true when top neighbor is I_NxN (for intra suffix context)
  *  @return mb_type raw: 0=P_L0_16x16, 1=P_L0_L0_16x8, 2=P_L0_L0_8x16,
- *          3=P_8x8, 4=P_8x8ref0, 5-30=Intra (offset by 5)
+ *          3=P_8x8, 5-30=Intra (offset by 5)
  */
 inline uint32_t cabacDecodeMbTypeP(CabacEngine& engine, CabacCtx* ctx,
                                     bool leftIsI4x4, bool topIsI4x4) noexcept
 {
-    // bin[0]
+    // bin[0]: ctxIdx = 14 (Table 9-39, ctxIdxInc=0) [CHECKED §9.3.3.1.2]
     if (engine.decodeBin(ctx[cCtxMbTypeP + 0U]) == 0U)
     {
-        // P_L0_* types
+        // P-inter: exactly 3 bins — Table 9-37 [CHECKED Table 9-37]
+        // bin[1]: ctxIdx = 15 (Table 9-39, ctxIdxInc=1) [CHECKED Table 9-39]
         uint32_t bin1 = engine.decodeBin(ctx[cCtxMbTypeP + 1U]);
+        // bin[2]: ctxIdxInc = (b1 != 1) ? 2 : 3 — Table 9-41 [CHECKED Table 9-41]
+        uint32_t bin2Ctx = (bin1 != 1U) ? 2U : 3U;
+        uint32_t bin2 = engine.decodeBin(ctx[cCtxMbTypeP + bin2Ctx]);
+
+        // Table 9-37 bin string → mb_type mapping: [CHECKED Table 9-37]
+        //   000 → P_L0_16x16(0), 001 → P_8x8(3),
+        //   010 → P_L0_L0_8x16(2), 011 → P_L0_L0_16x8(1)
         if (bin1 == 0U)
-            return 0U; // P_L0_16x16
-        uint32_t bin2 = engine.decodeBin(ctx[cCtxMbTypeP + 2U]);
-        if (bin2 == 0U)
-            return 3U; // P_8x8
-        return engine.decodeBin(ctx[cCtxMbTypeP + 3U]) == 0U ? 1U : 2U;
+            return bin2 == 0U ? 0U : 3U;
+        return bin2 == 0U ? 2U : 1U;
     }
 
     // Intra MB within P-slice — decode I-slice mb_type suffix §9.3.3.1.2
     return 5U + cabacDecodeMbTypeI(engine, ctx, leftIsI4x4, topIsI4x4);
 }
 
-// ── coded_block_pattern — §9.3.3.1.4 ───────────────────────────────────
+// ── coded_block_pattern — §9.3.3.1.1.4 ─────────────────────────────────
 
 /** Decode coded_block_pattern for CABAC — §9.3.3.1.1.4.
  *
@@ -191,6 +203,8 @@ inline uint8_t cabacDecodeCbp(CabacEngine& engine, CabacCtx* ctx,
 {
     // Luma CBP: 4 bins, one per 8x8 block — §9.3.3.1.1.4
     // condTermFlagN = (neighbor_cbp_bit == 0) ? 1 : 0
+    // ctxIdxInc = condTermFlagA + 2*condTermFlagB (Eq 9-12)
+    // Block neighbor mapping verified: TL←(left.TR, top.BL), etc. [CHECKED §9.3.3.1.1.4]
     uint8_t cbpLuma = 0U;
 
     // Block 0 (TL): A=left's bit 1, B=top's bit 2
@@ -218,8 +232,10 @@ inline uint8_t cabacDecodeCbp(CabacEngine& engine, CabacCtx* ctx,
         if (engine.decodeBin(ctx[cCtxCbpLuma + cA + cB]) == 1U) cbpLuma |= 8U;
     }
 
-    // Chroma CBP: 2 bins — §9.3.3.1.1.4
-    // condTermFlagN = (neighbor_chromaCbp > 0) ? 0 : 1
+    // Chroma CBP: 2 bins — §9.3.3.1.1.4, §9.3.2.6
+    // bin[0]: cbpChroma > 0, ctxIdxOffset=77, ctxIdxInc ∈ {0-3}
+    // bin[1]: cbpChroma == 2, ctxIdxOffset=77+4=81, ctxIdxInc ∈ {0-3} (Table 9-39)
+    // [CHECKED §9.3.3.1.1.4] [CHECKED Table 9-39]
     uint8_t cbpChroma = 0U;
     {
         uint32_t cA = (leftChromaCbp > 0U) ? 0U : 1U;
@@ -236,9 +252,14 @@ inline uint8_t cabacDecodeCbp(CabacEngine& engine, CabacCtx* ctx,
     return cbpLuma | (cbpChroma << 4U);
 }
 
-// ── mb_qp_delta — §9.3.3.1.5 ───────────────────────────────────────────
+// ── mb_qp_delta — §9.3.3.1.1.5 / §9.3.2.7 ─────────────────────────────
 
-/** Decode mb_qp_delta for CABAC. */
+/** Decode mb_qp_delta for CABAC.
+ *  §9.3.3.1.1.5: bin[0] ctxIdxInc = 0 or 1 based on previous MB qp_delta.
+ *  §9.3.2.7 Table 9-3: U binarization mapped to signed via
+ *    delta = (-1)^(k+1) * ceil(k/2) for coded value k.
+ *  Table 9-39: bin[0]→60+{0,1}, bin[1]→62, bins[2+]→63. [CHECKED §9.3.3.1.1.5]
+ */
 inline int32_t cabacDecodeMbQpDelta(CabacEngine& engine, CabacCtx* ctx,
                                      bool prevMbHadQpDelta) noexcept
 {
@@ -266,9 +287,13 @@ inline int32_t cabacDecodeMbQpDelta(CabacEngine& engine, CabacCtx* ctx,
     return delta;
 }
 
-// ── MVD (motion vector difference) — §9.3.3.1.7 ────────────────────────
+// ── MVD (motion vector difference) — §9.3.3.1.1.7 ──────────────────────
 
 /** Decode one MVD component (x or y) for CABAC.
+ *  §9.3.3.1.1.7 Eqs 9-15/16/17: bin[0] ctxIdxInc from |mvdA|+|mvdB|.
+ *    absMvd < 3 → ctxInc=0, 3..32 → ctxInc=1, >32 → ctxInc=2.
+ *  Table 9-39: bin[0]→ctxOff+{0,1,2}, bin[1]→+3, bin[2]→+4, bin[3]→+5,
+ *    bin[4]→+6, bins[5+]→+6. [CHECKED §9.3.3.1.1.7] [CHECKED Table 9-39]
  *  @param ctxOffset  cCtxMvdX or cCtxMvdY
  *  @param absMvdNeighbor  Sum of |mvd| of left + top neighbors
  */
@@ -348,13 +373,15 @@ inline uint32_t cabacDecodeResidual4x4(CabacEngine& engine, CabacCtx* ctx,
             return 0U;
     }
 
-    // Context offsets per block category — ITU-T H.264 Table 9-39/9-40/9-41.
+    // Context offsets per block category — ITU-T H.264 Table 9-40.
+    // ctxIdx = ctxIdxOffset + ctxIdxBlockCatOffset(cat) + ctxIdxInc.
     // NOT uniformly spaced: chroma DC has only 3 sig contexts, chroma AC starts at 152.
+    // [CHECKED Table 9-40]
     static constexpr uint32_t cSigOffsets[5]   = {105, 120, 134, 149, 152};
     static constexpr uint32_t cLastOffsets[5]  = {166, 181, 195, 210, 213};
-    // §9.3.3.1.1.5 Table 9-41: coeff_abs_level_minus1 ctxIdxBlockCatOffset.
+    // §9.3.3.1.3: coeff_abs_level_minus1 ctxIdxBlockCatOffset per Table 9-40.
     // Cat 3 (chroma DC) has only 9 contexts (max increment=8), not 10.
-    // So cat 4 offset = 30+9 = 39 (not 40).
+    // So cat 4 offset = 30+9 = 39 (not 40). [CHECKED Table 9-40]
     static constexpr uint32_t cLevelOffsets[5] = {227, 237, 247, 257, 266};
     uint32_t sigOffset   = cSigOffsets[ctxBlockCat];
     uint32_t lastOffset  = cLastOffsets[ctxBlockCat];
@@ -383,19 +410,20 @@ inline uint32_t cabacDecodeResidual4x4(CabacEngine& engine, CabacCtx* ctx,
         }
     }
 
-    // §9.3.3.1.3: Position maxCoeff-1 is implicitly significant ONLY when
-    // the loop exhausted without last_significant_coeff_flag=1.
-    // If last_flag was set (foundLast=true), the last significant position
-    // is already recorded in lastSigIdx — do NOT add the implicit position.
+    // §9.3.3.1.3: Position maxCoeff-1 is implicitly significant when the
+    // loop exhausted without last_significant_coeff_flag=1. This applies even
+    // when numSig==0 (only the last scan position has a coefficient).
+    // [CHECKED §9.3.3.1.3]
     if (!foundLast)
     {
-        if (numSig == 0U)
-            return 0U;
         // Loop exhausted: position maxCoeff-1 is implicitly significant
         sigMap[maxCoeff - 1U] = 1U;
         lastSigIdx = static_cast<int32_t>(maxCoeff - 1U);
         ++numSig;
     }
+
+    if (numSig == 0U)
+        return 0U; // Malformed: coded_block_flag=1 but foundLast with no coefficients
 
     // Decode coefficient levels (reverse scan order)
     uint32_t numT1 = 0U;
@@ -407,10 +435,10 @@ inline uint32_t cabacDecodeResidual4x4(CabacEngine& engine, CabacCtx* ctx,
             continue;
 
         // coeff_abs_level_minus1: prefix (truncated unary)
-        // §9.3.3.1.3: bin 0 context selection per x264 state machine.
-        //   node_ctx starts at 0; coeff_abs_level1_ctx = {1,2,3,4,0,0,0,0}
-        //   When numLarger==0: ctxIdxInc = min(numT1+1, 4)  [nodes 0-3]
-        //   When numLarger>0:  ctxIdxInc = 0                 [nodes 4-7]
+        // §9.3.3.1.3: bin[0] ctxIdxInc:
+        //   numDecodAbsLevelGt1 > 0: ctxIdxInc = 0
+        //   numDecodAbsLevelGt1 == 0: ctxIdxInc = Min(numDecodAbsLevelEq1 + 1, 4)
+        // [CHECKED §9.3.3.1.3]
         uint32_t ctxInc;
         if (numLarger > 0U)
             ctxInc = 0U;
@@ -421,10 +449,9 @@ inline uint32_t cabacDecodeResidual4x4(CabacEngine& engine, CabacCtx* ctx,
         if (engine.decodeBin(ctx[levelOffset + ctxInc]) == 1U)
         {
             ++prefix;
-            // §9.3.3.1.3: bins k>=1 use ctxIdxInc from coeff_abs_levelgt1_ctx.
-            //   When numLarger==0: ctxIdxInc = 5 (nodes 0-3 all map to 5)
-            //   When numLarger>0:  ctxIdxInc = 5 + min(numLarger, 4)
-            //   [nodes 4→6, 5→7, 6→8, 7→9]
+            // §9.3.3.1.3: bins k>=1 ctxIdxInc = 5 + Min(numDecodAbsLevelGt1, maxInc)
+            // maxInc = 3 for ctxBlockCat==3 (chroma DC, 9 contexts), 4 otherwise.
+            // [CHECKED §9.3.3.1.3]
             uint32_t maxInc = (ctxBlockCat == 3U) ? 3U : 4U;
             uint32_t nextCtx;
             if (numLarger > 0U)
@@ -532,10 +559,11 @@ inline uint32_t cabacDecodeResidual8x8(CabacEngine& engine, CabacCtx* ctx,
     /// Maximum number of coefficients in an 8x8 block.
     static constexpr uint32_t cMaxCoeff8x8 = 64U;
 
-    // §9.3.3.1.1.1: coded_block_flag is NOT decoded for ctxBlockCat=5 (8x8 luma).
-    // Per the spec residual_block_cabac() pseudo-code, coded_block_flag applies
-    // to categories 0-4 only. For 8x8 blocks, the significant map is always decoded.
-    // (Confirmed by libavc ih264d_read_coeff8x8_cabac which skips cbf for 8x8.)
+    // §7.3.5.3.3 residual_block_cabac(): coded_block_flag is read only when
+    // `maxNumCoeff != 64 || ChromaArrayType == 3`. For 8x8 luma (maxNumCoeff=64,
+    // ChromaArrayType=1 for 4:2:0): condition is FALSE → cbf NOT read. [CHECKED §7.3.5.3.3]
+    // Caller gates entry via CBP (CodedBlockPatternLuma bit); if CBP says residual
+    // is present, we proceed directly into the significant coefficient map decode.
     (void)cbfCtxInc;
 
     // Decode significant coefficient map — §9.3.3.1.3 residual_block_cabac()
@@ -565,15 +593,17 @@ inline uint32_t cabacDecodeResidual8x8(CabacEngine& engine, CabacCtx* ctx,
     }
 
     // §9.3.3.1.3: Position maxCoeff-1 (63) is implicitly significant when
-    // the loop exhausted without last_significant_coeff_flag=1.
+    // the loop exhausted without last_significant_coeff_flag=1. This applies
+    // even when numSig==0 (only position 63 has a coefficient). [CHECKED §9.3.3.1.3]
     if (!foundLast)
     {
-        if (numSig == 0U)
-            return 0U;
         sigMap[cMaxCoeff8x8 - 1U] = 1U;
         lastSigIdx = static_cast<int32_t>(cMaxCoeff8x8 - 1U);
         ++numSig;
     }
+
+    if (numSig == 0U)
+        return 0U; // Malformed: CBP set but foundLast with no coefficients
 
     // Decode coefficient levels (reverse scan order) — §9.3.3.1.3.
     // coeff_abs_level_minus1 uses ctxBlockCat=5 offsets at cCtxCoeffAbsLevel8x8.
@@ -641,18 +671,14 @@ inline uint32_t cabacDecodeResidual8x8(CabacEngine& engine, CabacCtx* ctx,
     return numSig;
 }
 
-// ── Intra prediction mode (CABAC) — §9.3.3.1.3 ────────────────────────
+// ── Intra prediction mode (CABAC) — Table 9-34/9-39 ───────────────────
 
 /** Decode prev_intra4x4_pred_mode_flag + rem_intra4x4_pred_mode.
- *  §9.3.3.1.1.4: rem uses FL binarization. The H.264 spec Table 9-34
- *  assigns maxBinIdxCtx=2 and ctxIdxOffset=69, meaning these are
- *  context-coded bins at ctxIdx=69.
- *
- *  HOWEVER: ffmpeg actually uses bypass bins for rem_intra4x4_pred_mode
- *  in its CAVLC path (readBits(3)), and context-coded in CABAC path
- *  (get_cabac with state[69]). We use context-coded for CABAC.
- *
+ *  Table 9-34: prev_intra4x4_pred_mode_flag: FL, maxBinIdxCtx=0, ctxIdxOffset=68.
+ *  Table 9-34: rem_intra4x4_pred_mode: FL, maxBinIdxCtx=2, ctxIdxOffset=69.
+ *  Table 9-39: rem bins 0-2 all use ctxIdxInc=0 → ctxIdx=69.
  *  Bit ordering is LSB-first: value = b0 | (b1<<1) | (b2<<2).
+ *  [CHECKED Table 9-34] [CHECKED Table 9-39]
  */
 inline uint8_t cabacDecodeIntra4x4PredMode(CabacEngine& engine, CabacCtx* ctx) noexcept
 {
@@ -667,10 +693,12 @@ inline uint8_t cabacDecodeIntra4x4PredMode(CabacEngine& engine, CabacCtx* ctx) n
     return static_cast<uint8_t>(b0 | (b1 << 1U) | (b2 << 2U));
 }
 
-/** Decode intra_chroma_pred_mode (CABAC) — §9.3.3.1.1.7.
- *
+/** Decode intra_chroma_pred_mode (CABAC) — §9.3.3.1.1.8.
+ *  §9.3.3.1.1.8: ctxIdxInc = condTermFlagA + condTermFlagB.
+ *  condTermFlagN = (neighbor_chroma_mode != 0) ? 1 : 0 (or 0 if unavailable).
+ *  Table 9-39: bin[0]→64+{0,1,2}, bins[1,2]→64+3=67. [CHECKED §9.3.3.1.1.8]
+ *  TU binarization cMax=3: DC=0, H=10, V=110, Plane=111.
  *  @param ctxInc  Pre-computed context increment [0-2] from neighbor chroma modes.
- *                 ctxInc = (chromaMode_left != 0 ? 1 : 0) + (chromaMode_top != 0 ? 1 : 0)
  */
 inline uint32_t cabacDecodeIntraChromaMode(CabacEngine& engine, CabacCtx* ctx,
                                             uint32_t ctxInc) noexcept
@@ -682,6 +710,67 @@ inline uint32_t cabacDecodeIntraChromaMode(CabacEngine& engine, CabacCtx* ctx,
         return 1U; // Horizontal
 
     return engine.decodeBin(ctx[cCtxIntraChroma + 3U]) == 0U ? 2U : 3U;
+}
+
+// ── ref_idx_l0 (CABAC) — §9.3.3.1.1.6 / Table 9-39 ───────────────────
+
+/** Decode ref_idx_l0 for CABAC — truncated unary binarization.
+ *  §9.3.3.1.1.6: bin[0] ctxInc from neighbor ref_idx (condTermFlagA + condTermFlagB).
+ *  Table 9-39: ctxIdxOffset=54, bin[0]→ctxInc from §9.3.3.1.1.6,
+ *    bin[1]→ctxInc=4, bins[2+]→ctxInc=5. [CHECKED §9.3.3.1.1.6]
+ *  @param ctxInc0  Pre-computed ctxIdxInc for bin[0] (0-3, from neighbor ref_idx)
+ *  @param maxRefIdx  Maximum ref_idx value (num_ref_idx_l0_active - 1)
+ *  @return Decoded ref_idx value [0..maxRefIdx]
+ */
+inline uint8_t cabacDecodeRefIdx(CabacEngine& engine, CabacCtx* ctx,
+                                  uint32_t ctxInc0, uint32_t maxRefIdx) noexcept
+{
+    if (maxRefIdx == 0U)
+        return 0U; // Only one reference — no decode needed
+
+    // bin[0]: ctxIdx = 54 + ctxInc0
+    if (engine.decodeBin(ctx[cCtxRefIdx + ctxInc0]) == 0U)
+        return 0U;
+
+    // bin[1]: ctxIdx = 54 + 4
+    if (engine.decodeBin(ctx[cCtxRefIdx + 4U]) == 0U)
+        return 1U;
+
+    // bins[2+]: ctxIdx = 54 + 5 (truncated unary, max = maxRefIdx)
+    uint8_t refIdx = 2U;
+    while (refIdx < maxRefIdx)
+    {
+        if (engine.decodeBin(ctx[cCtxRefIdx + 5U]) == 0U)
+            break;
+        ++refIdx;
+    }
+    return refIdx;
+}
+
+// ── sub_mb_type (P-slice, CABAC) — Table 9-38 ────────────────────────
+
+/** Decode sub_mb_type for P-slice CABAC.
+ *  Table 9-38 binarization for P-slice sub_mb_type:
+ *    P_L0_8x8:  1
+ *    P_L0_8x4:  00
+ *    P_L0_4x8:  011
+ *    P_L0_4x4:  010
+ *  Table 9-39: ctxIdxOffset=21, bin[0]→ctxInc=0, bin[1]→ctxInc=1, bin[2]→ctxInc=2.
+ *  [CHECKED Table 9-38] [CHECKED Table 9-39]
+ *  @return sub_mb_type: 0=P_L0_8x8, 1=P_L0_8x4, 2=P_L0_4x8, 3=P_L0_4x4
+ */
+inline uint32_t cabacDecodeSubMbTypeP(CabacEngine& engine, CabacCtx* ctx) noexcept
+{
+    if (engine.decodeBin(ctx[cCtxSubMbTypeP + 0U]) != 0U)
+        return 0U; // P_L0_8x8
+
+    if (engine.decodeBin(ctx[cCtxSubMbTypeP + 1U]) == 0U)
+        return 1U; // P_L0_8x4
+
+    if (engine.decodeBin(ctx[cCtxSubMbTypeP + 2U]) != 0U)
+        return 2U; // P_L0_4x8
+
+    return 3U; // P_L0_4x4
 }
 
 } // namespace sub0h264

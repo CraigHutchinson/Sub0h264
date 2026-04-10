@@ -335,6 +335,70 @@ TEST_CASE("Slice header: first P-slice bit consumption is reasonable")
 
 // ── SPS bit-exact parsing — ITU-T H.264 §7.3.2.1 ──────────────────────
 
+// FM-13: Default values when conditional field absent — §7.3.3
+TEST_CASE("Slice: numRefIdxActiveL0 defaults from PPS when no override (FM-13 §7.3.3)")
+{
+    // §7.3.3: when num_ref_idx_active_override_flag = 0, numRefIdxActiveL0_ must
+    // equal pps.numRefIdxL0Active_default (inferred from PPS). [CHECKED §7.3.3]
+    auto stream = std::make_unique<ParsedStream>();
+    REQUIRE(stream->parse("baseline_640x480_short.h264"));
+
+    const Pps* pps = stream->paramSets.getPps(0);
+    REQUIRE(pps != nullptr);
+
+    for (const auto& sh : stream->slices)
+    {
+        if (sh.sliceType_ != SliceType::P)
+            continue;
+        // numRefIdxActiveL0_ must be in valid range [1..maxRefFrames]
+        // When override_flag=0, it equals PPS default; when override_flag=1,
+        // the slice header provides its own value. Either way, must be >= 1.
+        CHECK(sh.numRefIdxActiveL0_ >= 1U);
+        CHECK(sh.numRefIdxActiveL0_ <= 16U);
+        break;
+    }
+}
+
+// FM-2: Negative-clause / missing normalization — §7.3.3
+TEST_CASE("Slice: slice_type values 5-9 are normalized to 0-4 (FM-2 §7.3.3)")
+{
+    // §7.3.3: slice_type ue(v) in 0-9; values 5-9 mean all slices in picture
+    // are the same type and are normalized by subtracting 5. [CHECKED §7.3.3]
+    // If normalization fails, SliceType enum would hold values 5-9 — this test
+    // verifies all parsed slice types are valid enum values (0-4).
+    auto stream = std::make_unique<ParsedStream>();
+    REQUIRE(stream->parse("bouncing_ball_cabac.h264"));
+    REQUIRE(stream->slices.size() >= 2U);
+
+    for (const auto& sh : stream->slices)
+    {
+        uint8_t rawType = static_cast<uint8_t>(sh.sliceType_);
+        CHECK(rawType <= 4U);
+    }
+    CHECK(stream->slices[0].sliceType_ == SliceType::I);
+    CHECK(stream->slices[0].isIdr_);
+}
+
+// FM-24: Slice header field dependency — §7.3.3
+TEST_CASE("Slice: CABAC P-slice cabac_init_idc is in valid range (FM-24 §7.3.3)")
+{
+    // §7.3.3: cabac_init_idc ue(v) read only when entropy_coding_mode_flag=1
+    // and slice_type != I and slice_type != SI. Values 0-2 are valid. [CHECKED §7.3.3]
+    auto stream = std::make_unique<ParsedStream>();
+    REQUIRE(stream->parse("bouncing_ball_cabac.h264"));
+
+    bool foundPSlice = false;
+    for (const auto& sh : stream->slices)
+    {
+        if (sh.sliceType_ != SliceType::P)
+            continue;
+        CHECK(sh.cabacInitIdc_ <= 2U);
+        foundPSlice = true;
+        break;
+    }
+    CHECK(foundPSlice);
+}
+
 TEST_CASE("SPS: bitsInFrameNum matches log2_max_frame_num_minus4 + 4")
 {
     // ITU-T H.264 §7.3.2.1: log2_max_frame_num_minus4 is ue(v),

@@ -34,6 +34,14 @@ struct NalBounds
  *  Scans for start code prefixes (00 00 01 or 00 00 00 01) and returns
  *  the boundaries of each NAL unit between them.
  *
+ *  ITU-T H.264 §B.1.1: start_code_prefix_one_3bytes = 00 00 01.
+ *  §B.1.2: zero_byte (0x00) precedes the 3-byte prefix for NAL types 7 (SPS),
+ *  8 (PPS), and the first VCL NAL of each access unit, making them 4-byte
+ *  start codes (00 00 00 01). Both forms are detected here. [CHECKED §B.1.1]
+ *  NOTE: trailing_zero_8bits bytes that follow a NAL (per §B.1.1) may be
+ *  included in the reported NAL size; RBSP parsing is not affected since
+ *  the bitstream reader stops at rbsp_stop_one_bit. [CHECKED §B.1.2]
+ *
  *  @param data      Pointer to Annex-B byte stream
  *  @param size      Size of the byte stream in bytes
  *  @param[out] nals Vector of NAL boundaries found
@@ -91,9 +99,13 @@ inline void findNalUnits(const uint8_t* data, uint32_t size,
 
 /** Remove emulation prevention bytes from a NAL unit (EBSP → RBSP).
  *
- *  In H.264, the byte sequence 00 00 03 XX is used to prevent
+ *  In H.264, the byte sequence 00 00 03 XX (XX in {00,01,02,03}) prevents
  *  00 00 00, 00 00 01, 00 00 02, 00 00 03 from appearing in the payload.
- *  The 03 byte is the "emulation prevention byte" and must be removed.
+ *  The 03 byte (emulation_prevention_three_byte) is removed on decode.
+ *
+ *  ITU-T H.264 §7.4.1: emulation_prevention_three_byte shall be equal to 0x03.
+ *  The byte following the 03 shall be 00, 01, 02, or 03.
+ *  [CHECKED §7.4.1]
  *
  *  @param ebsp     Input NAL data (may contain emulation prevention bytes)
  *  @param size     Size of input data
@@ -110,8 +122,9 @@ inline void removeEmulationPrevention(const uint8_t* ebsp, uint32_t size,
     {
         if (zeroCount == 2U && ebsp[i] == cEmulationPreventionByte)
         {
-            // Skip emulation prevention byte
-            // The next byte (if any) must be 00, 01, 02, or 03
+            // §7.4.1: remove emulation_prevention_three_byte (0x03).
+            // Spec requires the following byte to be in {00,01,02,03}; valid
+            // streams always satisfy this — we do not validate it here.
             zeroCount = 0U;
             continue;
         }
@@ -129,6 +142,13 @@ inline void removeEmulationPrevention(const uint8_t* ebsp, uint32_t size,
  *
  *  Extracts the NAL header (forbidden_bit, ref_idc, unit_type) and
  *  removes emulation prevention bytes from the payload.
+ *
+ *  ITU-T H.264 §7.3.1: nal_unit() syntax:
+ *    forbidden_zero_bit  f(1)
+ *    nal_ref_idc         u(2)
+ *    nal_unit_type       u(5)
+ *    rbsp_bytes[]        follows; emulation prevention removed
+ *  [CHECKED §7.3.1]
  *
  *  @param data   Pointer to NAL data (first byte is the NAL header byte)
  *  @param size   Size of NAL data in bytes

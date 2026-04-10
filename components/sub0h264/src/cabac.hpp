@@ -82,8 +82,8 @@ inline constexpr uint8_t rangeTabLPS[64][4] = {
     { 33, 41, 48, 56}, { 32, 39, 46, 53}, { 30, 37, 43, 50}, { 29, 35, 41, 48},
     { 27, 33, 39, 45}, { 26, 31, 37, 43}, { 24, 30, 35, 41}, { 23, 28, 33, 39},
     { 22, 27, 32, 37}, { 21, 26, 30, 35}, { 20, 24, 29, 33}, { 19, 23, 27, 31},
-    { 18, 22, 26, 30}, { 17, 21, 25, 29}, { 16, 20, 23, 27}, { 15, 19, 22, 26},
-    { 14, 18, 21, 25}, { 14, 17, 20, 23}, { 13, 16, 19, 22}, { 12, 15, 18, 21},
+    { 18, 22, 26, 30}, { 17, 21, 25, 28}, { 16, 20, 23, 27}, { 15, 19, 22, 25},
+    { 14, 18, 21, 24}, { 14, 17, 20, 23}, { 13, 16, 19, 22}, { 12, 15, 18, 21},
     { 12, 14, 17, 20}, { 11, 14, 16, 19}, { 11, 13, 15, 18}, { 10, 12, 15, 17},
     { 10, 12, 14, 16}, {  9, 11, 13, 15}, {  9, 11, 12, 14}, {  8, 10, 12, 14},
     {  8,  9, 11, 13}, {  7,  9, 11, 12}, {  7,  9, 10, 12}, {  7,  8, 10, 11},
@@ -161,10 +161,10 @@ inline constexpr uint32_t cCabacTable[128][4] = {
     { 927508, 927512, 927517, 927521 },
     { 960531, 960535, 960539, 960543 },
     { 960786, 960790, 960794, 960798 },
-    { 993809, 993813, 993817, 993821 },
+    { 993809, 993813, 993817, 993820 },
     { 994064, 994068, 994071, 994075 },
-    { 994319, 994323, 994326, 994330 },
-    { 1027342, 1027346, 1027349, 1027353 },
+    { 994319, 994323, 994326, 994329 },
+    { 1027342, 1027346, 1027349, 1027352 },
     { 1060366, 1060369, 1060372, 1060375 },
     { 1060621, 1060624, 1060627, 1060630 },
     { 1093644, 1093647, 1093650, 1093653 },
@@ -226,10 +226,10 @@ inline constexpr uint32_t cCabacTable[128][4] = {
     { 3041044, 3041048, 3041053, 3041057 },
     { 3074067, 3074071, 3074075, 3074079 },
     { 3074322, 3074326, 3074330, 3074334 },
-    { 3107345, 3107349, 3107353, 3107357 },
+    { 3107345, 3107349, 3107353, 3107356 },
     { 3107600, 3107604, 3107607, 3107611 },
-    { 3107855, 3107859, 3107862, 3107866 },
-    { 3140878, 3140882, 3140885, 3140889 },
+    { 3107855, 3107859, 3107862, 3107865 },
+    { 3140878, 3140882, 3140885, 3140888 },
     { 3173902, 3173905, 3173908, 3173911 },
     { 3174157, 3174160, 3174163, 3174166 },
     { 3207180, 3207183, 3207186, 3207189 },
@@ -400,7 +400,8 @@ public:
     CabacEngine() = default;
 
     /** Initialize engine from bitstream at current position.
-     *  Reads 9 bits for initial offset per spec §9.3.1.2.
+     *  §9.3.1.2: codIRange = 510; codIOffset = read_bits(9) MSB-first unsigned.
+     *  Called once per slice before first MB, and after each I_PCM MB. [CHECKED §9.3.1.2]
      */
     void init(BitReader& br) noexcept
     {
@@ -410,6 +411,14 @@ public:
     }
 
     /** Decode one binary decision using a context model.
+     *  §9.3.3.2.1 DecodeBin process — step order verified:
+     *  1. qIdx = (codIRange >> 6) & 3  [CHECKED §9.3.3.2.1]
+     *  2. rangeLPS = rangeTabLPS[pStateIdx][qIdx]  [CHECKED §9.3.3.2.1]
+     *  3. codIRange -= rangeLPS  [CHECKED §9.3.3.2.1]
+     *  4. if codIOffset >= codIRange → LPS; else → MPS  [CHECKED §9.3.3.2.1]
+     *  5. Update symbol, codIRange (LPS only), context (pStateIdx + valMPS)  [CHECKED §9.3.3.2.1]
+     *  6. Renormalize if codIRange < 256  [CHECKED §9.3.3.2.2]
+     *  LPS valMPS flip (pStateIdx==0): encoded in packed table entry. [CHECKED §9.3.3.2.1.1]
      *  @param ctx  Context model (updated in-place)
      *  @return Decoded binary symbol (0 or 1)
      */
@@ -606,10 +615,11 @@ private:
 
 /** Compute a single CABAC context initial state from (m, n) parameters.
  *
- *  Formula (ITU-T H.264 §9.3.1.1):
- *    preCtxState = Clip3(1, 126, ((m * SliceQPY) >> 4) + n)
+ *  Formula (ITU-T H.264 §9.3.1.1, Equation 9-5):
+ *    preCtxState = Clip3(1, 126, ((m * Clip3(0, 51, SliceQPY)) >> 4) + n)
  *    if preCtxState <= 63: pStateIdx = 63 - preCtxState, valMPS = 0
  *    else:                 pStateIdx = preCtxState - 64,  valMPS = 1
+ *  [CHECKED §9.3.1.1]
  *
  *  Returns packed mpsState: (pStateIdx & 0x3F) | (valMPS << 6)
  *  which matches our CabacCtx encoding and cCabacTable[128][4] index.
@@ -617,8 +627,12 @@ private:
 inline uint8_t computeCabacInitState(int32_t m, int32_t n,
                                       int32_t sliceQpY) noexcept
 {
+    // §9.3.1.1: inner Clip3(0, 51, SliceQPY) applied before multiplication [CHECKED §9.3.1.1]
+    if (sliceQpY < 0) sliceQpY = 0;
+    if (sliceQpY > cMaxQp) sliceQpY = cMaxQp;
+
     int32_t preCtxState = ((m * sliceQpY) >> 4) + n;
-    // Clip3(1, 126, preCtxState)
+    // §9.3.1.1: outer Clip3(1, 126, ...) [CHECKED §9.3.1.1]
     if (preCtxState < 1) preCtxState = 1;
     if (preCtxState > 126) preCtxState = 126;
 
@@ -667,11 +681,14 @@ inline void initCabacContexts(CabacCtx* ctx, uint32_t sliceType,
     }
 
     // High profile extension contexts (460-1023) — §9.3.1.1.
-    // These are initialized to equiprobable state (pStateIdx=0, MPS=0).
-    // The spec defines separate (m, n) tables for these contexts
-    // (Table 9-24 through 9-30), but many implementations start them
-    // at the equiprobable state and rely on adaptation. We zero-init
-    // to match the spec's preCtxState=63 default (state 0, MPS=0).
+    // §9.3.1.1 Tables 9-24 to 9-33 define (m, n) pairs for all 1024 contexts.
+    // Contexts 460-1023 cover 8x8 transform coefficient elements (High profile
+    // only). We zero-init (pStateIdx=0, valMPS=0 = equiprobable + biased MPS)
+    // instead of applying spec (m, n) tables. [UNCHECKED §9.3.1.1 — Tables 9-24..9-33]
+    // NOTE: No impact on current Main-profile (profile_idc=77) test fixtures;
+    // 8x8 coefficient contexts are only used when transform_8x8_mode_flag=1
+    // (PPS flag, High profile only). Fixing requires adding Tables 9-24..9-33
+    // to cabac_init_mn.hpp and extending the loop to cNumCabacCtx.
     for (uint32_t i = cNumCabacCtxBase; i < cNumCabacCtx; ++i)
         ctx[i].mpsState = 0U;
 }

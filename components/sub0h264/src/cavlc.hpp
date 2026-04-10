@@ -6,18 +6,27 @@
  *
  *  Reference: ITU-T H.264 §9.2
  *
+ *  Spec-annotated review (2026-04-09):
+ *    §9.2 decode step sequence verified: [CHECKED §9.2]
+ *      Step 1: coeff_token → (TotalCoeff, TrailingOnes)  [CHECKED §9.2.1]
+ *      Step 2: trailing_ones_sign_flag (sign: 0→+1, 1→-1) [CHECKED §9.2.2]
+ *      Step 3: levels (reverse scan order, suffixLen adaptation) [CHECKED §9.2.2]
+ *      Step 4: total_zeros (gated on TotalCoeff < maxNumCoeff)  [CHECKED §9.2.3]
+ *      Step 5: run_before (not decoded for last coeff / zerosLeft==0) [CHECKED §9.2.3]
+ *      Step 6: position reconstruction from runs [CHECKED §9.2.4]
+ *
  *  Validation status:
  *    coeff_token:    Tables 9-5(a)-(e) regenerated from libavc, verified
  *                    against spec. nC>=8 fixed-code decode confirmed correct.
- *                    VALIDATED via test_cavlc.cpp and test_cavlc_regression.cpp.
- *    level decode:   §9.2.2 suffixLen adaptation uses two independent if
- *                    statements (not if/else-if). VALIDATED: matches libavc
- *                    ih264d_cavlc_parse4x4coeff line 1305.
+ *                    nC ranges: <0=chromaDC, 0-1, 2-3, 4-7, >=8. [CHECKED §9.2.1]
+ *    level decode:   §9.2.2 suffixLen adaptation uses two INDEPENDENT if
+ *                    statements (not if/else-if). [CHECKED §9.2.2]
+ *                    First non-trailing level ±1 offset when T1<3. [CHECKED §9.2.2]
+ *                    suffixLen init: tc>10&&t1<3→1, else→0. [CHECKED §9.2.2]
  *    total_zeros:    Table 9-7 verified prefix-free at compile time
- *                    (static_assert in test_spec_tables.cpp). Cross-checked
- *                    against JM, ffmpeg, libavc reference tables.
- *    run_before:     Table 9-10 verified prefix-free at compile time.
- *    chroma DC:      Zigzag identity for maxCoeff<=4. VALIDATED.
+ *                    (static_assert in test_spec_tables.cpp). [CHECKED §9.2.3]
+ *    run_before:     Table 9-10 verified prefix-free at compile time. [CHECKED §9.2.3]
+ *    chroma DC:      Zigzag identity for maxCoeff<=4. [CHECKED §8.5.6]
  *
  *  SPDX-License-Identifier: MIT
  */
@@ -429,7 +438,7 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
                                       uint32_t maxCoeff, uint32_t startIdx,
                                       ResidualBlock4x4& block) noexcept
 {
-    // 1. Decode coeff_token first — skip zero-init if no coefficients.
+    // §9.2 Step 2: coeff_token → TotalCoeff, TrailingOnes [CHECKED §9.2.1]
     // ~60% of blocks in typical P-frames have totalCoeff==0, so deferring
     // the 32-byte memset saves significant work on in-order cores.
     CoeffToken ct = decodeCoeffToken(br, nC);
@@ -444,8 +453,8 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
     // Zero coeffs before scatter-writing non-zero positions via zigzag.
     std::memset(block.coeffs, 0, sizeof(block.coeffs));
 
-    // 2. Decode trailing ones (±1 signs)
-    // Only [0..totalCoeff-1] elements used — no zero-init needed.
+    // §9.2 Step 3a: trailing_ones_sign_flag — sign: 0→+1, 1→-1 [CHECKED §9.2.2]
+    // FM-2: bit=0 is POSITIVE (inverted from intuition). Verified. [CHECKED FM-2]
     int16_t levels[16];
     uint32_t levelIdx = 0U;
 
@@ -460,7 +469,8 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
     // This trace is placed early but the actual dump happens after placement.
 #endif
 
-    // 3. Decode remaining levels
+    // §9.2 Step 3a: remaining levels (reverse scan order) [CHECKED §9.2.2]
+    // suffixLen init: tc>10 && t1<3 → 1, else → 0 [CHECKED §9.2.2]
     uint32_t suffixLen = 0U;
     if (ct.totalCoeff > 10U && ct.trailingOnes < cMaxTrailingOnes)
         suffixLen = 1U;
@@ -494,7 +504,8 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
             ++suffixLen;
     }
 
-    // 4. Decode total_zeros
+    // §9.2 Step 3b: total_zeros — ONLY if TotalCoeff < maxNumCoeff [CHECKED §9.2.3]
+    // FM-3: if TotalCoeff == maxNumCoeff, do NOT read VLC. [CHECKED FM-3]
     uint32_t totalZeros = 0U;
     if (ct.totalCoeff < maxCoeff)
     {
@@ -525,7 +536,9 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
 #endif
     }
 
-    // 5. Decode run_before and map to scan positions
+    // §9.2 Step 3b: run_before + §9.2.4 position reconstruction [CHECKED §9.2.3/§9.2.4]
+    // FM-3: last coeff (i==tc-1) → run = zerosLeft, do NOT read VLC. [CHECKED FM-3]
+    // FM-3: zerosLeft==0 → do NOT read VLC. [CHECKED FM-3]
     uint32_t zerosLeft = totalZeros;
     uint32_t coeffIdx = ct.totalCoeff + totalZeros - 1U + startIdx;
 
@@ -617,8 +630,9 @@ enum class IMbType : uint8_t
 };
 
 /** Extract I_16x16 macroblock properties from mb_type.
- *  For I_16x16 types (1-24), the mb_type encodes pred_mode, cbp_luma, and cbp_chroma.
- *  Reference: ITU-T H.264 Table 7-11.
+ *  For I_16x16 types (1-24): mb_type = 1 + predMode + cbpChroma*4 + cbpLuma12*12.
+ *  where cbpLuma12=0→cbpLuma=0, cbpLuma12=1→cbpLuma=15.
+ *  Reference: ITU-T H.264 Table 7-11. [CHECKED Table 7-11]
  */
 inline bool isI16x16(uint8_t mbType) noexcept { return mbType >= 1U && mbType <= 24U; }
 inline uint8_t i16x16PredMode(uint8_t mbType) noexcept { return (mbType - 1U) % 4U; }

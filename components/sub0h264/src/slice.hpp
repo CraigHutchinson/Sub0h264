@@ -90,12 +90,13 @@ struct SliceHeader
 
     // QP
     int32_t sliceQpDelta_ = 0;
-    int32_t sliceQp() const noexcept { return cDefaultPicInitQp + sliceQpDelta_; } // Needs pps.picInitQp_
+    // Effective SliceQPY = pps.picInitQp_ + sliceQpDelta_ (§7.4.3). No inline
+    // helper here — sliceQp() requires PPS context unavailable in SliceHeader.
 
     // Deblocking filter
     uint8_t disableDeblockingFilter_ = 0U;   ///< 0=enabled, 1=disabled, 2=disabled at slice boundary
-    int32_t sliceAlphaC0Offset_ = 0;         ///< alpha offset / 2
-    int32_t sliceBetaOffset_ = 0;            ///< beta offset / 2
+    int32_t sliceAlphaC0Offset_ = 0;         ///< FilterOffsetA = slice_alpha_c0_offset_div2 * 2 (§8.7.2)
+    int32_t sliceBetaOffset_ = 0;            ///< FilterOffsetB = slice_beta_offset_div2 * 2 (§8.7.2)
 
     // CABAC
     uint8_t cabacInitIdc_ = 0U;              ///< 0-2 (only for CABAC slices)
@@ -129,6 +130,14 @@ struct SliceHeader
 
 /** Parse pred_weight_table() — ITU-T H.264 §7.3.3.2.
  *  Stores weight/offset values in the slice header for weighted MC.
+ *
+ *  Field order per §7.3.3.2:
+ *    luma_log2_weight_denom ue(v)
+ *    if( ChromaArrayType != 0 ) chroma_log2_weight_denom ue(v)
+ *    for i in [0, numRefIdxL0]:
+ *      luma_weight_l0_flag u(1); if set: luma_weight_l0[i] se(v), luma_offset_l0[i] se(v)
+ *      if( ChromaArrayType != 0 ): chroma_weight_l0_flag u(1); ...
+ *    if( slice_type % 5 == 1 ): L1 list mirrors L0 structure [CHECKED §7.3.3.2]
  */
 inline void parsePredWeightTable(BitReader& br, SliceHeader& sh,
                                   int32_t chromaFormatIdc) noexcept
@@ -215,6 +224,12 @@ inline void parsePredWeightTable(BitReader& br, SliceHeader& sh,
 /** Parse ref_pic_list_modification() — ITU-T H.264 §7.3.3.1.
  *  Stores reordering commands in the SliceHeader for use during
  *  reference list construction per §8.2.4.3.
+ *
+ *  L0: present when slice_type % 5 != 2 (I) && slice_type % 5 != 4 (SI).
+ *  L1: present when slice_type % 5 == 1 (B).
+ *  modification_of_pic_nums_idc terminates loop when == 3. [CHECKED §7.3.3.1]
+ *  NOTE: MVC NAL types 20/21 call ref_pic_list_mvc_modification() per spec;
+ *  we always call the non-MVC variant (MVC not supported). [PARTIAL §7.3.3.1]
  */
 inline void parseRefPicListModification(BitReader& br, SliceHeader& sh) noexcept
 {
@@ -271,6 +286,16 @@ inline void parseRefPicListModification(BitReader& br, SliceHeader& sh) noexcept
 
 /** Parse dec_ref_pic_marking() — ITU-T H.264 §7.3.3.3.
  *  Stores MMCO commands for application by the DPB after decode.
+ *
+ *  IDR path: no_output_of_prior_pics_flag u(1), long_term_reference_flag u(1).
+ *  Non-IDR: adaptive_ref_pic_marking_mode_flag u(1); if set, do-while MMCO
+ *    ops 1-6 with associated parameters per Table 7-9. [CHECKED §7.3.3.3]
+ *  MMCO parameter read order (FM-1 verified):
+ *    op=1: difference_of_pic_nums_minus1 → value1
+ *    op=2: long_term_pic_num → value1
+ *    op=3: difference_of_pic_nums_minus1 → value1, long_term_frame_idx → value2
+ *    op=4: max_long_term_frame_idx_plus1 → value1
+ *    op=6: long_term_frame_idx → value2
  */
 inline void parseDecRefPicMarking(BitReader& br, bool isIdr,
                                    DecRefPicMarking& marking) noexcept
@@ -323,7 +348,14 @@ inline Result parseSliceHeader(BitReader& br, const Sps& sps, const Pps& pps,
     sh = SliceHeader{};
     sh.isIdr_ = isIdr;
 
-    // first_mb_in_slice
+    // §7.3.3 slice_header() — field ordering verified. [CHECKED §7.3.3]
+    // PARTIAL: colour_plane_id u(2) absent — only needed when
+    //   separate_colour_plane_flag==1 (chroma_format_idc==3); we reject
+    //   non-4:2:0 in SPS parsing so this flag is never set. [PARTIAL §7.3.3]
+    // PARTIAL: slice_group_change_cycle u(v) absent — only needed when FMO
+    //   active (num_slice_groups_minus1>0); we reject FMO in PPS parsing. [PARTIAL §7.3.3]
+
+    // first_mb_in_slice ue(v)
     sh.firstMbInSlice_ = br.readUev();
     if (sh.firstMbInSlice_ >= sps.totalMbs())
         return Result::ErrorInvalidParam;

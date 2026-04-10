@@ -3,9 +3,16 @@
  *  constexpr tables for CAVLC decoding, zigzag scan, CBP mapping.
  *  Where the spec provides derivation formulas, tables are computed at
  *  compile time from those formulas (ITU-T H.264 §6.4.3, §6.4.11).
- *  All remaining tables are stored as constexpr literals from spec tables.
  *
- *  Reference: ITU-T H.264 §9.2 (CAVLC), Tables 9-5 through 9-10
+ *  Spec-annotated review (2026-04-09):
+ *    §8.5.6 cZigzag4x4/8x8: standard H.264 zigzag scan [CHECKED §8.5.6]
+ *    §6.4.3 InverseRasterScan + luma4x4 block positions (constexpr) [CHECKED §6.4.3]
+ *    §6.4.11 cTopRightUnavailScan: per-block availability [CHECKED §6.4.11]
+ *    §9.1.2 Table 9-4 cCbpTable: intra/inter CBP mapping [CHECKED Table 9-4]
+ *    §9.2.1 cLevelSuffixThreshold: CAVLC level adaptation [CHECKED §9.2.1]
+ *    Table 8-15 cChromaQpTable: luma→chroma QP (identity to 29, then saturates) [CHECKED Table 8-15]
+ *    Table 7-13 cNumMbPartP/Width/Height: P-slice partition geometry [CHECKED Table 7-13]
+ *    7 static_asserts verify key table entries at compile time [CHECKED FM-14]
  *
  *  SPDX-License-Identifier: MIT
  */

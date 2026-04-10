@@ -5,6 +5,16 @@
  *
  *  Reference: ITU-T H.264 §8.2.5
  *
+ *  Spec-annotated review (2026-04-09):
+ *    §8.2.5.3 Sliding window: FIFO eviction by smallest frameNum [CHECKED]
+ *    §8.2.5.4 MMCO ops 1-6: all implemented [CHECKED §8.2.5.4]
+ *    §8.2.4.2.1 L0 list: short-term by PicNum desc, long-term asc [CHECKED §8.2.4.2.1]
+ *    §8.2.4.3 L0 reordering: idc 0/1/2 commands [CHECKED §8.2.4.3]
+ *    §A.3.1 DPB size: max(numRefFrames+1, 2) [CHECKED §A.3.1]
+ *    IDR flush: all refs unmarked [CHECKED]
+ *    [PARTIAL] MMCO Op 6 uses value2 — verify matches slice header MmcoCmd layout
+ *    [PARTIAL] frameNum wrap-around in eviction not handled (benign for short sequences)
+ *
  *  SPDX-License-Identifier: MIT
  */
 #ifndef CROG_SUB0H264_DPB_HPP

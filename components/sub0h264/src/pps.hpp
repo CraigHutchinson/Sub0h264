@@ -73,7 +73,9 @@ inline Result parsePps(BitReader& br, const Sps* spsArray, Pps& pps) noexcept
 {
     pps = Pps{};
 
-    // pic_parameter_set_id
+    // §7.3.2.2 pic_parameter_set_rbsp() — field ordering verified [CHECKED §7.3.2.2]
+
+    // pic_parameter_set_id ue(v)
     pps.ppsId_ = static_cast<uint8_t>(br.readUev());
     if (pps.ppsId_ >= cMaxPpsCount)
         return Result::ErrorInvalidParam;
@@ -140,7 +142,10 @@ inline Result parsePps(BitReader& br, const Sps* spsArray, Pps& pps) noexcept
     // redundant_pic_cnt_present_flag
     pps.redundantPicCntPresent_ = static_cast<uint8_t>(br.readBit());
 
-    // High profile extensions (if more RBSP data available)
+    // §7.3.2.2: if( more_rbsp_data() ) — High profile extension block.
+    // Spec uses more_rbsp_data() (profile-agnostic). We approximate with
+    // profile==High && hasBits(1). Functionally correct for Baseline/Main/High:
+    // Baseline/Main streams don't include this block in practice. [PARTIAL §7.3.2.2]
     if (sps.profileIdc_ == cProfileHigh && br.hasBits(1U))
     {
         pps.transform8x8Mode_ = static_cast<uint8_t>(br.readBit());
@@ -169,6 +174,8 @@ inline Result parsePps(BitReader& br, const Sps* spsArray, Pps& pps) noexcept
     }
     else
     {
+        // §7.4.2.2: When second_chroma_qp_index_offset absent, infer equal to
+        // chroma_qp_index_offset. [CHECKED §7.4.2.2]
         pps.secondChromaQpIndexOffset_ = pps.chromaQpIndexOffset_;
     }
 

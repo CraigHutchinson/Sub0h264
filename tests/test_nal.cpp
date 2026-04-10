@@ -96,6 +96,57 @@ TEST_CASE("parseNalUnit rejects forbidden bit")
     CHECK_FALSE(parseNalUnit(data, sizeof(data), nal));
 }
 
+// FM-23: Emulation prevention edge cases — §7.4.1
+TEST_CASE("removeEmulationPrevention handles consecutive emulation bytes")
+{
+    // 00 00 03 00 00 03 05 → 00 00 00 00 05
+    // Two back-to-back emulation sequences: each 00 00 03 is stripped once.
+    // After first removal: stream is 00 00 [00 00 03] 05 → second 03 also stripped.
+    // [CHECKED §7.4.1]
+    const uint8_t ebsp[] = { 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x05 };
+    std::vector<uint8_t> rbsp;
+    removeEmulationPrevention(ebsp, sizeof(ebsp), rbsp);
+
+    REQUIRE(rbsp.size() == 5U);
+    CHECK(rbsp[0] == 0x00U);
+    CHECK(rbsp[1] == 0x00U);
+    CHECK(rbsp[2] == 0x00U);
+    CHECK(rbsp[3] == 0x00U);
+    CHECK(rbsp[4] == 0x05U);
+}
+
+TEST_CASE("removeEmulationPrevention handles emulation byte at end of buffer")
+{
+    // 00 00 03 at end with no trailing byte: 03 is still removed.
+    // §7.4.1: emulation_prevention_three_byte must be removed regardless.
+    // [CHECKED §7.4.1]
+    const uint8_t ebsp[] = { 0xAB, 0x00, 0x00, 0x03 };
+    std::vector<uint8_t> rbsp;
+    removeEmulationPrevention(ebsp, sizeof(ebsp), rbsp);
+
+    REQUIRE(rbsp.size() == 3U);
+    CHECK(rbsp[0] == 0xABU);
+    CHECK(rbsp[1] == 0x00U);
+    CHECK(rbsp[2] == 0x00U);
+}
+
+TEST_CASE("removeEmulationPrevention handles emulation byte mid-stream")
+{
+    // AB 00 00 03 02 CD → AB 00 00 02 CD
+    // §7.4.1: 03 between any two bytes is removed when preceded by 00 00.
+    // [CHECKED §7.4.1]
+    const uint8_t ebsp[] = { 0xAB, 0x00, 0x00, 0x03, 0x02, 0xCD };
+    std::vector<uint8_t> rbsp;
+    removeEmulationPrevention(ebsp, sizeof(ebsp), rbsp);
+
+    REQUIRE(rbsp.size() == 5U);
+    CHECK(rbsp[0] == 0xABU);
+    CHECK(rbsp[1] == 0x00U);
+    CHECK(rbsp[2] == 0x00U);
+    CHECK(rbsp[3] == 0x02U);
+    CHECK(rbsp[4] == 0xCDU);
+}
+
 TEST_CASE("Parse flat_black_640x480.h264 NAL sequence")
 {
     auto data = getFixture("flat_black_640x480.h264");

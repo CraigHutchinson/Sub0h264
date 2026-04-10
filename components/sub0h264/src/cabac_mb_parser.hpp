@@ -31,6 +31,16 @@ namespace sub0h264 {
  *  Binds to a CabacEngine + CabacContextSet + CabacNeighborCtx and provides
  *  named methods for each syntax element. Each method cites the spec section
  *  that defines the binarization and context assignment.
+ *
+ *  Spec-annotated review (2026-04-09):
+ *    Routing verified: each method calls the correct cabac_parse.hpp function
+ *    with the correct neighbor-derived context. [CHECKED §9.3.3]
+ *    NOTE: This is a TEST wrapper. The main decoder calls cabac_parse functions
+ *    directly with inline context derivation. Bugs in the decoder's context
+ *    derivation are NOT caught by reviewing this file.
+ *    [PARTIAL] decodeMvd: parameter named 'comp' but passed as absMvdNeighbor
+ *    [PARTIAL] decodeResidual4x4: cbfCtxInc always 0 (test-only; decoder computes inline)
+ *    [PARTIAL] decodeTransform8x8Flag: ctxIdxInc always 0 (missing neighbor derivation)
  */
 class CabacMbParser
 {

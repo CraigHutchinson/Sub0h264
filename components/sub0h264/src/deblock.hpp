@@ -5,23 +5,22 @@
  *
  *  Reference: ITU-T H.264 §8.7
  *
- *  Validation status:
- *    computeBs:            §8.7.2.1 BS derivation. Intra=4/3, coeff=2,
- *                          MV/ref diff=1, else 0. VALIDATED for I-frames
- *                          (IDR pixel-perfect vs ffmpeg after deblocking).
- *    filterLumaWeak:       §8.7.2.3. VALIDATED via I-frame pixel match.
- *    filterLumaStrong:     §8.7.2.4. VALIDATED via I-frame pixel match.
- *    filterChromaWeak:     §8.7.2.3 chroma variant. tc = tc0 + 1.
- *    filterChromaStrong:   §8.7.2.4 chroma variant.
- *    Threshold tables:     Alpha (Table 8-16), Beta (Table 8-17), tc0 (Table 8-16)
- *                          verified monotonic + boundary values via static_assert.
- *    Filter order:         Vertical edges first, then horizontal — per §8.7.
- *    Chroma BS derivation: Max of 2 corresponding luma rows/cols per §8.7.2.1.
- *    QP averaging:         Boundary edges use (qpP + qpQ + 1) >> 1 per §8.7.2.2.
- *                          VALIDATED for I-frames.
- *    KNOWN ISSUE: P-frame chroma deblocking may produce different results
- *    from libavc at horizontal MB boundaries in row 2+. Under investigation
- *    — may be downstream effect of bitstream alignment issue.
+ *  Spec-annotated review (2026-04-09):
+ *    §8.7.2.1 BS derivation: intra+MB=4, intra+internal=3, coeff=2,
+ *             ref/MV diff=1, else=0. [CHECKED §8.7.2.1]
+ *    §8.7.2.3 Weak filter (BS<4): delta formula, tc=tc0+ap+aq,
+ *             optional p1/q1 when ap/aq<beta. [CHECKED §8.7.2.3]
+ *    §8.7.2.4 Strong filter (BS=4): strong threshold |p0-q0|<(alpha>>2)+2,
+ *             3-tap P/Q with fallback. [CHECKED §8.7.2.4]
+ *    §8.7.2.2 QP averaging: (qpP+qpQ+1)>>1 at boundaries. [CHECKED §8.7.2.2]
+ *    §8.7 Filter order: vertical edges first, then horizontal. [CHECKED §8.7]
+ *    FM-22: BS precomputed per-MB before filter application. [CHECKED FM-22]
+ *    FM-10: Chroma uses QPc from cChromaQpTable, not luma QP. [CHECKED FM-10]
+ *    Tables: Alpha, Beta, tc0 verified monotonic + boundary. [CHECKED FM-14]
+ *
+ *  KNOWN ISSUE: P-frame chroma deblocking may produce different results
+ *  from libavc at horizontal MB boundaries in row 2+. Likely downstream
+ *  of the CABAC coefficient decode bug (Phase 5 mb_type fix may help).
  *
  *  SPDX-License-Identifier: MIT
  */

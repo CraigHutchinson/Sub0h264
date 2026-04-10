@@ -18,20 +18,25 @@ namespace spec {
 
 // ── §9.3.1.1: Context initialization ───────────────────────────────────
 
-/** Compute initial CABAC context state per §9.3.1.1.
+/** Compute initial CABAC context state per §9.3.1.1 Equation 9-5.
  *
- *  preCtxState = Clip3(1, 126, ((m * SliceQPY) >> 4) + n)
+ *  preCtxState = Clip3(1, 126, ((m * Clip3(0, 51, SliceQPY)) >> 4) + n)
  *  if (preCtxState <= 63)
  *      pStateIdx = 63 - preCtxState
  *      valMPS = 0
  *  else
  *      pStateIdx = preCtxState - 64
  *      valMPS = 1
+ *  [CHECKED §9.3.1.1]
  *
  *  @return Packed mpsState: (pStateIdx & 0x3F) | (valMPS << 6)
  */
 inline uint8_t contextInit(int32_t m, int32_t n, int32_t sliceQpY) noexcept
 {
+    // §9.3.1.1: inner Clip3(0, 51, SliceQPY) before multiplication [CHECKED §9.3.1.1]
+    if (sliceQpY < 0) sliceQpY = 0;
+    if (sliceQpY > cMaxQp) sliceQpY = cMaxQp;
+
     int32_t preCtxState = ((m * sliceQpY) >> 4) + n;
     if (preCtxState < 1) preCtxState = 1;
     if (preCtxState > 126) preCtxState = 126;
@@ -205,8 +210,8 @@ inline constexpr uint8_t cRangeTabLPS[64][4] = {
     { 33, 41, 48, 56}, { 32, 39, 46, 53}, { 30, 37, 43, 50}, { 29, 35, 41, 48},
     { 27, 33, 39, 45}, { 26, 31, 37, 43}, { 24, 30, 35, 41}, { 23, 28, 33, 39},
     { 22, 27, 32, 37}, { 21, 26, 30, 35}, { 20, 24, 29, 33}, { 19, 23, 27, 31},
-    { 18, 22, 26, 30}, { 17, 21, 25, 29}, { 16, 20, 23, 27}, { 15, 19, 22, 26},
-    { 14, 18, 21, 25}, { 14, 17, 20, 23}, { 13, 16, 19, 22}, { 12, 15, 18, 21},
+    { 18, 22, 26, 30}, { 17, 21, 25, 28}, { 16, 20, 23, 27}, { 15, 19, 22, 25},
+    { 14, 18, 21, 24}, { 14, 17, 20, 23}, { 13, 16, 19, 22}, { 12, 15, 18, 21},
     { 12, 14, 17, 20}, { 11, 14, 16, 19}, { 11, 13, 15, 18}, { 10, 12, 15, 17},
     { 10, 12, 14, 16}, {  9, 11, 13, 15}, {  9, 11, 12, 14}, {  8, 10, 12, 14},
     {  8,  9, 11, 13}, {  7,  9, 11, 12}, {  7,  9, 10, 12}, {  7,  8, 10, 11},
