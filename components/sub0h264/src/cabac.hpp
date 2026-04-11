@@ -452,12 +452,13 @@ public:
         if (codIRange_ < 256U)
             renormalize();
 
-        // CABAC bin trace (always available, guarded by binTraceEnabled_ flag)
+        // CABAC bin trace — compiled out unless SUB0H264_TRACE is defined.
+        // Zero overhead in release builds. [CHECKED: no impact on hot path]
+#if SUB0H264_TRACE
         if (binTraceEnabled_ && binTraceCount_ < binTraceMax_)
         {
             if (binTraceLog_)
             {
-                // Compute context index from pointer offset if base is set
                 int32_t ctxIdx = binTraceCtxBase_ ? static_cast<int32_t>(&ctx - binTraceCtxBase_) : -1;
                 std::fprintf(binTraceLog_, "%lu %lu %u %lu %lu %lu %ld\n",
                     (unsigned long)binTraceCount_, (unsigned long)state,
@@ -467,6 +468,7 @@ public:
             }
             ++binTraceCount_;
         }
+#endif
 
         return symbol;
     }
@@ -486,7 +488,7 @@ public:
             symbol = 0U;
         }
 
-        // Bypass bin trace (for debugging CABAC divergence)
+#if SUB0H264_TRACE
         if (binTraceEnabled_ && binTraceCount_ < binTraceMax_)
         {
             if (binTraceLog_)
@@ -497,6 +499,7 @@ public:
                     (unsigned long)codIOffset_);
             ++binTraceCount_;
         }
+#endif
 
         return symbol;
     }
