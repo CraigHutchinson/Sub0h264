@@ -18,11 +18,8 @@
 #include "cavlc.hpp"
 #include "deblock.hpp"
 
-// Detailed per-block trace for multi-MB I_4x4 investigation.
-// Enable to dump every buffer at every pipeline step for blocks 7-9 of MB(0,0).
-#define SUB0H264_TRACE_I4X4_BLOCKS
-// #define SUB0H264_EXP_FORCE_MODE1_SCAN5
 // #define SUB0H264_TRACE_I4X4_BLOCKS
+// #define SUB0H264_EXP_FORCE_MODE1_SCAN5
 #include "decode_timing.hpp"
 #include "decode_trace.hpp"
 #include "dpb.hpp"
