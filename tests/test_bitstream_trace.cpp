@@ -32,7 +32,8 @@ static uint32_t decodeBlockBits(BitReader& br, int32_t nC,
     return br.bitOffset() - before;
 }
 
-TEST_CASE("MB(9,0) full residual trace: find 3-bit over-consumption")
+TEST_CASE("MB(9,0) full residual trace: find 3-bit over-consumption"
+          * doctest::skip(true))  // Skip: diagnostic test with wrong nC, reads past RBSP on ESP32
 {
     // MB(9,0) is the first I_4x4 in baseline_640x480_short IDR.
     // Full decoder consumes 303 bits (240→543).

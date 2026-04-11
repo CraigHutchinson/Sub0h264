@@ -7,6 +7,7 @@
  *  SPDX-License-Identifier: MIT
  */
 #include "doctest.h"
+#include <memory>
 #include "../components/sub0h264/src/decoder.hpp"
 #include "../components/sub0h264/src/annexb.hpp"
 #include "test_fixtures.hpp"
@@ -20,7 +21,7 @@ TEST_CASE("CABAC diag: flat_main MB(0,0) engine state trace")
     auto h264 = getFixture("cabac_flat_main.h264");
     REQUIRE(!h264.empty());
 
-    H264Decoder decoder;
+    auto decoder = std::make_unique<H264Decoder>();
 
     // Use trace callback to capture per-block decode info for MB(0,0)
     struct BlockInfo { uint32_t scanIdx; int16_t coeffs[16]; uint8_t pred[16]; uint8_t out[16]; };
@@ -28,7 +29,7 @@ TEST_CASE("CABAC diag: flat_main MB(0,0) engine state trace")
     uint32_t mbStartBit = 0;
     uint32_t cbpValue = 0;
 
-    decoder.trace().setCallback([&](const TraceEvent& e) {
+    decoder->trace().setCallback([&](const TraceEvent& e) {
         if (e.mbX == 0 && e.mbY == 0)
         {
             if (e.type == TraceEventType::MbStart)
@@ -66,7 +67,7 @@ TEST_CASE("CABAC diag: flat_main MB(0,0) engine state trace")
     FILE* binLog = std::fopen("build/cabac_diag_trace.txt", "w");
     REQUIRE(binLog != nullptr);
     std::fprintf(binLog, "# binIdx ctxState newState symbol range offset\n");
-    decoder.cabacEngine().enableBinTrace(binLog, 2000U);
+    decoder->cabacEngine().enableBinTrace(binLog, 2000U);
 
     std::vector<NalBounds> bounds;
     findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
@@ -75,11 +76,11 @@ TEST_CASE("CABAC diag: flat_main MB(0,0) engine state trace")
     {
         NalUnit nal;
         if (!parseNalUnit(h264.data() + b.offset, b.size, nal)) continue;
-        if (decoder.processNal(nal) == DecodeStatus::FrameDecoded)
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
             break;
     }
 
-    decoder.cabacEngine().disableBinTrace();
+    decoder->cabacEngine().disableBinTrace();
     std::fclose(binLog);
 
     MESSAGE("MB(0,0) start bit: " << mbStartBit);
@@ -100,7 +101,7 @@ TEST_CASE("CABAC diag: flat_main MB(0,0) engine state trace")
         }
     }
 
-    const Frame* frame = decoder.currentFrame();
+    const Frame* frame = decoder->currentFrame();
     REQUIRE(frame != nullptr);
 
     // Report first 4 blocks' pixel output
@@ -138,7 +139,7 @@ TEST_CASE("CABAC diag: bouncing_ball_ionly_cabac MB(0,0) pixel output")
     auto h264 = getFixture("bouncing_ball_ionly_cabac.h264");
     if (h264.empty()) { MESSAGE("fixture not found"); return; }
 
-    H264Decoder decoder;
+    auto decoder = std::make_unique<H264Decoder>();
 
     std::vector<NalBounds> bounds;
     findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
@@ -147,11 +148,11 @@ TEST_CASE("CABAC diag: bouncing_ball_ionly_cabac MB(0,0) pixel output")
     {
         NalUnit nal;
         if (!parseNalUnit(h264.data() + b.offset, b.size, nal)) continue;
-        if (decoder.processNal(nal) == DecodeStatus::FrameDecoded)
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
             break;
     }
 
-    const Frame* frame = decoder.currentFrame();
+    const Frame* frame = decoder->currentFrame();
     REQUIRE(frame != nullptr);
 
     // Get raw reference

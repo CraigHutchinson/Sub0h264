@@ -8,6 +8,7 @@
  *  SPDX-License-Identifier: MIT
  */
 #include "doctest.h"
+#include <memory>
 #include "../components/sub0h264/src/cabac_spec.hpp"
 #include "../components/sub0h264/src/cabac.hpp"
 #include "../components/sub0h264/src/cabac_parse.hpp"
@@ -496,7 +497,7 @@ TEST_CASE("Spec Table 9-37: P-slice mb_type uses exactly 3 bins (FM-1 regression
         return;
     }
 
-    H264Decoder decoder;
+    auto decoder = std::make_unique<H264Decoder>();
     std::vector<NalBounds> bounds;
     findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
 
@@ -507,13 +508,13 @@ TEST_CASE("Spec Table 9-37: P-slice mb_type uses exactly 3 bins (FM-1 regression
         NalUnit nal;
         if (!parseNalUnit(h264.data() + b.offset, b.size, nal))
             continue;
-        if (decoder.processNal(nal) == DecodeStatus::FrameDecoded)
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
         {
             ++framesDecoded;
             if (framesDecoded >= 2U)
             {
                 // Frame 2+ is a P-slice in this I+P stream
-                pFrame = decoder.currentFrame();
+                pFrame = decoder->currentFrame();
                 break;
             }
         }

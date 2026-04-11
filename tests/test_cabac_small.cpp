@@ -7,6 +7,7 @@
  *  SPDX-License-Identifier: MIT
  */
 #include "doctest.h"
+#include <memory>
 #include "../components/sub0h264/src/decoder.hpp"
 #include "../components/sub0h264/src/annexb.hpp"
 #include "../components/sub0h264/src/frame_verify.hpp"
@@ -25,11 +26,11 @@ static double decodeAndPsnr(const char* h264Name, const char* rawName,
     auto raw = getFixture(rawName);
     if (h264.empty() || raw.empty()) return -1.0;
 
-    H264Decoder decoder;
-    int frames = decoder.decodeStream(h264.data(), static_cast<uint32_t>(h264.size()));
+    auto decoder = std::make_unique<H264Decoder>();
+    int frames = decoder->decodeStream(h264.data(), static_cast<uint32_t>(h264.size()));
     if (frames < 1) return -2.0;
 
-    const Frame* frame = decoder.currentFrame();
+    const Frame* frame = decoder->currentFrame();
     if (!frame) return -3.0;
 
     // Y-plane PSNR
@@ -50,9 +51,9 @@ static int decodeFirstPixel(const char* h264Name)
 {
     auto h264 = getFixture(h264Name);
     if (h264.empty()) return -1;
-    H264Decoder decoder;
-    if (decoder.decodeStream(h264.data(), static_cast<uint32_t>(h264.size())) < 1) return -1;
-    const Frame* f = decoder.currentFrame();
+    auto decoder = std::make_unique<H264Decoder>();
+    if (decoder->decodeStream(h264.data(), static_cast<uint32_t>(h264.size())) < 1) return -1;
+    const Frame* f = decoder->currentFrame();
     return f ? static_cast<int>(f->y(0, 0)) : -1;
 }
 

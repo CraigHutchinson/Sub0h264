@@ -13,6 +13,8 @@
 #include "../components/sub0h264/src/decoder.hpp"
 #include "../components/sub0h264/src/annexb.hpp"
 #include "test_fixtures.hpp"
+
+#include <memory>
 #include <cmath>
 #include <ios>
 #include <string>
@@ -179,7 +181,7 @@ TEST_CASE("CABAC decode: flat gray single-MB Y plane mean within range")
         return;
     }
 
-    H264Decoder decoder;
+    auto decoder = std::make_unique<H264Decoder>(); // heap alloc — avoid ESP32 stack overflow
     std::vector<NalBounds> bounds;
     findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
 
@@ -189,8 +191,8 @@ TEST_CASE("CABAC decode: flat gray single-MB Y plane mean within range")
         NalUnit nal;
         if (!parseNalUnit(h264.data() + b.offset, b.size, nal))
             continue;
-        if (decoder.processNal(nal) == DecodeStatus::FrameDecoded)
-            decoded = decoder.currentFrame();
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
+            decoded = decoder->currentFrame();
     }
     REQUIRE(decoded != nullptr);
     REQUIRE(decoded->width() >= 16U);
@@ -221,7 +223,7 @@ TEST_CASE("CABAC decode: flat gray 320x240 I-frame pixel analysis")
         return;
     }
 
-    H264Decoder decoder;
+    auto decoder = std::make_unique<H264Decoder>();
     std::vector<NalBounds> bounds;
     findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
 
@@ -231,8 +233,8 @@ TEST_CASE("CABAC decode: flat gray 320x240 I-frame pixel analysis")
         NalUnit nal;
         if (!parseNalUnit(h264.data() + b.offset, b.size, nal))
             continue;
-        if (decoder.processNal(nal) == DecodeStatus::FrameDecoded)
-            decoded = decoder.currentFrame();
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
+            decoded = decoder->currentFrame();
     }
     REQUIRE(decoded != nullptr);
     CHECK(decoded->width() == 320U);
@@ -297,7 +299,7 @@ TEST_CASE("CABAC decode: flat gray MB(0,0) bit position matches reference")
         return;
     }
 
-    H264Decoder decoder;
+    auto decoder = std::make_unique<H264Decoder>();
     std::vector<NalBounds> bounds;
     findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
 
@@ -308,9 +310,9 @@ TEST_CASE("CABAC decode: flat gray MB(0,0) bit position matches reference")
         NalUnit nal;
         if (!parseNalUnit(h264.data() + b.offset, b.size, nal))
             continue;
-        if (decoder.processNal(nal) == DecodeStatus::FrameDecoded)
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
         {
-            frame = decoder.currentFrame();
+            frame = decoder->currentFrame();
             break;
         }
     }
@@ -345,8 +347,8 @@ TEST_CASE("CABAC decode: flat gray MB(0,0) block residual coefficients")
     struct ResidualCapture { uint32_t blkIdx; uint32_t numCoeff; };
     std::vector<ResidualCapture> captures;
 
-    H264Decoder decoder;
-    decoder.trace().setCallback([&](const TraceEvent& e) {
+    auto decoder = std::make_unique<H264Decoder>();
+    decoder->trace().setCallback([&](const TraceEvent& e) {
         if (e.type == TraceEventType::BlockResidual && e.mbX == 0U && e.mbY == 0U)
             captures.push_back({e.a, e.b});
     });
@@ -359,7 +361,7 @@ TEST_CASE("CABAC decode: flat gray MB(0,0) block residual coefficients")
         NalUnit nal;
         if (!parseNalUnit(h264.data() + b.offset, b.size, nal))
             continue;
-        if (decoder.processNal(nal) == DecodeStatus::FrameDecoded)
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
             break;
     }
 
@@ -367,7 +369,7 @@ TEST_CASE("CABAC decode: flat gray MB(0,0) block residual coefficients")
     // blk_scan0 = raster 0 = rows 0-3, cols 0-3
     // blk_scan1 = raster 1 = rows 0-3, cols 4-7
     // blk_scan2 = raster 4 = rows 4-7, cols 0-3
-    const Frame* frame = decoder.currentFrame();
+    const Frame* frame = decoder->currentFrame();
     REQUIRE(frame != nullptr);
 
     // blk(0,0): first pixel depends on prediction + residual
@@ -607,8 +609,8 @@ TEST_CASE("CABAC decode: flat gray per-MB bit positions for alignment check")
     struct MbBitPos { uint32_t mbX, mbY, bitPos; };
     std::vector<MbBitPos> positions;
 
-    H264Decoder decoder;
-    decoder.trace().setCallback([&](const TraceEvent& e) {
+    auto decoder = std::make_unique<H264Decoder>();
+    decoder->trace().setCallback([&](const TraceEvent& e) {
         if (e.type == TraceEventType::MbStart && e.a == 200U)
             positions.push_back({e.mbX, e.mbY, e.b});
     });
@@ -621,7 +623,7 @@ TEST_CASE("CABAC decode: flat gray per-MB bit positions for alignment check")
         NalUnit nal;
         if (!parseNalUnit(h264.data() + b.offset, b.size, nal))
             continue;
-        decoder.processNal(nal);
+        decoder->processNal(nal);
     }
 
     // With bitstream overrun protection, CABAC may decode fewer MBs
@@ -650,7 +652,7 @@ TEST_CASE("CABAC decode: scrolling texture High profile I-frame produces non-bla
         return;
     }
 
-    H264Decoder decoder;
+    auto decoder = std::make_unique<H264Decoder>();
     std::vector<NalBounds> bounds;
     findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
 
@@ -660,9 +662,9 @@ TEST_CASE("CABAC decode: scrolling texture High profile I-frame produces non-bla
         NalUnit nal;
         if (!parseNalUnit(h264.data() + b.offset, b.size, nal))
             continue;
-        if (decoder.processNal(nal) == DecodeStatus::FrameDecoded)
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
         {
-            decoded = decoder.currentFrame();
+            decoded = decoder->currentFrame();
             break; // just first frame
         }
     }
@@ -700,8 +702,8 @@ TEST_CASE("CAVLC: bouncing ball per-MB bit offset trace")
     struct MbBitInfo { uint32_t mbX, mbY, bitAfter; };
     std::vector<MbBitInfo> mbBits;
 
-    H264Decoder decoder;
-    decoder.trace().setCallback([&](const TraceEvent& e) {
+    auto decoder = std::make_unique<H264Decoder>();
+    decoder->trace().setCallback([&](const TraceEvent& e) {
         // Type 201 = bit offset AFTER MB decode (I-slice)
         if (e.type == TraceEventType::MbStart && e.a == 201U && e.mbY == 0U)
             mbBits.push_back({e.mbX, e.mbY, e.b});
@@ -714,7 +716,7 @@ TEST_CASE("CAVLC: bouncing ball per-MB bit offset trace")
     {
         NalUnit nal;
         if (!parseNalUnit(h264.data() + b.offset, b.size, nal)) continue;
-        if (decoder.processNal(nal) == DecodeStatus::FrameDecoded)
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
             break; // first frame only
     }
 
@@ -741,13 +743,13 @@ TEST_CASE("CABAC bin trace: first 200 bins of cabac_4mb_noisy")
     }
     if (h264.empty()) { MESSAGE("fixture not found"); return; }
 
-    H264Decoder decoder;
+    auto decoder = std::make_unique<H264Decoder>();
 
     // Enable bin trace to file via the public engine accessor
     FILE* binLog = std::fopen("build/cabac_bin_trace.txt", "w");
     REQUIRE(binLog != nullptr);
     std::fprintf(binLog, "# binIdx ctxState newState symbol range offset\n");
-    decoder.cabacEngine().enableBinTrace(binLog, 500U);
+    decoder->cabacEngine().enableBinTrace(binLog, 500U);
 
     std::vector<NalBounds> bounds;
     findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
@@ -757,14 +759,14 @@ TEST_CASE("CABAC bin trace: first 200 bins of cabac_4mb_noisy")
     {
         NalUnit nal;
         if (!parseNalUnit(h264.data() + b.offset, b.size, nal)) continue;
-        if (decoder.processNal(nal) == DecodeStatus::FrameDecoded)
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
         {
-            frame = decoder.currentFrame();
+            frame = decoder->currentFrame();
             break;
         }
     }
 
-    decoder.cabacEngine().disableBinTrace();
+    decoder->cabacEngine().disableBinTrace();
     std::fclose(binLog);
     REQUIRE(frame != nullptr);
 
@@ -957,7 +959,7 @@ TEST_CASE("BitReader: seekToBit restores read position")
 TEST_CASE("CabacMbParser: bind and decode mb_type I-slice on fixture")
 {
     // Use the CABAC flat fixture to test CabacMbParser in isolation.
-    // The parser should produce the same mb_type as the full decoder.
+    // The parser should produce the same mb_type as the full decoder->
     auto h264 = getFixture("cabac_flat_main.h264");
     if (h264.empty()) { MESSAGE("fixture not found"); return; }
 
@@ -1062,8 +1064,8 @@ TEST_CASE("CABAC hack: u100 mb_type and residual trace")
     struct MbInfo { uint32_t mbX, mbY, mbType; };
     std::vector<MbInfo> mbInfos;
 
-    H264Decoder decoder;
-    decoder.trace().setCallback([&](const TraceEvent& e) {
+    auto decoder = std::make_unique<H264Decoder>();
+    decoder->trace().setCallback([&](const TraceEvent& e) {
         if (e.type == TraceEventType::MbStart && e.a == 200U)
             mbInfos.push_back({e.mbX, e.mbY, e.b});
     });
@@ -1076,8 +1078,8 @@ TEST_CASE("CABAC hack: u100 mb_type and residual trace")
     {
         NalUnit nal;
         if (!parseNalUnit(h264.data() + b.offset, b.size, nal)) continue;
-        if (decoder.processNal(nal) == DecodeStatus::FrameDecoded)
-        { frame = decoder.currentFrame(); break; }
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
+        { frame = decoder->currentFrame(); break; }
     }
     REQUIRE(frame != nullptr);
 
@@ -1090,7 +1092,7 @@ TEST_CASE("CABAC hack: u100 mb_type and residual trace")
     MESSAGE("MB(0,0) pixel[0,0] = " << (int)pixel00 << " (expected 100)");
 
     // Use snapshot tools: get contexts state AFTER init
-    auto ctxAfterDecode = decoder.cabacContexts().snapshot();
+    auto ctxAfterDecode = decoder->cabacContexts().snapshot();
     MESSAGE("Contexts after decode: first diff from fresh init at idx "
             << [&]() {
                 CabacContextSet fresh;
@@ -1269,16 +1271,16 @@ TEST_CASE("CabacNeighborCtx: cbpNeighbors returns struct")
     CabacNeighborCtx neighbor;
     neighbor.init(4U, 4U);
 
-    // MB(0,0): both unavailable → defaults
+    // MB(0,0): both unavailable → defaults (0x3F: luma all coded, chroma sentinel=3)
     auto n00 = neighbor.cbpNeighbors(0U, 0U);
-    CHECK(n00.left == 0x2FU);
-    CHECK(n00.top == 0x2FU);
+    CHECK(n00.left == 0x3FU);
+    CHECK(n00.top == 0x3FU);
 
     // Set MB(0,0) cbp and check MB(1,0) left neighbor
     neighbor[0].cbp = 0x15U;
     auto n10 = neighbor.cbpNeighbors(1U, 0U);
     CHECK(n10.left == 0x15U);
-    CHECK(n10.top == 0x2FU); // top still unavailable
+    CHECK(n10.top == 0x3FU); // top still unavailable
 
     // Set MB(1,0) and check MB(1,1) neighbors
     neighbor[1].cbp = 0x0AU;
