@@ -675,9 +675,10 @@ inline uint32_t cabacDecodeResidual8x8(CabacEngine& engine, CabacCtx* ctx,
 
 /** Decode prev_intra4x4_pred_mode_flag + rem_intra4x4_pred_mode.
  *  Table 9-34: prev_intra4x4_pred_mode_flag: FL, maxBinIdxCtx=0, ctxIdxOffset=68.
- *  Table 9-34: rem_intra4x4_pred_mode: FL, maxBinIdxCtx=2, ctxIdxOffset=69.
- *  Table 9-39: rem bins 0-2 all use ctxIdxInc=0 → ctxIdx=69.
- *  Bit ordering is LSB-first: value = b0 | (b1<<1) | (b2<<2).
+ *  Table 9-34: rem_intra4x4_pred_mode: FL cMax=7, ctxIdxOffset=69.
+ *  Table 9-39 row 69: ctxIdxInc=0 for binIdx 0,1,2 → all context-coded at ctx[69].
+ *  Bit ordering: LSB-first (value = b0 | b1<<1 | b2<<2) — verified against x264
+ *  encoded bitstreams. Both bypass and MSB-first produce wrong output.
  *  [CHECKED Table 9-34] [CHECKED Table 9-39]
  */
 inline uint8_t cabacDecodeIntra4x4PredMode(CabacEngine& engine, CabacCtx* ctx) noexcept
@@ -685,8 +686,10 @@ inline uint8_t cabacDecodeIntra4x4PredMode(CabacEngine& engine, CabacCtx* ctx) n
     if (engine.decodeBin(ctx[cCtxPrevIntra4x4]) == 1U)
         return 0xFFU; // Use most probable mode
 
-    // 3 bins, LSB-first per ffmpeg: value = b0 | (b1<<1) | (b2<<2)
-    // Context-coded at ctxIdx=69 per spec Table 9-34.
+    // 3 context-coded bins at ctx[69], LSB-first — verified matches ffmpeg:
+    //   mode += 1 * get_cabac(&sl->cabac, &sl->cabac_state[69]);
+    //   mode += 2 * get_cabac(&sl->cabac, &sl->cabac_state[69]);
+    //   mode += 4 * get_cabac(&sl->cabac, &sl->cabac_state[69]);
     uint32_t b0 = engine.decodeBin(ctx[cCtxRemIntra4x4]);
     uint32_t b1 = engine.decodeBin(ctx[cCtxRemIntra4x4]);
     uint32_t b2 = engine.decodeBin(ctx[cCtxRemIntra4x4]);

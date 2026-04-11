@@ -25,22 +25,36 @@
 namespace sub0h264 {
 
 /// Per-MB info stored for CABAC neighbor context derivation.
-/// Packed to 4 bytes for cache efficiency (1 struct per MB vs 4 vector lookups).
+/// §9.3.3.1.1.9: coded_block_flag context requires actual CBF from neighbor blocks.
 struct MbCabacInfo
 {
-    uint8_t flags = 0U;     ///< Bit 0: isI4x4, Bit 1: isSkip
+    uint8_t flags = 0U;     ///< Bit 0: isI4x4, Bit 1: isSkip, Bit 2: isI16x16
     uint8_t cbp = 0x2FU;    ///< Luma CBP (bits 0-3) | chroma CBP (bits 4-5). Default 0x2F = all coded.
     uint8_t chromaMode = 0U; ///< intra_chroma_pred_mode (§9.3.3.1.1.7)
-    uint8_t reserved = 0U;   ///< Padding for alignment
+    /// Per-block coded_block_flag results for neighbor lookup — §9.3.3.1.1.9.
+    /// Bit 0: luma DC CBF (ctxBlockCat=0, I_16x16 only)
+    /// Bit 1: Cb DC CBF (ctxBlockCat=3)
+    /// Bit 2: Cr DC CBF (ctxBlockCat=3)
+    uint8_t dcCbf = 0U;
 
     bool isI4x4() const noexcept { return (flags & 0x01U) != 0U; }
     bool isSkip() const noexcept { return (flags & 0x02U) != 0U; }
+    bool isI16x16() const noexcept { return (flags & 0x04U) != 0U; }
 
     void setI4x4(bool v) noexcept { flags = v ? (flags | 0x01U) : (flags & ~0x01U); }
     void setSkip(bool v) noexcept { flags = v ? (flags | 0x02U) : (flags & ~0x02U); }
+    void setI16x16(bool v) noexcept { flags = v ? (flags | 0x04U) : (flags & ~0x04U); }
 
     uint8_t lumaCbp() const noexcept { return cbp & 0x0FU; }
     uint8_t chromaCbp() const noexcept { return (cbp >> 4U) & 0x03U; }
+
+    bool lumaDcCbf() const noexcept { return (dcCbf & 0x01U) != 0U; }
+    bool cbDcCbf() const noexcept { return (dcCbf & 0x02U) != 0U; }
+    bool crDcCbf() const noexcept { return (dcCbf & 0x04U) != 0U; }
+
+    void setLumaDcCbf(bool v) noexcept { dcCbf = v ? (dcCbf | 0x01U) : (dcCbf & ~0x01U); }
+    void setCbDcCbf(bool v) noexcept { dcCbf = v ? (dcCbf | 0x02U) : (dcCbf & ~0x02U); }
+    void setCrDcCbf(bool v) noexcept { dcCbf = v ? (dcCbf | 0x04U) : (dcCbf & ~0x04U); }
 };
 
 /// Pair of neighbor CBP values returned by cbpNeighbors().
@@ -52,7 +66,7 @@ struct CbpNeighbors
 
 /// Default value for unavailable neighbors — all bits coded, not skip, not I4x4.
 /// ITU-T H.264 §9.3.3.1.1.3: condTermFlagN = 0 when neighbor unavailable.
-inline constexpr MbCabacInfo cMbCabacUnavailable = { 0U, 0x2FU, 0U, 0U };
+inline constexpr MbCabacInfo cMbCabacUnavailable = { 0U, 0x2FU, 0U, 0U }; // dcCbf=0: unavailable defaults
 
 /** Consolidated CABAC neighbor context for spatial prediction.
  *
@@ -173,6 +187,62 @@ public:
         if (mbY > 0U && mbs_[mbIdx - widthMbs_].chromaMode != 0U)
             ctxInc += 1U;
         return ctxInc;
+    }
+
+    /** Luma DC coded_block_flag context increment — §9.3.3.1.1.9 (ctxBlockCat=0).
+     *
+     *  transBlockN is the luma DC of neighbor IF neighbor is I_16x16.
+     *  condTermFlagN:
+     *  - Unavailable + current Intra → 1
+     *  - Available + NOT I_16x16 → transBlock not available → 0
+     *  - Available + I_16x16 → actual coded_block_flag of luma DC
+     *
+     *  @param isCurrentIntra  True if current MB is intra (I_4x4/I_16x16/I_PCM)
+     *  @return cbfCtxInc = condTermFlagA + 2*condTermFlagB
+     */
+    uint32_t lumaDcCbfCtxInc(uint32_t mbX, uint32_t mbY,
+                              bool isCurrentIntra) const noexcept
+    {
+        auto condTermFlag = [&](bool available, const MbCabacInfo& n) -> uint32_t {
+            if (!available)
+                return isCurrentIntra ? 1U : 0U;
+            if (n.isI16x16())
+                return n.lumaDcCbf() ? 1U : 0U;
+            return 0U; // not I_16x16 → transBlock not available → 0
+        };
+        uint32_t mbIdx = mbY * widthMbs_ + mbX;
+        uint32_t flagA = condTermFlag(mbX > 0U, mbX > 0U ? mbs_[mbIdx - 1U] : cMbCabacUnavailable);
+        uint32_t flagB = condTermFlag(mbY > 0U, mbY > 0U ? mbs_[mbIdx - widthMbs_] : cMbCabacUnavailable);
+        return flagA + 2U * flagB;
+    }
+
+    /** Chroma DC coded_block_flag context increment — §9.3.3.1.1.9 (ctxBlockCat=3).
+     *
+     *  transBlockN available when: neighbor available, not skip/I_PCM,
+     *  AND CodedBlockPatternChroma != 0 for neighbor.
+     *  condTermFlagN:
+     *  - Unavailable + current Intra → 1
+     *  - Available + CodedBlockPatternChroma==0 → transBlock not available → 0
+     *  - Available + CodedBlockPatternChroma!=0 → actual coded_block_flag
+     *
+     *  @param isCb  True for Cb component, false for Cr
+     */
+    uint32_t chromaDcCbfCtxInc(uint32_t mbX, uint32_t mbY,
+                                bool isCurrentIntra, bool isCb) const noexcept
+    {
+        auto condTermFlag = [&](bool available, const MbCabacInfo& n) -> uint32_t {
+            if (!available)
+                return isCurrentIntra ? 1U : 0U;
+            if (n.isSkip())
+                return 0U; // skip → transBlock not available
+            if (n.chromaCbp() == 0U)
+                return 0U; // CodedBlockPatternChroma == 0 → transBlock not available
+            return isCb ? (n.cbDcCbf() ? 1U : 0U) : (n.crDcCbf() ? 1U : 0U);
+        };
+        uint32_t mbIdx = mbY * widthMbs_ + mbX;
+        uint32_t flagA = condTermFlag(mbX > 0U, mbX > 0U ? mbs_[mbIdx - 1U] : cMbCabacUnavailable);
+        uint32_t flagB = condTermFlag(mbY > 0U, mbY > 0U ? mbs_[mbIdx - widthMbs_] : cMbCabacUnavailable);
+        return flagA + 2U * flagB;
     }
 
     /** @return Width in MBs. */

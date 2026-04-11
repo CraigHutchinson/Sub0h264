@@ -108,6 +108,53 @@ At the actual C ABI call site, convert back with an explicit cast. Keep the conv
 
 ---
 
+## Prefer `std::span` and `std::mdspan` for Buffer Parameters
+
+### `std::span<T>` (C++20) — non-owning 1D view
+Use `std::span` instead of raw pointer + size pairs for function parameters.
+It carries bounds information, is zero-cost, and prevents size mismatches.
+
+```cpp
+// Correct — bounds-checked, self-documenting
+void dequantBlock(std::span<int16_t, 16> coeffs, int32_t qp) noexcept;
+void parseNalUnits(std::span<const uint8_t> bitstream);
+
+// Wrong — easy to pass wrong size
+void dequantBlock(int16_t* coeffs, int32_t qp) noexcept;
+void parseNalUnits(const uint8_t* data, uint32_t size);
+```
+
+- Use `std::span<T, N>` (fixed extent) when the size is known at compile time (e.g., 16-element coefficient arrays, 4-element DC blocks).
+- Use `std::span<T>` (dynamic extent) when the size varies at runtime (e.g., NAL unit data, YUV plane rows).
+- For output buffers, use `std::span<T>` (non-const). For input, use `std::span<const T>`.
+
+### `std::mdspan<T>` (C++23) — non-owning multi-dimensional view
+Use `std::mdspan` for 2D pixel buffers, coefficient grids, and frame planes.
+It replaces `pointer + width + stride` triples and makes dimension order explicit.
+
+```cpp
+// 2D pixel block: 4 rows × 4 columns, row-major, stride may differ from width
+using PixelBlock4x4 = std::mdspan<uint8_t, std::extents<uint32_t, 4, 4>>;
+
+// Dynamic-size plane with stride
+using PlaneView = std::mdspan<uint8_t, std::dextents<uint32_t, 2>,
+                               std::layout_stride>;
+
+void inverseDct4x4AddPred(std::span<const int16_t, 16> coeffs,
+                            PixelBlock4x4 pred,
+                            PixelBlock4x4 out) noexcept;
+```
+
+- Prefer fixed extents when dimensions are compile-time constants (4x4, 8x8, 16x16 blocks).
+- Use `std::layout_stride` when the underlying memory stride differs from the logical width (e.g., frame planes where stride includes padding).
+- `std::mdspan` is header-only and zero-overhead — it compiles to the same pointer arithmetic as manual indexing.
+
+### Migration guidance
+- Apply `std::span`/`std::mdspan` to new code and functions you modify. Do not refactor entire files.
+- ESP32-P4 toolchain (GCC 13+) supports C++23 `<mdspan>`. If a platform lacks `<mdspan>`, use the reference implementation from [kokkos/mdspan](https://github.com/kokkos/mdspan).
+
+---
+
 ## Utility Placement — Promote Reusable Code
 
 When writing a function that has wider applicability, move it to the appropriate shared location.

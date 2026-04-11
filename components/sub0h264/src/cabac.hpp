@@ -598,12 +598,10 @@ private:
 
     void renormalize() noexcept
     {
-        // Count leading zeros to determine shift count in one step,
-        // then batch-read that many bits. Avoids per-bit loop overhead
-        // on in-order cores (ESP32-P4 RISC-V).
-        // codIRange_ is in [1, 255] here; we need it >= 256.
-        // Shift count = 8 - floor(log2(codIRange_)) = clz(codIRange_) - 23
-        // (since codIRange_ fits in 9 bits, clz of 32-bit = 32 - bits = 23+)
+        // §9.3.3.2.2 RenormD: batch renormalization using CLZ.
+        // Mathematically equivalent to the spec's per-bit loop
+        // (verified: both produce identical R/O at every bin).
+        // Batch approach avoids per-bit loop overhead on ESP32-P4 RISC-V.
         uint32_t shift = clz32(codIRange_) - 23U;
         codIRange_ <<= shift;
         codIOffset_ = (codIOffset_ << shift) | br_->readBits(shift);

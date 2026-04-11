@@ -17,6 +17,11 @@
 #include "cabac_parse.hpp"
 #include "cavlc.hpp"
 #include "deblock.hpp"
+
+// Detailed per-block trace for multi-MB I_4x4 investigation.
+// Enable to dump every buffer at every pipeline step for blocks 7-9 of MB(0,0).
+// #define SUB0H264_TRACE_I4X4_BLOCKS
+// #define SUB0H264_EXP_FORCE_MODE1_SCAN5
 #include "decode_timing.hpp"
 #include "decode_trace.hpp"
 #include "dpb.hpp"
@@ -352,6 +357,53 @@ private:
         }
     }
 
+    /** Chroma AC coded_block_flag context increment — §9.3.3.1.1.9 (ctxBlockCat=4).
+     *
+     *  Chroma 4x4 blocks in 2x2 grid: 0=TL, 1=TR, 2=BL, 3=BR.
+     *  Left/top neighbor derivation follows §6.4.11.5 for neighboring 4x4 chroma blocks.
+     *  transBlockN available if neighbor avail, not skip/I_PCM, cbpChroma==2.
+     *  condTermFlagN: unavail+intra→1, unavail+inter→0, avail+transBlock avail→actual CBF.
+     *
+     *  @param isCb  True for Cb component, false for Cr
+     *  @param isCurrentIntra  True if current MB is intra
+     */
+    uint32_t chromaAcCbfCtxInc(uint32_t mbX, uint32_t mbY,
+                                uint32_t blkIdx, bool isCb,
+                                bool isCurrentIntra) const noexcept
+    {
+        uint32_t mbIdx = mbY * widthInMbs_ + mbX;
+        const auto& nnz = isCb ? nnzCb_ : nnzCr_;
+        uint32_t defaultVal = isCurrentIntra ? 1U : 0U; // unavailable default
+
+        // Left neighbor (A)
+        uint32_t leftNnz = defaultVal;
+        if (blkIdx & 1U) // block 1 or 3: left is block 0 or 2 in same MB
+            leftNnz = nnz[mbIdx * 4U + blkIdx - 1U];
+        else if (mbX > 0U) // block 0 or 2: left is block 1 or 3 of left MB
+        {
+            uint32_t leftMbIdx = mbIdx - 1U;
+            if (cabacNeighbor_[leftMbIdx].chromaCbp() == 2U)
+                leftNnz = nnz[leftMbIdx * 4U + blkIdx + 1U];
+            else
+                leftNnz = 0U; // cbpChroma < 2 → transBlock not available → 0
+        }
+
+        // Top neighbor (B)
+        uint32_t topNnz = defaultVal;
+        if (blkIdx >= 2U) // block 2 or 3: top is block 0 or 1 in same MB
+            topNnz = nnz[mbIdx * 4U + blkIdx - 2U];
+        else if (mbY > 0U) // block 0 or 1: top is block 2 or 3 of top MB
+        {
+            uint32_t topMbIdx = mbIdx - widthInMbs_;
+            if (cabacNeighbor_[topMbIdx].chromaCbp() == 2U)
+                topNnz = nnz[topMbIdx * 4U + blkIdx + 2U];
+            else
+                topNnz = 0U; // cbpChroma < 2 → transBlock not available → 0
+        }
+
+        return (leftNnz != 0U ? 1U : 0U) + (topNnz != 0U ? 2U : 0U);
+    }
+
     /** Dequantize 16 Intra_16x16 luma DC coefficients after inverse 4x4 Hadamard.
      *  §8.5.12.1 Eq. 8-324..8-326: Scaling of Intra16x16 luma DC coefficients.
      *    if qp/6 >= 2: dc[i] = dc[i] * LevelScale(qp%6,0,0) << (qp/6 - 2)
@@ -520,6 +572,10 @@ private:
 
         // Compute effective QP
         int32_t sliceQp = pps->picInitQp_ + sh.sliceQpDelta_;
+#ifdef SUB0H264_TRACE_I4X4_BLOCKS
+        std::fprintf(stderr, "SLICE: picInitQp=%d qpDelta=%d sliceQp=%d\n",
+            pps->picInitQp_, sh.sliceQpDelta_, sliceQp);
+#endif
 
         // Reference frame is obtained AFTER buildRefListL0() for P-slices
         // (moved below to avoid using stale L0 list from previous frame)
@@ -1155,10 +1211,20 @@ private:
             uint8_t leftMode = getNeighborIntra4x4Mode(mbX, mbY, rasterIdx, true, predModes);
             uint8_t topMode  = getNeighborIntra4x4Mode(mbX, mbY, rasterIdx, false, predModes);
 
-            // §8.3.1.1: MPM = min(intraPredModeA, intraPredModeB). [CHECKED §8.3.1.1]
-            // getNeighborIntra4x4Mode already returns DC(2) for unavailable neighbors,
-            // so min() naturally yields DC when both unavailable, or min(available, DC)
-            // when one is unavailable — matching the spec exactly. [CHECKED FM-20]
+            // §8.3.1.1: dcPredModePredictedFlag — when EITHER neighbor's macroblock
+            // is unavailable, BOTH intraMxMPredModeA and intraMxMPredModeB are forced
+            // to DC(2). The spec checks mbAddrA/mbAddrB availability, not individual
+            // block availability. For edge blocks where the neighbor is in another MB,
+            // getNeighborIntra4x4Mode returns DC(2) for unavailable. But for the OTHER
+            // neighbor (which IS available, in the same MB), we must ALSO force DC(2)
+            // when dcPredModePredictedFlag=1. [FM-22 fixed: was not forcing both to DC]
+            bool leftMbUnavail = (rasterIdx % 4U == 0U) && (mbX == 0U);
+            bool topMbUnavail  = (rasterIdx < 4U) && (mbY == 0U);
+            if (leftMbUnavail || topMbUnavail)
+            {
+                leftMode = 2U; // DC
+                topMode = 2U;  // DC
+            }
             uint8_t mpm = (leftMode < topMode) ? leftMode : topMode;
             mpmPerBlock[rasterIdx] = mpm;
 
@@ -1350,7 +1416,38 @@ private:
 
             // Reconstruct: inverse DCT + prediction + clip
             uint8_t* outPtr = mbLuma + blkY * yStride + blkX;
+
+#ifdef SUB0H264_TRACE_I4X4_BLOCKS
+            if (mbX == 0U && mbY == 0U && blkIdx >= 7U && blkIdx <= 9U)
+            {
+                std::fprintf(stderr, "=== CAVLC BLK scan%u raster%u (%u,%u) mode=%u grp%u hasRes=%d ===\n",
+                    blkIdx, rasterIdx, absX, absY, predModes[rasterIdx], blkIdx >> 2, hasResidual ? 1 : 0);
+                std::fprintf(stderr, "  PRED_OUT=[%d %d %d %d][%d %d %d %d][%d %d %d %d][%d %d %d %d]\n",
+                    pred4x4[0],pred4x4[1],pred4x4[2],pred4x4[3],
+                    pred4x4[4],pred4x4[5],pred4x4[6],pred4x4[7],
+                    pred4x4[8],pred4x4[9],pred4x4[10],pred4x4[11],
+                    pred4x4[12],pred4x4[13],pred4x4[14],pred4x4[15]);
+                if (hasResidual)
+                    std::fprintf(stderr, "  COEFFS_DEQUANT=[%d %d %d %d][%d %d %d %d][%d %d %d %d][%d %d %d %d]\n",
+                        coeffs[0],coeffs[1],coeffs[2],coeffs[3],
+                        coeffs[4],coeffs[5],coeffs[6],coeffs[7],
+                        coeffs[8],coeffs[9],coeffs[10],coeffs[11],
+                        coeffs[12],coeffs[13],coeffs[14],coeffs[15]);
+            }
+#endif
+
             inverseDct4x4AddPred(coeffs, pred4x4, 4U, outPtr, yStride);
+
+#ifdef SUB0H264_TRACE_I4X4_BLOCKS
+            if (mbX == 0U && mbY == 0U && blkIdx >= 7U && blkIdx <= 9U)
+            {
+                std::fprintf(stderr, "  FRAME_AFTER=[%d %d %d %d][%d %d %d %d][%d %d %d %d][%d %d %d %d]\n",
+                    outPtr[0], outPtr[1], outPtr[2], outPtr[3],
+                    outPtr[yStride], outPtr[yStride+1], outPtr[yStride+2], outPtr[yStride+3],
+                    outPtr[2*yStride], outPtr[2*yStride+1], outPtr[2*yStride+2], outPtr[2*yStride+3],
+                    outPtr[3*yStride], outPtr[3*yStride+1], outPtr[3*yStride+2], outPtr[3*yStride+3]);
+            }
+#endif
 
             // Trace: prediction + output pixels
             if (trace_.hasCallback() && trace_.shouldTrace(mbX, mbY))
@@ -2365,6 +2462,14 @@ private:
 
         uint8_t predModes[16] = {};
         uint32_t numModeBlocks = use8x8Transform ? 4U : 16U;
+#ifdef SUB0H264_TRACE_I4X4_BLOCKS
+        if (mbX == 0U && mbY == 0U)
+            std::fprintf(stderr, "PRED_MODE_DECODE: engine R=%u O=%u bp=%u ctx68=%u ctx69=%u\n",
+                cabacEngine_.range(), cabacEngine_.offset(),
+                static_cast<uint32_t>(cabacEngine_.bitPosition()),
+                static_cast<uint32_t>(cabacCtx_[68].mpsState),
+                static_cast<uint32_t>(cabacCtx_[69].mpsState));
+#endif
         for (uint32_t i = 0U; i < numModeBlocks; ++i)
         {
             // For I_8x8: 4 blocks in 8x8 scan order (TL, TR, BL, BR)
@@ -2386,8 +2491,15 @@ private:
             uint8_t leftMode = getNeighborIntra4x4Mode(mbX, mbY, rasterIdx, true, predModes);
             uint8_t topMode  = getNeighborIntra4x4Mode(mbX, mbY, rasterIdx, false, predModes);
 
-            // §8.3.1.1: MPM = min(intraPredModeA, intraPredModeB). [CHECKED §8.3.1.1]
-            // getNeighborIntra4x4Mode returns DC(2) for unavailable neighbors.
+            // §8.3.1.1: dcPredModePredictedFlag — force BOTH to DC when either
+            // neighbor's macroblock is unavailable. [FM-22]
+            bool leftMbUnavail = (rasterIdx % 4U == 0U) && (mbX == 0U);
+            bool topMbUnavail  = (rasterIdx < 4U) && (mbY == 0U);
+            if (leftMbUnavail || topMbUnavail)
+            {
+                leftMode = 2U;
+                topMode = 2U;
+            }
             uint8_t mpm = (leftMode < topMode) ? leftMode : topMode;
 
             // §8.3.1.1: Derivation of Intra4x4PredMode
@@ -2400,6 +2512,21 @@ private:
                 mode = mpm; // prev_flag=1: use most probable mode
             else
                 mode = (result < mpm) ? result : static_cast<uint8_t>(result + 1U);
+#ifdef SUB0H264_EXP_FORCE_MODE1_SCAN5
+            // Experiment: force mode=1 (H) for scan block 5 of MB(0,0) to verify
+            // that the prediction mode is the source of the pixel diff.
+            if (mbX == 0U && mbY == 0U && i == 5U)
+                mode = 1U;
+#endif
+#ifdef SUB0H264_TRACE_I4X4_BLOCKS
+            if (mbX == 0U && mbY == 0U)
+                std::fprintf(stderr, "  scan%u raster%u: mpm=%u result=%u mode=%u R=%u O=%u bp=%u c68=%u c69=%u\n",
+                    i, rasterIdx, mpm, result, mode,
+                    cabacEngine_.range(), cabacEngine_.offset(),
+                    static_cast<uint32_t>(cabacEngine_.bitPosition()),
+                    static_cast<uint32_t>(cabacCtx_[68].mpsState),
+                    static_cast<uint32_t>(cabacCtx_[69].mpsState));
+#endif
 
             if (use8x8Transform)
             {
@@ -2445,6 +2572,14 @@ private:
             qp = ((qp % 52) + 52) % 52; // §7.4.5: proper modular wrapping
         }
 
+#ifdef SUB0H264_TRACE_I4X4_BLOCKS
+        if (mbX == 0U && mbY == 0U)
+        {
+            std::fprintf(stderr, "=== MB(0,0) I4x4: cbp=0x%02x cbpLuma=%u cbpChroma=%u qp=%d ===\n",
+                cbp, cbpLuma, cbpChroma, qp);
+            cabacEngine_.enableBinTrace(stderr, 2000U);
+        }
+#endif
         // Decode luma residual — §7.3.5.3
         uint8_t* mbLuma = activeFrame_->yMb(mbX, mbY);
         uint32_t yStride = activeFrame_->yStride();
@@ -2525,9 +2660,9 @@ private:
                 int16_t coeffs[16] = {};
                 if (hasResidual)
                 {
-                    // §9.3.3.1.1.9: coded_block_flag ctxIdxInc
-                    // Unavailable → condTermFlag=1 (coded assumed). [CHECKED §9.3.3.1.1.9]
-                    uint32_t leftNnz = 1U, topNnz = 1U; // unavailable → coded
+                    // §9.3.3.1.1.9: coded_block_flag ctxIdxInc for I_4x4 luma (cat 2)
+                    // Intra MB: unavailable → condTermFlag=1 (coded assumed). [CHECKED §9.3.3.1.1.9]
+                    uint32_t leftNnz = 1U, topNnz = 1U; // unavailable → coded (intra)
                     if (rasterIdx % 4U > 0U)
                         leftNnz = nnzLuma_[mbIdx * 16U + rasterIdx - 1U];
                     else if (mbX > 0U)
@@ -2539,11 +2674,33 @@ private:
                     uint32_t cbfCtxInc = (leftNnz != 0U ? 1U : 0U) + (topNnz != 0U ? 2U : 0U);
 
                     int16_t scanCoeffs[16] = {};
+#ifdef SUB0H264_TRACE_I4X4_BLOCKS
+                    uint32_t bitBefore = static_cast<uint32_t>(cabacEngine_.bitPosition());
+                    if (mbX == 0U && mbY == 0U)
+                    {
+                        std::fprintf(stderr, "  ENGINE_PRE: R=%u O=%u bp=%u\n",
+                            cabacEngine_.range(), cabacEngine_.offset(), bitBefore);
+                    }
+#endif
                     uint32_t numNonZero = cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(),
                                                                   scanCoeffs, 16U, 2U, cbfCtxInc);
                     for (uint32_t k = 0U; k < 16U; ++k)
                         coeffs[cZigzag4x4[k]] = scanCoeffs[k];
                     nnzLuma_[mbIdx * 16U + rasterIdx] = (numNonZero > 0U) ? 1U : 0U;
+
+#ifdef SUB0H264_TRACE_I4X4_BLOCKS
+                    if (mbX == 0U && mbY == 0U)
+                    {
+                        uint32_t bitAfter = static_cast<uint32_t>(cabacEngine_.bitPosition());
+                        std::fprintf(stderr, "  CBF: leftNnz=%u topNnz=%u cbfCtxInc=%u numNZ=%u bits=%u..%u\n",
+                            leftNnz, topNnz, cbfCtxInc, numNonZero, bitBefore, bitAfter);
+                        std::fprintf(stderr, "  SCAN=[%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d]\n",
+                            scanCoeffs[0],scanCoeffs[1],scanCoeffs[2],scanCoeffs[3],
+                            scanCoeffs[4],scanCoeffs[5],scanCoeffs[6],scanCoeffs[7],
+                            scanCoeffs[8],scanCoeffs[9],scanCoeffs[10],scanCoeffs[11],
+                            scanCoeffs[12],scanCoeffs[13],scanCoeffs[14],scanCoeffs[15]);
+                    }
+#endif
 
                     // Trace: raw scan coefficients before dequant (CABAC path)
                     trace_.onBlockResidual(mbX, mbY, blkIdx,
@@ -2555,7 +2712,27 @@ private:
                                  static_cast<uint16_t>(mbX), static_cast<uint16_t>(mbY),
                                  blkIdx, 0U, 0U, 0U, scanCoeffs, 16U});
 
+#ifdef SUB0H264_TRACE_I4X4_BLOCKS
+                    if (mbX == 0U && mbY == 0U && blkIdx >= 4U && blkIdx <= 6U)
+                    {
+                        std::fprintf(stderr, "  RASTER_PRE_DQ=[%d %d %d %d][%d %d %d %d][%d %d %d %d][%d %d %d %d]\n",
+                            coeffs[0],coeffs[1],coeffs[2],coeffs[3],
+                            coeffs[4],coeffs[5],coeffs[6],coeffs[7],
+                            coeffs[8],coeffs[9],coeffs[10],coeffs[11],
+                            coeffs[12],coeffs[13],coeffs[14],coeffs[15]);
+                    }
+#endif
                     inverseQuantize4x4(coeffs, qp);
+#ifdef SUB0H264_TRACE_I4X4_BLOCKS
+                    if (mbX == 0U && mbY == 0U && blkIdx >= 4U && blkIdx <= 6U)
+                    {
+                        std::fprintf(stderr, "  RASTER_POST_DQ=[%d %d %d %d][%d %d %d %d][%d %d %d %d][%d %d %d %d]\n",
+                            coeffs[0],coeffs[1],coeffs[2],coeffs[3],
+                            coeffs[4],coeffs[5],coeffs[6],coeffs[7],
+                            coeffs[8],coeffs[9],coeffs[10],coeffs[11],
+                            coeffs[12],coeffs[13],coeffs[14],coeffs[15]);
+                    }
+#endif
                 }
                 else
                 {
@@ -2570,21 +2747,40 @@ private:
 
                 uint8_t* outPtr = mbLuma + blkY * yStride + blkX;
 
-// Experiment: write prediction to frame buffer first, then add IDCT residual
-// in-place. This matches ffmpeg's approach where pred is written to dst first,
-// then idct_add reads prediction from dst and adds residual to it.
-// Result: No change — prediction stride doesn't affect values.
-// #define SUB0H264_EXP_PRED_INPLACE
-#ifdef SUB0H264_EXP_PRED_INPLACE
-                for (uint32_t pr = 0U; pr < 4U; ++pr)
-                    for (uint32_t pc = 0U; pc < 4U; ++pc)
-                        outPtr[pr * yStride + pc] = pred4x4[pr * 4U + pc];
-                inverseDct4x4AddPred(coeffs, outPtr, yStride, outPtr, yStride);
-#else
+#ifdef SUB0H264_TRACE_I4X4_BLOCKS
+                if (mbX == 0U && mbY == 0U)
+                {
+                    std::fprintf(stderr, "=== BLK scan%u raster%u (%u,%u) mode=%u grp%u hasRes=%d ===\n",
+                        blkIdx, rasterIdx, absX, absY, predModes[rasterIdx], group8x8, hasResidual ? 1 : 0);
+                    if (hasResidual)
+                    {
+                        std::fprintf(stderr, "  COEFFS_DEQUANT=[%d %d %d %d][%d %d %d %d][%d %d %d %d][%d %d %d %d]\n",
+                            coeffs[0],coeffs[1],coeffs[2],coeffs[3],
+                            coeffs[4],coeffs[5],coeffs[6],coeffs[7],
+                            coeffs[8],coeffs[9],coeffs[10],coeffs[11],
+                            coeffs[12],coeffs[13],coeffs[14],coeffs[15]);
+                    }
+                }
+#endif
+
                 inverseDct4x4AddPred(coeffs, pred4x4, 4U, outPtr, yStride);
+
+#ifdef SUB0H264_TRACE_I4X4_BLOCKS
+                if (mbX == 0U && mbY == 0U)
+                {
+                    std::fprintf(stderr, "  OUT=[%d %d %d %d][%d %d %d %d][%d %d %d %d][%d %d %d %d]\n",
+                        outPtr[0], outPtr[1], outPtr[2], outPtr[3],
+                        outPtr[yStride], outPtr[yStride+1], outPtr[yStride+2], outPtr[yStride+3],
+                        outPtr[2*yStride], outPtr[2*yStride+1], outPtr[2*yStride+2], outPtr[2*yStride+3],
+                        outPtr[3*yStride], outPtr[3*yStride+1], outPtr[3*yStride+2], outPtr[3*yStride+3]);
+                }
 #endif
             }
         }
+
+        // Store pred modes for cross-MB MPM derivation (§8.3.1.1)
+        for (uint32_t k = 0U; k < 16U; ++k)
+            mbIntra4x4Modes_[mbIdx * 16U + k] = predModes[k];
 
         // Chroma (use existing CAVLC chroma path — structure is the same,
         // only entropy coding differs. For CABAC chroma, use CABAC residual.)
@@ -2614,6 +2810,7 @@ private:
 
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
         cabacNeighbor_[mbIdx].cbp = cbpLuma | (cbpChroma << 4U); // Store for neighbor context
+        cabacNeighbor_[mbIdx].setI16x16(true);
         // §9.3.3.1.1.7: intra_chroma_pred_mode — ctxInc from neighbor chroma modes
         uint32_t chromaCtxInc = cabacNeighbor_.chromaModeCtxInc(mbX, mbY);
         uint32_t chromaPredMode = cabacDecodeIntraChromaMode(cabacEngine_, cabacCtx_.data(),
@@ -2633,29 +2830,16 @@ private:
 
         // Decode DC block via CABAC (category 0 = Luma DC)
         // §9.3.3.1.1.9: coded_block_flag for luma DC (ctxBlockCat=0).
-        // condTermFlagN = 1 when neighbor is unavailable (intra assumed coded)
-        // OR neighbor luma DC was coded. condTermFlagN = 0 only when neighbor
-        // is available AND its luma DC was NOT coded.
-        // For first MB / edge MBs: unavailable → condTermFlag=1.
-        // cbfCtxInc = condTermFlagA + 2*condTermFlagB. [CHECKED §9.3.3.1.1.9]
-        uint32_t dcCbfA = 1U; // default: unavailable → coded
-        uint32_t dcCbfB = 1U;
-        if (mbX > 0U)
-        {
-            // Left neighbor available: check if its I_16x16 luma DC was coded
-            // Use cbp bit 8 (luma DC flag) from neighbor — or simply check if
-            // neighbor was I_16x16 with cbpLuma>0 OR was I_4x4 (always has coded blocks).
-            // Simplified: unavailable→1, available intra→1 (conservative).
-            // This matches ffmpeg's fill_decode_caches: IS_INTRA → left_cbp=0x7CF.
-            dcCbfA = 1U;
-        }
-        if (mbY > 0U)
-        {
-            dcCbfB = 1U;
-        }
-        uint32_t dcCbfCtxInc = dcCbfA + 2U * dcCbfB;
+        // transBlockN = luma DC of neighbor IF neighbor is I_16x16.
+        // condTermFlagN per spec:
+        //   - Unavailable + current Intra → 1
+        //   - Available + NOT I_16x16 → transBlock not available → 0
+        //   - Available + I_16x16 → actual coded_block_flag of luma DC
+        uint32_t dcCbfCtxInc = cabacNeighbor_.lumaDcCbfCtxInc(mbX, mbY, true);
         int16_t dcScan[16] = {};
-        cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), dcScan, 16U, 0U, dcCbfCtxInc);
+        uint32_t dcNonZero = cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(),
+                                                      dcScan, 16U, 0U, dcCbfCtxInc);
+        cabacNeighbor_[mbIdx].setLumaDcCbf(dcNonZero > 0U);
 
         int16_t dcCoeffs[16] = {};
         for (uint32_t i = 0U; i < 16U; ++i)
@@ -2987,9 +3171,27 @@ private:
                 int16_t coeffs[16] = {};
                 if ((cbpLuma >> group8x8) & 1U)
                 {
-                    cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), coeffs, 16U, 2U);
+                    // §9.3.3.1.1.9: coded_block_flag ctxIdxInc for luma 4x4 (cat 2)
+                    // P-inter: unavailable neighbor → condTermFlag=0 (not 1 as for intra)
+                    //TODO: This shoudl be 1 by defasult? Needs detailed spec, and also confirm different to other conditions of same name etc.
+                    uint32_t leftNnz = 0U, topNnz = 0U; // unavailable → not coded (inter)
+                    if (rasterIdx % 4U > 0U)
+                        leftNnz = nnzLuma_[mbIdx * 16U + rasterIdx - 1U];
+                    else if (mbX > 0U)
+                        leftNnz = nnzLuma_[(mbIdx - 1U) * 16U + rasterIdx + 3U];
+                    if (rasterIdx >= 4U)
+                        topNnz = nnzLuma_[mbIdx * 16U + rasterIdx - 4U];
+                    else if (mbY > 0U)
+                        topNnz = nnzLuma_[(mbIdx - widthInMbs_) * 16U + rasterIdx + 12U];
+                    uint32_t cbfCtxInc = (leftNnz != 0U ? 1U : 0U) + (topNnz != 0U ? 2U : 0U);
+
+                    cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), coeffs, 16U, 2U, cbfCtxInc);
                     nnzLuma_[mbIdx * 16U + rasterIdx] = 1U;
                     inverseQuantize4x4(coeffs, qp);
+                }
+                else
+                {
+                    nnzLuma_[mbIdx * 16U + rasterIdx] = 0U;
                 }
 
                 uint8_t* predPtr = predLuma + blkY * cMbSize + blkX;
@@ -3002,22 +3204,51 @@ private:
         // §7.4.2.2 Chroma QP (FM-10: must use chromaQp, not luma QP)
         int32_t chromaQp = computeChromaQp(qp, pps.chromaQpIndexOffset_);
 
-        // §9.3.3.1.1.9: chroma DC/AC coded_block_flag — unavailable → condTermFlag=1.
-        // [CHECKED §9.3.3.1.1.9]
-        uint32_t chromaDcCbfA = (mbX > 0U) ? 0U : 1U; // TODO: track actual neighbor chroma DC cbf
-        uint32_t chromaDcCbfB = (mbY > 0U) ? 0U : 1U;
-        uint32_t chromaDcCbfCtxInc = (chromaDcCbfA != 0U ? 1U : 0U) + (chromaDcCbfB != 0U ? 2U : 0U);
+        // §9.3.3.1.1.9: chroma DC cbf context — uses actual neighbor CBF.
+        // P-inter current MB is NOT intra.
+        uint32_t cbDcCbfInc2 = cabacNeighbor_.chromaDcCbfCtxInc(mbX, mbY, false, true);
+        uint32_t crDcCbfInc2 = cabacNeighbor_.chromaDcCbfCtxInc(mbX, mbY, false, false);
 
         int16_t dcCb[4] = {}, dcCr[4] = {};
         if (cbpChroma >= 1U)
         {
-            cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), dcCb, 4U, 3U, chromaDcCbfCtxInc);
-            cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), dcCr, 4U, 3U, chromaDcCbfCtxInc);
+            uint32_t cbDcNnz = cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(),
+                                                        dcCb, 4U, 3U, cbDcCbfInc2);
+            uint32_t crDcNnz = cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(),
+                                                        dcCr, 4U, 3U, crDcCbfInc2);
+            cabacNeighbor_[mbIdx].setCbDcCbf(cbDcNnz > 0U);
+            cabacNeighbor_[mbIdx].setCrDcCbf(crDcNnz > 0U);
             inverseHadamard2x2(dcCb);
             inverseHadamard2x2(dcCr);
 
             dequantChromaDcValues(dcCb, chromaQp);
             dequantChromaDcValues(dcCr, chromaQp);
+        }
+
+        // §7.3.5.3: Chroma AC — ALL Cb first, then ALL Cr. Same order fix as intra.
+        int16_t cbAcPInter[4][16] = {}, crAcPInter[4][16] = {};
+        if (cbpChroma >= 2U)
+        {
+            for (uint32_t bi = 0U; bi < 4U; ++bi)
+            {
+                uint32_t cbfInc = chromaAcCbfCtxInc(mbX, mbY, bi, true, false);
+                int16_t acScan[16] = {};
+                uint32_t nnz = cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(),
+                                                        acScan, 15U, 4U, cbfInc);
+                for (uint32_t i = 0U; i < 15U; ++i)
+                    cbAcPInter[bi][cZigzag4x4[i + 1U]] = acScan[i];
+                nnzCb_[mbIdx * 4U + bi] = (nnz > 0U) ? 1U : 0U;
+            }
+            for (uint32_t bi = 0U; bi < 4U; ++bi)
+            {
+                uint32_t cbfInc = chromaAcCbfCtxInc(mbX, mbY, bi, false, false);
+                int16_t acScan[16] = {};
+                uint32_t nnz = cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(),
+                                                        acScan, 15U, 4U, cbfInc);
+                for (uint32_t i = 0U; i < 15U; ++i)
+                    crAcPInter[bi][cZigzag4x4[i + 1U]] = acScan[i];
+                nnzCr_[mbIdx * 4U + bi] = (nnz > 0U) ? 1U : 0U;
+            }
         }
 
         uint32_t uvStride = target.uvStride();
@@ -3031,19 +3262,14 @@ private:
 
             if (cbpChroma >= 2U)
             {
-                // §7.3.5.3: Chroma AC — ctxBlockCat=4. CABAC scan → zigzag raster.
-                // AC at zigzag indices 1..15 (DC at index 0 set above). [CHECKED FM-7]
-                int16_t acCb[16] = {}, acCr[16] = {};
-                cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), acCb, 15U, 4U);
-                for (uint32_t i = 0U; i < 15U; ++i)
-                    cbCoeffs[cZigzag4x4[i + 1U]] = acCb[i];
-                // Save DC (already dequantized via Hadamard), dequant AC, restore DC.
+                for (uint32_t k = 1U; k < 16U; ++k)
+                {
+                    cbCoeffs[k] = cbAcPInter[blkIdx][k];
+                    crCoeffs[k] = crAcPInter[blkIdx][k];
+                }
                 int16_t savedDcCb = cbCoeffs[0];
                 inverseQuantize4x4(cbCoeffs, chromaQp);
                 cbCoeffs[0] = savedDcCb;
-                cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), acCr, 15U, 4U);
-                for (uint32_t i = 0U; i < 15U; ++i)
-                    crCoeffs[cZigzag4x4[i + 1U]] = acCr[i];
                 int16_t savedDcCr = crCoeffs[0];
                 inverseQuantize4x4(crCoeffs, chromaQp);
                 crCoeffs[0] = savedDcCr;
@@ -3067,16 +3293,22 @@ private:
         // §7.4.2.2 Chroma QP (FM-10: must use chromaQp, not luma QP)
         int32_t chromaQp = computeChromaQp(qp, pps.chromaQpIndexOffset_);
 
-        // §9.3.3.1.1.9: chroma DC cbf — unavailable → condTermFlag=1.
-        uint32_t cDcCbfA = (mbX > 0U) ? 0U : 1U;
-        uint32_t cDcCbfB = (mbY > 0U) ? 0U : 1U;
-        uint32_t cDcCbfInc = (cDcCbfA != 0U ? 1U : 0U) + (cDcCbfB != 0U ? 2U : 0U);
+        uint32_t mbIdx = mbY * widthInMbs_ + mbX;
+
+        // §9.3.3.1.1.9: chroma DC cbf context — uses actual neighbor CBF.
+        // transBlockN available when neighbor not skip/I_PCM AND CodedBlockPatternChroma != 0.
+        uint32_t cbDcCbfInc = cabacNeighbor_.chromaDcCbfCtxInc(mbX, mbY, true, true);
+        uint32_t crDcCbfInc = cabacNeighbor_.chromaDcCbfCtxInc(mbX, mbY, true, false);
 
         int16_t dcCb[4] = {}, dcCr[4] = {};
         if (cbpChroma >= 1U)
         {
-            cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), dcCb, 4U, 3U, cDcCbfInc);
-            cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), dcCr, 4U, 3U, cDcCbfInc);
+            uint32_t cbDcNnz = cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(),
+                                                        dcCb, 4U, 3U, cbDcCbfInc);
+            uint32_t crDcNnz = cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(),
+                                                        dcCr, 4U, 3U, crDcCbfInc);
+            cabacNeighbor_[mbIdx].setCbDcCbf(cbDcNnz > 0U);
+            cabacNeighbor_[mbIdx].setCrDcCbf(crDcNnz > 0U);
             inverseHadamard2x2(dcCb);
             inverseHadamard2x2(dcCr);
 
@@ -3084,6 +3316,35 @@ private:
             dequantChromaDcValues(dcCr, chromaQp);
         }
 
+        // §7.3.5.3: Chroma AC decode — ALL Cb blocks first, then ALL Cr blocks.
+        // Spec loop: for(iCbCr=0..1) for(i4x4=0..3) residual_block_cabac().
+        // MUST NOT interleave Cb/Cr — that desyncs the CABAC engine.
+        int16_t cbAcCoeffs[4][16] = {}, crAcCoeffs[4][16] = {};
+        if (cbpChroma >= 2U)
+        {
+            for (uint32_t bi = 0U; bi < 4U; ++bi)
+            {
+                uint32_t cbfInc = chromaAcCbfCtxInc(mbX, mbY, bi, true, true);
+                int16_t acScan[16] = {};
+                uint32_t nnz = cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(),
+                                                        acScan, 15U, 4U, cbfInc);
+                for (uint32_t i = 0U; i < 15U; ++i)
+                    cbAcCoeffs[bi][cZigzag4x4[i + 1U]] = acScan[i];
+                nnzCb_[mbIdx * 4U + bi] = (nnz > 0U) ? 1U : 0U;
+            }
+            for (uint32_t bi = 0U; bi < 4U; ++bi)
+            {
+                uint32_t cbfInc = chromaAcCbfCtxInc(mbX, mbY, bi, false, true);
+                int16_t acScan[16] = {};
+                uint32_t nnz = cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(),
+                                                        acScan, 15U, 4U, cbfInc);
+                for (uint32_t i = 0U; i < 15U; ++i)
+                    crAcCoeffs[bi][cZigzag4x4[i + 1U]] = acScan[i];
+                nnzCr_[mbIdx * 4U + bi] = (nnz > 0U) ? 1U : 0U;
+            }
+        }
+
+        // Reconstruct chroma — dequant AC, preserve DC, IDCT+pred
         uint8_t* mbU = activeFrame_->uMb(mbX, mbY);
         uint8_t* mbV = activeFrame_->vMb(mbX, mbY);
         uint32_t uvStride = activeFrame_->uvStride();
@@ -3096,19 +3357,14 @@ private:
 
             if (cbpChroma >= 2U)
             {
-                // §7.3.5.3: Chroma AC — ctxBlockCat=4. CABAC scan → zigzag raster.
-                // AC at zigzag indices 1..15 (DC at index 0 set above). [CHECKED FM-7]
-                int16_t acCb[16] = {}, acCr[16] = {};
-                cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), acCb, 15U, 4U);
-                for (uint32_t i = 0U; i < 15U; ++i)
-                    cbCoeffs[cZigzag4x4[i + 1U]] = acCb[i];
-                // Save DC (already dequantized via Hadamard), dequant AC, restore DC.
+                for (uint32_t k = 1U; k < 16U; ++k)
+                {
+                    cbCoeffs[k] = cbAcCoeffs[blkIdx][k];
+                    crCoeffs[k] = crAcCoeffs[blkIdx][k];
+                }
                 int16_t savedDcCb = cbCoeffs[0];
                 inverseQuantize4x4(cbCoeffs, chromaQp);
                 cbCoeffs[0] = savedDcCb;
-                cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), acCr, 15U, 4U);
-                for (uint32_t i = 0U; i < 15U; ++i)
-                    crCoeffs[cZigzag4x4[i + 1U]] = acCr[i];
                 int16_t savedDcCr = crCoeffs[0];
                 inverseQuantize4x4(crCoeffs, chromaQp);
                 crCoeffs[0] = savedDcCr;

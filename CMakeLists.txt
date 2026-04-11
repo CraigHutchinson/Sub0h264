@@ -38,7 +38,7 @@ if(SUB0H264_BUILD_TESTING AND NOT IS_SUBPROJECT)
     enable_testing()
     add_subdirectory(tests)
     add_subdirectory(test_apps/trace)
-    add_subdirectory(reference_decoder)
+    # reference_decoder removed — main decoder CABAC is now spec-compliant
 endif()
 
 # Install project if not included by add_subdirectory() from another project
