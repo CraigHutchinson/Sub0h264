@@ -456,10 +456,15 @@ public:
         if (binTraceEnabled_ && binTraceCount_ < binTraceMax_)
         {
             if (binTraceLog_)
-                std::fprintf(binTraceLog_, "%lu %lu %u %lu %lu %lu\n",
+            {
+                // Compute context index from pointer offset if base is set
+                int32_t ctxIdx = binTraceCtxBase_ ? static_cast<int32_t>(&ctx - binTraceCtxBase_) : -1;
+                std::fprintf(binTraceLog_, "%lu %lu %u %lu %lu %lu %ld\n",
                     (unsigned long)binTraceCount_, (unsigned long)state,
                     (unsigned)ctx.mpsState, (unsigned long)symbol,
-                    (unsigned long)codIRange_, (unsigned long)codIOffset_);
+                    (unsigned long)codIRange_, (unsigned long)codIOffset_,
+                    (long)ctxIdx);
+            }
             ++binTraceCount_;
         }
 
@@ -480,6 +485,19 @@ public:
         {
             symbol = 0U;
         }
+
+        // Bypass bin trace (for debugging CABAC divergence)
+        if (binTraceEnabled_ && binTraceCount_ < binTraceMax_)
+        {
+            if (binTraceLog_)
+                std::fprintf(binTraceLog_, "%lu BP %lu %lu %lu\n",
+                    (unsigned long)binTraceCount_,
+                    (unsigned long)symbol,
+                    (unsigned long)codIRange_,
+                    (unsigned long)codIOffset_);
+            ++binTraceCount_;
+        }
+
         return symbol;
     }
 
@@ -549,12 +567,14 @@ public:
     uint32_t offset() const noexcept { return codIOffset_; }
 
     /** Enable per-bin trace to a file — for CABAC debugging. */
-    void enableBinTrace(FILE* log, uint32_t maxBins = 200U) noexcept
+    void enableBinTrace(FILE* log, uint32_t maxBins = 200U,
+                        const CabacCtx* ctxBase = nullptr) noexcept
     {
         binTraceLog_ = log;
         binTraceEnabled_ = true;
         binTraceMax_ = maxBins;
         binTraceCount_ = 0U;
+        binTraceCtxBase_ = ctxBase;
     }
     void disableBinTrace() noexcept { binTraceEnabled_ = false; }
 
@@ -595,6 +615,10 @@ private:
     bool binTraceEnabled_ = false;
     uint32_t binTraceMax_ = 0U;
     uint32_t binTraceCount_ = 0U;
+    const CabacCtx* binTraceCtxBase_ = nullptr;
+public:
+    uint32_t binTraceCount() const noexcept { return binTraceCount_; }
+private:
 
     void renormalize() noexcept
     {

@@ -20,8 +20,9 @@
 
 // Detailed per-block trace for multi-MB I_4x4 investigation.
 // Enable to dump every buffer at every pipeline step for blocks 7-9 of MB(0,0).
-// #define SUB0H264_TRACE_I4X4_BLOCKS
+#define SUB0H264_TRACE_I4X4_BLOCKS
 // #define SUB0H264_EXP_FORCE_MODE1_SCAN5
+// #define SUB0H264_TRACE_I4X4_BLOCKS
 #include "decode_timing.hpp"
 #include "decode_trace.hpp"
 #include "dpb.hpp"
@@ -596,6 +597,9 @@ private:
 
             // Initialize arithmetic engine — §9.3.1.2
             cabacEngine_.init(br);
+#ifdef SUB0H264_TRACE_I4X4_BLOCKS
+            cabacEngine_.enableBinTrace(stderr, 10000U, cabacCtx_.data());
+#endif
 
             // Initialize per-MB CABAC neighbor context
             cabacNeighbor_.init(widthInMbs_, heightInMbs_);
@@ -630,6 +634,11 @@ private:
                     // Stop decoding if bitstream exhausted — prevents CABAC overrun
                     if (br.isExhausted())
                         break;
+#ifdef SUB0H264_TRACE_I4X4_BLOCKS
+                    std::fprintf(stderr, "MB_START(%u,%u): R=%u O=%u bp=%u qp=%d\n",
+                        mbX, mbY, cabacEngine_.range(), cabacEngine_.offset(),
+                        static_cast<uint32_t>(cabacEngine_.bitPosition()), mbQp);
+#endif
                     trace_.onMbStart(mbX, mbY, 200U,
                                      static_cast<uint32_t>(cabacEngine_.bitPosition()));
                     int64_t cT0 = profile_ ? sub0h264TimerUs() : 0;
@@ -2418,6 +2427,10 @@ private:
 
         uint32_t mbTypeRaw = cabacDecodeMbTypeI(cabacEngine_, cabacCtx_.data(),
                                                  leftCondZero, topCondZero);
+#ifdef SUB0H264_TRACE_I4X4_BLOCKS
+        std::fprintf(stderr, "  MB(%u,%u) mbTypeRaw=%u leftCond=%d topCond=%d\n",
+            mbX, mbY, mbTypeRaw, leftCondZero, topCondZero);
+#endif
 
         // Track I_NxN (I_4x4) for future neighbor context derivation
         cabacNeighbor_[mbIdx].setI4x4(mbTypeRaw == 0U);
@@ -2519,9 +2532,8 @@ private:
                 mode = 1U;
 #endif
 #ifdef SUB0H264_TRACE_I4X4_BLOCKS
-            if (mbX == 0U && mbY == 0U)
-                std::fprintf(stderr, "  scan%u raster%u: mpm=%u result=%u mode=%u R=%u O=%u bp=%u c68=%u c69=%u\n",
-                    i, rasterIdx, mpm, result, mode,
+                std::fprintf(stderr, "  MB(%u,%u) scan%u raster%u: mpm=%u result=%u mode=%u R=%u O=%u bp=%u c68=%u c69=%u\n",
+                    mbX, mbY, i, rasterIdx, mpm, result, mode,
                     cabacEngine_.range(), cabacEngine_.offset(),
                     static_cast<uint32_t>(cabacEngine_.bitPosition()),
                     static_cast<uint32_t>(cabacCtx_[68].mpsState),
@@ -2577,7 +2589,7 @@ private:
         {
             std::fprintf(stderr, "=== MB(0,0) I4x4: cbp=0x%02x cbpLuma=%u cbpChroma=%u qp=%d ===\n",
                 cbp, cbpLuma, cbpChroma, qp);
-            cabacEngine_.enableBinTrace(stderr, 2000U);
+            // binTrace moved to slice init
         }
 #endif
         // Decode luma residual — §7.3.5.3
@@ -2675,12 +2687,9 @@ private:
 
                     int16_t scanCoeffs[16] = {};
 #ifdef SUB0H264_TRACE_I4X4_BLOCKS
-                    uint32_t bitBefore = static_cast<uint32_t>(cabacEngine_.bitPosition());
-                    if (mbX == 0U && mbY == 0U)
-                    {
-                        std::fprintf(stderr, "  ENGINE_PRE: R=%u O=%u bp=%u\n",
-                            cabacEngine_.range(), cabacEngine_.offset(), bitBefore);
-                    }
+                    std::fprintf(stderr, "BLK_START MB(%u,%u) scan%u raster%u cbfInc=%u binIdx=%u\n",
+                        mbX, mbY, blkIdx, rasterIdx, cbfCtxInc,
+                        cabacEngine_.binTraceCount());
 #endif
                     uint32_t numNonZero = cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(),
                                                                   scanCoeffs, 16U, 2U, cbfCtxInc);
@@ -2691,9 +2700,8 @@ private:
 #ifdef SUB0H264_TRACE_I4X4_BLOCKS
                     if (mbX == 0U && mbY == 0U)
                     {
-                        uint32_t bitAfter = static_cast<uint32_t>(cabacEngine_.bitPosition());
-                        std::fprintf(stderr, "  CBF: leftNnz=%u topNnz=%u cbfCtxInc=%u numNZ=%u bits=%u..%u\n",
-                            leftNnz, topNnz, cbfCtxInc, numNonZero, bitBefore, bitAfter);
+                        std::fprintf(stderr, "  CBF: leftNnz=%u topNnz=%u cbfCtxInc=%u numNZ=%u\n",
+                            leftNnz, topNnz, cbfCtxInc, numNonZero);
                         std::fprintf(stderr, "  SCAN=[%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d]\n",
                             scanCoeffs[0],scanCoeffs[1],scanCoeffs[2],scanCoeffs[3],
                             scanCoeffs[4],scanCoeffs[5],scanCoeffs[6],scanCoeffs[7],
@@ -2713,9 +2721,10 @@ private:
                                  blkIdx, 0U, 0U, 0U, scanCoeffs, 16U});
 
 #ifdef SUB0H264_TRACE_I4X4_BLOCKS
-                    if (mbX == 0U && mbY == 0U && blkIdx >= 4U && blkIdx <= 6U)
+                    if (blkIdx <= 2U)
                     {
-                        std::fprintf(stderr, "  RASTER_PRE_DQ=[%d %d %d %d][%d %d %d %d][%d %d %d %d][%d %d %d %d]\n",
+                        std::fprintf(stderr, "  MB(%u,%u) scan%u RASTER_PRE_DQ=[%d %d %d %d][%d %d %d %d][%d %d %d %d][%d %d %d %d]\n",
+                            mbX, mbY, blkIdx,
                             coeffs[0],coeffs[1],coeffs[2],coeffs[3],
                             coeffs[4],coeffs[5],coeffs[6],coeffs[7],
                             coeffs[8],coeffs[9],coeffs[10],coeffs[11],
@@ -2724,9 +2733,10 @@ private:
 #endif
                     inverseQuantize4x4(coeffs, qp);
 #ifdef SUB0H264_TRACE_I4X4_BLOCKS
-                    if (mbX == 0U && mbY == 0U && blkIdx >= 4U && blkIdx <= 6U)
+                    if (blkIdx <= 2U)
                     {
-                        std::fprintf(stderr, "  RASTER_POST_DQ=[%d %d %d %d][%d %d %d %d][%d %d %d %d][%d %d %d %d]\n",
+                        std::fprintf(stderr, "  MB(%u,%u) scan%u RASTER_POST_DQ=[%d %d %d %d][%d %d %d %d][%d %d %d %d][%d %d %d %d]\n",
+                            mbX, mbY, blkIdx,
                             coeffs[0],coeffs[1],coeffs[2],coeffs[3],
                             coeffs[4],coeffs[5],coeffs[6],coeffs[7],
                             coeffs[8],coeffs[9],coeffs[10],coeffs[11],

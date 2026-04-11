@@ -233,18 +233,26 @@ inline uint8_t cabacDecodeCbp(CabacEngine& engine, CabacCtx* ctx,
     }
 
     // Chroma CBP: 2 bins — §9.3.3.1.1.4, §9.3.2.6
-    // bin[0]: cbpChroma > 0, ctxIdxOffset=77, ctxIdxInc ∈ {0-3}
-    // bin[1]: cbpChroma == 2, ctxIdxOffset=77+4=81, ctxIdxInc ∈ {0-3} (Table 9-39)
-    // [CHECKED §9.3.3.1.1.4] [CHECKED Table 9-39]
+    // §9.3.3.1.1.4 for ctxIdxOffset=77: condTermFlagN for CHROMA has OPPOSITE
+    // sense from luma. The spec says:
+    //   condTermFlag=0 when: unavailable/skip OR chromaCbp=0 (bin0) OR chromaCbp!=2 (bin1)
+    //   condTermFlag=1 otherwise (available AND chromaCbp>0/==2)
+    // Use sentinel value 0xFF to mark unavailable (condTermFlag=0 regardless).
+    // [FM-23 fixed: was using luma sense (coded→0), spec says chroma coded→1]
     uint8_t cbpChroma = 0U;
     {
-        uint32_t cA = (leftChromaCbp > 0U) ? 0U : 1U;
-        uint32_t cB = (topChromaCbp  > 0U) ? 0U : 2U;
+        // condTermFlag=1 when available AND chromaCbp matches condition, 0 otherwise.
+        // Unavailable passed as 0xFF → fails both >0 and >1 checks correctly
+        // IF we fix the default to NOT look like coded chroma.
+        // Actually: unavailable → leftChromaCbp is from default cbp 0x2F → chromaCbp=2.
+        // We need to detect unavailable separately. Use 3 as "unavailable" sentinel
+        // (valid chroma cbp is 0, 1, or 2).
+        uint32_t cA = (leftChromaCbp <= 2U && leftChromaCbp > 0U) ? 1U : 0U;
+        uint32_t cB = (topChromaCbp  <= 2U && topChromaCbp  > 0U) ? 2U : 0U;
         if (engine.decodeBin(ctx[cCtxCbpChroma + cA + cB]) == 1U)
         {
-            // Second chroma bin: cbpChroma == 1 or 2
-            cA = (leftChromaCbp > 1U) ? 0U : 1U;
-            cB = (topChromaCbp  > 1U) ? 0U : 2U;
+            cA = (leftChromaCbp <= 2U && leftChromaCbp > 1U) ? 1U : 0U;
+            cB = (topChromaCbp  <= 2U && topChromaCbp  > 1U) ? 2U : 0U;
             cbpChroma = engine.decodeBin(ctx[cCtxCbpChroma + cA + cB + 4U]) == 0U ? 1U : 2U;
         }
     }

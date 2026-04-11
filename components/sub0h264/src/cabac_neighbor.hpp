@@ -163,9 +163,14 @@ public:
     CbpNeighbors cbpNeighbors(uint32_t mbX, uint32_t mbY) const noexcept
     {
         uint32_t mbIdx = mbY * widthMbs_ + mbX;
+        // §9.3.3.1.1.4: unavailable → condTermFlag=0 for BOTH luma and chroma.
+        // Luma sense: coded→0 (condTermFlag=0 when coded). Default 0xF (all coded) → condTermFlag=0. ✓
+        // Chroma sense: coded→1 (condTermFlag=1 when coded). Default must give condTermFlag=0.
+        // Use 0x3F: lumaCbp=0xF (all coded→condTermFlag=0 ✓), chromaCbp=3 (sentinel >2
+        // detected by cabacDecodeCbp as unavailable→condTermFlag=0). [FM-23]
         return {
-            (mbX > 0U) ? mbs_[mbIdx - 1U].cbp : static_cast<uint8_t>(0x2FU),
-            (mbY > 0U) ? mbs_[mbIdx - widthMbs_].cbp : static_cast<uint8_t>(0x2FU)
+            (mbX > 0U) ? mbs_[mbIdx - 1U].cbp : static_cast<uint8_t>(0x3FU),
+            (mbY > 0U) ? mbs_[mbIdx - widthMbs_].cbp : static_cast<uint8_t>(0x3FU)
         };
     }
 
