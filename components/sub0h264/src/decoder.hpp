@@ -716,6 +716,11 @@ private:
                     {
                         cabacNeighbor_[mbAddr].setSkip(true);
                         cabacNeighbor_[mbAddr].setI4x4(false);
+                        // Skip MBs have no residual → CBP = 0, no DC CBF.
+                        // Must set explicitly so neighbor CBP context derivation
+                        // (§9.3.3.1.1.4) sees the skip MB as "not coded".
+                        cabacNeighbor_[mbAddr].cbp = 0U;
+                        cabacNeighbor_[mbAddr].dcCbf = 0U;
                         int64_t skipT0 = profile_ ? sub0h264TimerUs() : 0;
                         decodePSkipMb(*decodeTarget, *refFrame, mbX, mbY, sh);
                         if (profile_) profile_->interPredUs += sub0h264TimerUs() - skipT0;
