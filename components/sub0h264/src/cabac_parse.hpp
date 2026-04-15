@@ -335,11 +335,18 @@ inline int16_t cabacDecodeMvd(CabacEngine& engine, CabacCtx* ctx,
     }
     else
     {
-        // Suffix: 3rd-order Exp-Golomb via bypass bins
-        uint32_t k = 0U;
+        // Suffix: 3rd-order Exp-Golomb (k=3) via bypass bins — §9.3.2.3 Table 9-37.
+        // UEG3 decode: start with k=3, each leading 1 adds (1<<k) and increments k,
+        // then a 0 stop bit, then k bits of the remainder.
+        constexpr uint32_t cEgOrder = 3U;
+        uint32_t k = cEgOrder;
+        uint32_t suffix = 0U;
         while (engine.decodeBypass() == 1U && k < 16U)
+        {
+            suffix += (1U << k);
             ++k;
-        uint32_t suffix = ((1U << k) - 1U) + engine.decodeBypassBins(k);
+        }
+        suffix += engine.decodeBypassBins(k);
         absMvd = static_cast<int32_t>(9U + suffix);
     }
 
