@@ -64,7 +64,7 @@ TEST_CASE("CABAC diag: flat_main MB(0,0) engine state trace")
     });
 
     // Enable bin trace too
-    FILE* binLog = std::fopen("build/cabac_diag_trace.txt", "w");
+    FILE* binLog = std::fopen("cabac_diag_trace.txt", "w");
     REQUIRE(binLog != nullptr);
     std::fprintf(binLog, "# binIdx ctxState newState symbol range offset\n");
     decoder->cabacEngine().enableBinTrace(binLog, 2000U);
@@ -122,7 +122,7 @@ TEST_CASE("CABAC diag: flat_main MB(0,0) engine state trace")
     }
 
     // Count bins consumed (from trace file)
-    binLog = std::fopen("build/cabac_diag_trace.txt", "r");
+    binLog = std::fopen("cabac_diag_trace.txt", "r");
     if (binLog)
     {
         int lineCount = 0;

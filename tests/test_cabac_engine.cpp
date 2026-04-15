@@ -746,7 +746,7 @@ TEST_CASE("CABAC bin trace: first 200 bins of cabac_4mb_noisy")
     auto decoder = std::make_unique<H264Decoder>();
 
     // Enable bin trace to file via the public engine accessor
-    FILE* binLog = std::fopen("build/cabac_bin_trace.txt", "w");
+    FILE* binLog = std::fopen("cabac_bin_trace.txt", "w");
     REQUIRE(binLog != nullptr);
     std::fprintf(binLog, "# binIdx ctxState newState symbol range offset\n");
     decoder->cabacEngine().enableBinTrace(binLog, 500U);

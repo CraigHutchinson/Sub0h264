@@ -35,7 +35,7 @@ TEST_CASE("Full trace: bouncing ball IDR block-level decode")
     auto h264 = getFixture("bouncing_ball_ionly_baseline.h264");
     if (h264.empty()) { MESSAGE("fixture not found"); return; }
 
-    FILE* fp = std::fopen("build/trace_sub0h264.txt", "w");
+    FILE* fp = std::fopen("trace_sub0h264.txt", "w");
     REQUIRE(fp != nullptr);
 
     auto decoder = std::make_unique<H264Decoder>();
@@ -114,10 +114,10 @@ TEST_CASE("Full trace: bouncing ball IDR block-level decode")
     }
 
     std::fclose(fp);
-    MESSAGE("Trace written to build/trace_sub0h264.txt");
+    MESSAGE("Trace written to trace_sub0h264.txt (in build dir)");
 
     // Verify file has content
-    fp = std::fopen("build/trace_sub0h264.txt", "r");
+    fp = std::fopen("trace_sub0h264.txt", "r");
     REQUIRE(fp != nullptr);
     std::fseek(fp, 0, SEEK_END);
     long size = std::ftell(fp);
