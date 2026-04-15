@@ -1637,42 +1637,61 @@ private:
             mbMotion_[mbIdx * 16U + i] = info;
     }
 
-    /** Fill a partition's 4x4 blocks with MV.
-     *  For 16x8: part 0 = rows 0-1 (8 blocks), part 1 = rows 2-3 (8 blocks).
-     *  For 8x16: part 0 = cols 0-1 (8 blocks), part 1 = cols 2-3 (8 blocks).
+    /** Fill a partition's 4x4 blocks with MV + MVD — ITU-T H.264 §6.4.2.1.
+     *
+     *  Covers all P-slice mb_type values (Table 7-14):
+     *   0: P_L0_16x16     — 1 partition, fills all 16 blocks
+     *   1: P_L0_L0_16x8   — 2 partitions, each fills 2 rows × 4 cols = 8 blocks
+     *   2: P_L0_L0_8x16   — 2 partitions, each fills 4 rows × 2 cols = 8 blocks
+     *   3: P_8x8           — 4 sub-partitions, each fills 2×2 = 4 blocks
+     *   4: P_8x8ref0       — same as P_8x8
+     *
+     *  @param partIdx  Partition index (0-1 for 16x8/8x16, 0-3 for P_8x8, 0 for 16x16)
+     *  @param mvd      Decoded MVD — stored for CABAC §9.3.3.1.1.7 neighbor context
      */
     void setPartitionMotion(uint32_t mbIdx, uint32_t mbType, uint32_t partIdx,
                             MotionVector mv, int8_t refIdx,
                             MotionVector mvd = {0, 0}) noexcept
     {
         MbMotionInfo info = { mv, mvd, refIdx, true };
-        if (mbType == 1U) // 16x8
+        switch (mbType)
+        {
+        case 0U: // P_L0_16x16: all 16 blocks
+            for (uint32_t i = 0U; i < 16U; ++i)
+                mbMotion_[mbIdx * 16U + i] = info;
+            break;
+        case 1U: // P_L0_L0_16x8: 2 rows per partition
         {
             uint32_t startRow = partIdx * 2U;
             for (uint32_t r = startRow; r < startRow + 2U; ++r)
                 for (uint32_t c = 0U; c < 4U; ++c)
                     mbMotion_[mbIdx * 16U + r * 4U + c] = info;
+            break;
         }
-        else if (mbType == 2U) // 8x16
+        case 2U: // P_L0_L0_8x16: 2 cols per partition
         {
             uint32_t startCol = partIdx * 2U;
             for (uint32_t r = 0U; r < 4U; ++r)
                 for (uint32_t c = startCol; c < startCol + 2U; ++c)
                     mbMotion_[mbIdx * 16U + r * 4U + c] = info;
+            break;
         }
-        else if (mbType == 3U || mbType == 4U) // P_8x8 / P_8x8ref0
+        case 3U: // P_8x8
+        case 4U: // P_8x8ref0
         {
-            // Fill the 2x2 group of 4x4 blocks for sub-partition partIdx (0-3).
+            // 2x2 group of 4x4 blocks per sub-partition (§6.4.2.1)
             // Layout: 0=TL(r0-1,c0-1), 1=TR(r0-1,c2-3), 2=BL(r2-3,c0-1), 3=BR(r2-3,c2-3)
             uint32_t startRow = (partIdx >> 1U) * 2U;
             uint32_t startCol = (partIdx & 1U) * 2U;
             for (uint32_t r = startRow; r < startRow + 2U; ++r)
                 for (uint32_t c = startCol; c < startCol + 2U; ++c)
                     mbMotion_[mbIdx * 16U + r * 4U + c] = info;
+            break;
         }
-        else // fallback: fill all (16x16)
-        {
-            setMbMotion(mbIdx, mv, refIdx, mvd);
+        default: // Fallback: fill all (e.g., skip MBs, intra)
+            for (uint32_t i = 0U; i < 16U; ++i)
+                mbMotion_[mbIdx * 16U + i] = info;
+            break;
         }
     }
 
