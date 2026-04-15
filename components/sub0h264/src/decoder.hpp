@@ -3024,14 +3024,30 @@ private:
                  + std::abs(getMvdComp(tlX,     tlY - 1, xComp));  // top
         };
 
+        // §9.3.3.1.1.6: ref_idx context derivation — ctxInc from neighbor refIdx.
+        // condTermFlagA = (refIdxA > 0), condTermFlagB = (refIdxB > 0).
+        // Unavailable neighbors → condTermFlag = 0. [CHECKED §9.3.3.1.1.6]
+        auto refIdxCtxInc = [&](int32_t tlX, int32_t tlY) -> uint32_t {
+            MbMotionInfo left = getMotionAt4x4(tlX - 1, tlY);
+            MbMotionInfo top  = getMotionAt4x4(tlX,     tlY - 1);
+            uint32_t cA = (left.available && left.refIdx > 0) ? 1U : 0U;
+            uint32_t cB = (top.available  && top.refIdx  > 0) ? 2U : 0U;
+            return cA + cB;
+        };
+
         if (mbTypeRaw <= 2U)
         {
             // 16x16 / 16x8 / 8x16: §7.3.5.1 ref_idx ALL first, then mvd ALL
             for (uint32_t p = 0U; p < numParts; ++p)
             {
                 if (numRefIdxL0Active > 1U)
-                    refIdxL0[p] = cabacDecodeRefIdx(cabacEngine_, cabacCtx_.data(), 0U,
+                {
+                    int32_t tlX = mb4x + (mbTypeRaw == 2U && p == 1U ? 2 : 0);
+                    int32_t tlY = mb4y + (mbTypeRaw == 1U && p == 1U ? 2 : 0);
+                    uint32_t ctxInc = refIdxCtxInc(tlX, tlY);
+                    refIdxL0[p] = cabacDecodeRefIdx(cabacEngine_, cabacCtx_.data(), ctxInc,
                                                      numRefIdxL0Active - 1U);
+                }
             }
             // Top-left 4x4 position of each partition (in absolute 4x4 units):
             //   16x16 (p=0): (mb4x, mb4y)
@@ -3052,15 +3068,19 @@ private:
             // P_8x8: §7.3.5.2 sub_mb_type ALL, then ref_idx ALL, then mvd ALL
             for (uint32_t s = 0U; s < 4U; ++s)
                 subMbType[s] = cabacDecodeSubMbTypeP(cabacEngine_, cabacCtx_.data());
-            for (uint32_t s = 0U; s < 4U; ++s)
-            {
-                if (numRefIdxL0Active > 1U)
-                    refIdxL0[s] = cabacDecodeRefIdx(cabacEngine_, cabacCtx_.data(), 0U,
-                                                     numRefIdxL0Active - 1U);
-            }
             // P_8x8 sub-partition origins in 4x4 units: (0,0),(2,0),(0,2),(2,2)
             static constexpr int32_t c8x8Off4x[4] = {0, 2, 0, 2};
             static constexpr int32_t c8x8Off4y[4] = {0, 0, 2, 2};
+            // ref_idx per sub-partition — §7.3.5.2
+            for (uint32_t s = 0U; s < 4U; ++s)
+            {
+                if (numRefIdxL0Active > 1U)
+                {
+                    uint32_t ctxInc = refIdxCtxInc(mb4x + c8x8Off4x[s], mb4y + c8x8Off4y[s]);
+                    refIdxL0[s] = cabacDecodeRefIdx(cabacEngine_, cabacCtx_.data(), ctxInc,
+                                                     numRefIdxL0Active - 1U);
+                }
+            }
             // MVD per sub-partition — §7.3.5.2
             // sub_mb_type 0=8x8(1 MVD), 1=8x4(2 MVD), 2=4x8(2 MVD), 3=4x4(4 MVD)
             // Store first MVD per 8x8 for MV prediction; consume all for bitstream sync.
