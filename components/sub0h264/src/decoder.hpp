@@ -1660,9 +1660,19 @@ private:
                 for (uint32_t c = startCol; c < startCol + 2U; ++c)
                     mbMotion_[mbIdx * 16U + r * 4U + c] = info;
         }
-        else // fallback: fill all
+        else if (mbType == 3U || mbType == 4U) // P_8x8 / P_8x8ref0
         {
-            setMbMotion(mbIdx, mv, refIdx);
+            // Fill the 2x2 group of 4x4 blocks for sub-partition partIdx (0-3).
+            // Layout: 0=TL(r0-1,c0-1), 1=TR(r0-1,c2-3), 2=BL(r2-3,c0-1), 3=BR(r2-3,c2-3)
+            uint32_t startRow = (partIdx >> 1U) * 2U;
+            uint32_t startCol = (partIdx & 1U) * 2U;
+            for (uint32_t r = startRow; r < startRow + 2U; ++r)
+                for (uint32_t c = startCol; c < startCol + 2U; ++c)
+                    mbMotion_[mbIdx * 16U + r * 4U + c] = info;
+        }
+        else // fallback: fill all (16x16)
+        {
+            setMbMotion(mbIdx, mv, refIdx, mvd);
         }
     }
 
