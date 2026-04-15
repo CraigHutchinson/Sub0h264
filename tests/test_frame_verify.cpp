@@ -183,7 +183,7 @@ static uint32_t verifyStreamCrcs(const char* fixture,
 
 TEST_CASE("CRC regression: flat_black_640x480")
 {
-    uint32_t mismatches = verifyStreamCrcs("flat_black_640x480.h264",
+    uint32_t mismatches = verifyStreamCrcs("flat_black_baseline_640x480.h264",
                                             cRefCrcFlatBlack, cRefCrcFlatBlackCount);
     CHECK(mismatches == 0U);
 }

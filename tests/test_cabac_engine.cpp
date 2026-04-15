@@ -696,8 +696,8 @@ TEST_CASE("CAVLC: bouncing ball per-MB bit offset trace")
     // Trace bit offsets after each MB decode for the bouncing ball IDR.
     // MB(0,0) is pixel-perfect; the CAVLC overconsumption starts at MB(1,0).
     // This test captures the exact bit offsets for debugging.
-    auto h264 = getFixture("bouncing_ball.h264");
-    if (h264.empty()) { MESSAGE("bouncing_ball.h264 not found"); return; }
+    auto h264 = getFixture("bouncing_ball_baseline.h264");
+    if (h264.empty()) { MESSAGE("bouncing_ball_baseline.h264 not found"); return; }
 
     struct MbBitInfo { uint32_t mbX, mbY, bitAfter; };
     std::vector<MbBitInfo> mbBits;

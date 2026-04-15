@@ -13,7 +13,7 @@ using namespace sub0h264;
 
 TEST_CASE("Debug: flat_black NAL + mb_type analysis")
 {
-    auto data = getFixture("flat_black_640x480.h264");
+    auto data = getFixture("flat_black_baseline_640x480.h264");
     REQUIRE_FALSE(data.empty());
 
     std::vector<NalBounds> bounds;
@@ -114,7 +114,7 @@ TEST_CASE("Debug: dump baseline frame 0 to file for comparison")
 
 TEST_CASE("Debug: flat_black pixel inspection")
 {
-    auto data = getFixture("flat_black_640x480.h264");
+    auto data = getFixture("flat_black_baseline_640x480.h264");
     REQUIRE_FALSE(data.empty());
 
     // Decode just the first IDR frame

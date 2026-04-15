@@ -28,7 +28,7 @@ TEST_CASE("P-frame: scrolling_texture decodes all 30 frames without crash")
     // match exactly (libavc MB(0)=28→272, ours=20→264, diff=8=NAL header).
     // This confirms skip run parsing, partition syntax, and inter residual
     // consume the correct number of bits.
-    auto data = getFixture("scrolling_texture.h264");
+    auto data = getFixture("scrolling_texture_baseline.h264");
     REQUIRE_FALSE(data.empty());
 
     auto decoder = std::make_unique<H264Decoder>();
@@ -39,7 +39,7 @@ TEST_CASE("P-frame: scrolling_texture decodes all 30 frames without crash")
 
 TEST_CASE("P-frame: bouncing_ball decodes all 30 frames")
 {
-    auto data = getFixture("bouncing_ball.h264");
+    auto data = getFixture("bouncing_ball_baseline.h264");
     REQUIRE_FALSE(data.empty());
 
     auto decoder = std::make_unique<H264Decoder>();
@@ -50,7 +50,7 @@ TEST_CASE("P-frame: bouncing_ball decodes all 30 frames")
 
 TEST_CASE("P-frame: gradient_pan decodes all 30 frames")
 {
-    auto data = getFixture("gradient_pan.h264");
+    auto data = getFixture("gradient_pan_baseline.h264");
     REQUIRE_FALSE(data.empty());
 
     auto decoder = std::make_unique<H264Decoder>();
@@ -66,7 +66,7 @@ TEST_CASE("P-frame: IDR frame 0 quality > 40 dB vs raw source")
     // Confirmed: IDR frames within I+P streams produce identical quality
     // to I-only streams (52+ dB). P-frame decode path does not corrupt
     // the I-frame reconstruction pipeline.
-    auto h264Data = getFixture("scrolling_texture.h264");
+    auto h264Data = getFixture("scrolling_texture_baseline.h264");
     REQUIRE_FALSE(h264Data.empty());
 
     std::vector<uint8_t> rawData;
@@ -74,7 +74,7 @@ TEST_CASE("P-frame: IDR frame 0 quality > 40 dB vs raw source")
                                 "../../tests/fixtures/", "" };
     for (const char* pfx : prefixes)
     {
-        std::string path = std::string(pfx) + "scrolling_texture_raw.yuv";
+        std::string path = std::string(pfx) + "scrolling_texture_baseline_raw.yuv";
         std::ifstream f(path, std::ios::binary | std::ios::ate);
         if (f.is_open())
         {
@@ -134,7 +134,7 @@ TEST_CASE("P-frame REGRESSION: skip_run 7.3.4 MB after skip run is coded")
     //
     // Validated: P-frame 1 MB(0,2) at mbAddr 40 must be CODED (not skip).
     // libavc confirms: MB(40) CODED at NAL bit 909.
-    auto data = getFixture("scrolling_texture.h264");
+    auto data = getFixture("scrolling_texture_baseline.h264");
     REQUIRE_FALSE(data.empty());
 
     struct MbEvent { uint16_t mbX, mbY; uint32_t type; };
@@ -188,7 +188,7 @@ TEST_CASE("P-frame: frame 1 PSNR > 45 dB vs raw source")
     // Compares against raw uncompressed source (ground truth), NOT against
     // another decoder's output. The spec is deterministic for baseline profile,
     // so any conforming decoder should produce the same output within rounding.
-    auto h264 = getFixture("scrolling_texture.h264");
+    auto h264 = getFixture("scrolling_texture_baseline.h264");
     REQUIRE_FALSE(h264.empty());
 
     // Load raw uncompressed source (ground truth)
@@ -196,7 +196,7 @@ TEST_CASE("P-frame: frame 1 PSNR > 45 dB vs raw source")
     const char* pfxs[] = {"tests/fixtures/", "../tests/fixtures/", ""};
     for (auto* pfx : pfxs)
     {
-        std::string path = std::string(pfx) + "scrolling_texture_raw.yuv";
+        std::string path = std::string(pfx) + "scrolling_texture_baseline_raw.yuv";
         std::ifstream f(path, std::ios::binary | std::ios::ate);
         if (f.is_open())
         {
@@ -252,7 +252,7 @@ TEST_CASE("P-frame: frame 1 PSNR > 45 dB vs raw source")
 TEST_CASE("P-frame: reference frame data integrity check")
 {
     // Verify the reference frame seen by P-frame decode matches the IDR output.
-    auto data = getFixture("scrolling_texture.h264");
+    auto data = getFixture("scrolling_texture_baseline.h264");
     REQUIRE_FALSE(data.empty());
 
     auto decoder = std::make_unique<H264Decoder>();
@@ -330,7 +330,7 @@ TEST_CASE("P-frame: chroma MC verification for skip MB")
     // Manually compute expected chroma MC output for a skip MB and compare
     // with decoder output. The IDR chroma matches raw source closely, so
     // any error must be in the P-frame chroma MC path.
-    auto data = getFixture("scrolling_texture.h264");
+    auto data = getFixture("scrolling_texture_baseline.h264");
     REQUIRE_FALSE(data.empty());
 
     auto decoder = std::make_unique<H264Decoder>();
@@ -458,7 +458,7 @@ TEST_CASE("P-frame: chroma MC verification for skip MB")
                 const char* pfxs[] = { "tests/fixtures/", "../tests/fixtures/", "" };
                 for (auto* pfx2 : pfxs)
                 {
-                    std::string rpath = std::string(pfx2) + "scrolling_texture_raw.yuv";
+                    std::string rpath = std::string(pfx2) + "scrolling_texture_baseline_raw.yuv";
                     std::ifstream rf(rpath, std::ios::binary | std::ios::ate);
                     if (rf.is_open())
                     {
@@ -559,7 +559,7 @@ TEST_CASE("P-frame: chroma MC verification for skip MB")
 
 TEST_CASE("P-frame 2: check MB(19,3) decode - zero-output investigation")
 {
-    auto data = getFixture("scrolling_texture.h264");
+    auto data = getFixture("scrolling_texture_baseline.h264");
     REQUIRE_FALSE(data.empty());
 
     auto decoder = std::make_unique<H264Decoder>();
@@ -642,7 +642,7 @@ TEST_CASE("CABAC: scrolling_texture_high IDR MB(0,0) DC coefficients")
 
 TEST_CASE("P-frame: scrolling_texture frame 8 partition check")
 {
-    auto data = getFixture("scrolling_texture.h264");
+    auto data = getFixture("scrolling_texture_baseline.h264");
     REQUIRE_FALSE(data.empty());
 
     auto decoder = std::make_unique<H264Decoder>();
@@ -676,7 +676,7 @@ TEST_CASE("P-frame: scrolling_texture frame 8 partition check")
 
 TEST_CASE("P-frame: pan_up frame 16 MV and chroma check")
 {
-    auto data = getFixture("pan_up.h264");
+    auto data = getFixture("pan_up_baseline.h264");
     if (data.empty()) { MESSAGE("Skipping: pan_up.h264 not found"); return; }
 
     // Capture MV prediction trace for MB(0,0) in frame 16
@@ -824,7 +824,7 @@ TEST_CASE("DPB: reference frame survives across P-frame decode")
     // Verified via trace: the reference pointer changes correctly between
     // frames. The IDR at frame 0 is stored in DPB slot 0, P-frame 1
     // decodes into slot 1, and slot 0 remains valid as reference.
-    auto data = getFixture("scrolling_texture.h264");
+    auto data = getFixture("scrolling_texture_baseline.h264");
     REQUIRE_FALSE(data.empty());
 
     auto decoder = std::make_unique<H264Decoder>();
@@ -873,7 +873,7 @@ TEST_CASE("P-frame bit offset trace: compare MB parsing positions vs libavc")
 {
     // Compare our per-MB bit offsets with libavc to find parsing divergence.
     // libavc P-frame 1 offsets: MB(0)=28, MB(1)=272, MB(2)=594, MB(3)=625, MB(4)=634
-    auto data = getFixture("scrolling_texture.h264");
+    auto data = getFixture("scrolling_texture_baseline.h264");
     REQUIRE_FALSE(data.empty());
 
     struct MbInfo { uint16_t mbX, mbY; uint32_t mbType, bitOff; };
@@ -931,7 +931,7 @@ TEST_CASE("P-frame: MB(1,0) per-block CAVLC bit consumption vs libavc")
     // This test captures per-block nC, totalCoeff, bits for comparison.
     //
     // Reference: ITU-T H.264 §9.2 (CAVLC), libavc ih264d_cavlc_parse4x4coeff
-    auto data = getFixture("scrolling_texture.h264");
+    auto data = getFixture("scrolling_texture_baseline.h264");
     REQUIRE_FALSE(data.empty());
 
     struct BlockInfo { uint16_t mbX, mbY; uint32_t blkIdx, nC, tc, bits; };
@@ -1014,7 +1014,7 @@ TEST_CASE("P-frame MV trace: scrolling_texture first P-frame MV dump")
     // Capture per-MB MV prediction data for the first P-frame.
     // This is a diagnostic test — it prints MV info for manual comparison
     // against libavc reference. Does not assert specific values yet.
-    auto data = getFixture("scrolling_texture.h264");
+    auto data = getFixture("scrolling_texture_baseline.h264");
     REQUIRE_FALSE(data.empty());
 
     struct MvRecord {
@@ -1084,7 +1084,7 @@ TEST_CASE("P-frame MV trace: scrolling_texture first P-frame MV dump")
 
 TEST_CASE("Debug: bouncing ball MB(3,0) block coefficient trace")
 {
-    auto h264 = getFixture("bouncing_ball_ionly.h264");
+    auto h264 = getFixture("bouncing_ball_ionly_baseline.h264");
     if (h264.empty()) { MESSAGE("fixture not found"); return; }
 
     // Capture raw coefficients (pre-dequant) and dequantized coefficients

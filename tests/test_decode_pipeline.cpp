@@ -22,7 +22,7 @@ static uint64_t yPlaneSum(const Frame& frame)
 
 TEST_CASE("Pipeline: H264Decoder decodes flat_black IDR")
 {
-    auto data = getFixture("flat_black_640x480.h264");
+    auto data = getFixture("flat_black_baseline_640x480.h264");
     REQUIRE_FALSE(data.empty());
 
     auto decoder = std::make_unique<H264Decoder>();
@@ -94,7 +94,7 @@ TEST_CASE("Pipeline: H264Decoder lifecycle")
 
 TEST_CASE("Pipeline: frame allocation matches SPS")
 {
-    auto data = getFixture("flat_black_640x480.h264");
+    auto data = getFixture("flat_black_baseline_640x480.h264");
     REQUIRE_FALSE(data.empty());
 
     auto decoder = std::make_unique<H264Decoder>();

@@ -136,7 +136,7 @@ TEST_CASE("CABAC diag: flat_main MB(0,0) engine state trace")
 
 TEST_CASE("CABAC diag: bouncing_ball_ionly_cabac MB(0,0) pixel output")
 {
-    auto h264 = getFixture("bouncing_ball_ionly_cabac.h264");
+    auto h264 = getFixture("bouncing_ball_ionly_main.h264");
     if (h264.empty()) { MESSAGE("fixture not found"); return; }
 
     auto decoder = std::make_unique<H264Decoder>();
@@ -156,7 +156,7 @@ TEST_CASE("CABAC diag: bouncing_ball_ionly_cabac MB(0,0) pixel output")
     REQUIRE(frame != nullptr);
 
     // Get raw reference
-    auto raw = getFixture("bouncing_ball_ionly_cabac_raw.yuv");
+    auto raw = getFixture("bouncing_ball_ionly_main_raw.yuv");
 
     MESSAGE("=== Main decoder bouncing_ball_ionly_cabac MB(0,0) ===");
     for (uint32_t r = 0; r < 16; ++r)

@@ -149,7 +149,7 @@ TEST_CASE("removeEmulationPrevention handles emulation byte mid-stream")
 
 TEST_CASE("Parse flat_black_640x480.h264 NAL sequence")
 {
-    auto data = getFixture("flat_black_640x480.h264");
+    auto data = getFixture("flat_black_baseline_640x480.h264");
     REQUIRE_FALSE(data.empty());
 
     std::vector<NalBounds> bounds;

@@ -81,7 +81,7 @@ struct ParsedStream
 TEST_CASE("Slice: flat_black_640x480 — single IDR I-slice")
 {
     auto stream = std::make_unique<ParsedStream>();
-    REQUIRE(stream->parse("flat_black_640x480.h264"));
+    REQUIRE(stream->parse("flat_black_baseline_640x480.h264"));
 
     REQUIRE(stream->slices.size() >= 1U);
 
@@ -367,7 +367,7 @@ TEST_CASE("Slice: slice_type values 5-9 are normalized to 0-4 (FM-2 §7.3.3)")
     // If normalization fails, SliceType enum would hold values 5-9 — this test
     // verifies all parsed slice types are valid enum values (0-4).
     auto stream = std::make_unique<ParsedStream>();
-    REQUIRE(stream->parse("bouncing_ball_cabac.h264"));
+    REQUIRE(stream->parse("bouncing_ball_main.h264"));
     REQUIRE(stream->slices.size() >= 2U);
 
     for (const auto& sh : stream->slices)
@@ -385,7 +385,7 @@ TEST_CASE("Slice: CABAC P-slice cabac_init_idc is in valid range (FM-24 §7.3.3)
     // §7.3.3: cabac_init_idc ue(v) read only when entropy_coding_mode_flag=1
     // and slice_type != I and slice_type != SI. Values 0-2 are valid. [CHECKED §7.3.3]
     auto stream = std::make_unique<ParsedStream>();
-    REQUIRE(stream->parse("bouncing_ball_cabac.h264"));
+    REQUIRE(stream->parse("bouncing_ball_main.h264"));
 
     bool foundPSlice = false;
     for (const auto& sh : stream->slices)

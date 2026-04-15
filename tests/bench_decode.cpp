@@ -106,7 +106,7 @@ int main()
         runBench("Baseline CAVLC (short)", "baseline_640x480_short.h264"),
         runBench("Baseline CAVLC (full)",  "baseline_640x480.h264"),
         runBench("High CABAC",             "high_640x480.h264"),
-        runBench("Flat black",             "flat_black_640x480.h264"),
+        runBench("Flat black",             "flat_black_baseline_640x480.h264"),
     };
 
     std::printf("\nResults:\n");

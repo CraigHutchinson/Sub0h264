@@ -88,12 +88,12 @@ TEST_CASE("Bench: Baseline CAVLC 640x480 (short)" * doctest::test_suite("bench")
 
 TEST_CASE("Bench: Flat black 640x480" * doctest::test_suite("bench"))
 {
-    benchStream("Flat black", "flat_black_640x480.h264");
+    benchStream("Flat black", "flat_black_baseline_640x480.h264");
 }
 
 TEST_CASE("Bench: CAVLC 320x240 I+P" * doctest::test_suite("bench"))
 {
-    benchStream("CAVLC 320x240 I+P", "scrolling_texture.h264");
+    benchStream("CAVLC 320x240 I+P", "scrolling_texture_baseline.h264");
 }
 
 TEST_CASE("Bench: CABAC 320x240 I+P" * doctest::test_suite("bench"))
@@ -151,9 +151,9 @@ TEST_CASE("Profile: Baseline CAVLC 640x480" * doctest::test_suite("bench"))
 
 TEST_CASE("Profile: Scrolling texture 320x240" * doctest::test_suite("bench"))
 {
-    auto data = getFixture("scrolling_texture.h264");
-    if (data.empty()) { MESSAGE("scrolling_texture.h264 not embedded — skipping"); return; }
-    profileStream("Scrolling texture", "scrolling_texture.h264");
+    auto data = getFixture("scrolling_texture_baseline.h264");
+    if (data.empty()) { MESSAGE("scrolling_texture_baseline.h264 not embedded — skipping"); return; }
+    profileStream("Scrolling texture", "scrolling_texture_baseline.h264");
 }
 
 TEST_CASE("Profile: CABAC 320x240 I+P" * doctest::test_suite("bench"))

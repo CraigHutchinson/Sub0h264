@@ -72,7 +72,7 @@ static bool parseParamSets(const char* path, ParamSets& ps)
 TEST_CASE("SPS: flat_black_640x480 — Baseline profile")
 {
     Sps sps;
-    REQUIRE(findAndParseSps("flat_black_640x480.h264", sps));
+    REQUIRE(findAndParseSps("flat_black_baseline_640x480.h264", sps));
 
     CHECK(sps.valid_);
     CHECK(sps.profileIdc_ == cProfileBaseline);
@@ -104,7 +104,7 @@ TEST_CASE("SPS: baseline_640x480_short — Baseline profile")
 TEST_CASE("PPS: flat_black_640x480 — parse PPS after SPS")
 {
     auto ps = std::make_unique<ParamSets>();
-    REQUIRE(parseParamSets("flat_black_640x480.h264", *ps));
+    REQUIRE(parseParamSets("flat_black_baseline_640x480.h264", *ps));
 
     // Should have at least one SPS and one PPS
     const Sps* sps = ps->getSps(0);
@@ -164,7 +164,7 @@ TEST_CASE("SPS: frameCropping absent → croppedWidth == width (FM-13 §7.3.2.1.
     // Baseline stream has no frame_cropping_flag; croppedWidth must equal width.
     // §7.3.2.1.1: frame_crop_* fields absent → defaults to full frame. [CHECKED §7.4.2.1]
     Sps sps;
-    REQUIRE(findAndParseSps("flat_black_640x480.h264", sps));
+    REQUIRE(findAndParseSps("flat_black_baseline_640x480.h264", sps));
 
     CHECK_FALSE(sps.frameCropping_);
     CHECK(sps.croppedWidth() == sps.width());
@@ -176,7 +176,7 @@ TEST_CASE("SPS: derived variables from parsed fields (FM-1 §7.4.2.1)")
     // §7.4.2.1: MaxFrameNum = 2^(log2_max_frame_num_minus4 + 4)
     // PicWidthInMbs = pic_width_in_mbs_minus1 + 1, etc. [CHECKED §7.4.2.1]
     Sps sps;
-    REQUIRE(findAndParseSps("flat_black_640x480.h264", sps));
+    REQUIRE(findAndParseSps("flat_black_baseline_640x480.h264", sps));
 
     // widthInMbs_ = pic_width_in_mbs_minus1 + 1 = 640/16 = 40
     CHECK(sps.widthInMbs_ == 40U);
@@ -211,7 +211,7 @@ TEST_CASE("PPS: CABAC fixture parses correctly — entropy mode and validity (FM
     // §7.3.2.2: PPS must parse without error and entropy_coding_mode_flag=1 (CABAC).
     // [CHECKED §7.3.2.2]
     auto ps = std::make_unique<ParamSets>();
-    REQUIRE(parseParamSets("bouncing_ball_cabac.h264", *ps));
+    REQUIRE(parseParamSets("bouncing_ball_main.h264", *ps));
 
     const Pps* pps = nullptr;
     for (uint8_t i = 0U; i < 255U; ++i)

@@ -208,7 +208,7 @@ TEST_CASE("Quality I-only: scrolling texture vs raw source")
     // All-IDR encode of scrolling checkerboard. Tests I_4x4/I_16x16
     // prediction, CAVLC, dequant, IDCT across varied content.
     double minPsnr = decodeAndMeasurePsnr(
-        "scrolling_texture_ionly.h264", "scrolling_texture_ionly_raw.yuv",
+        "scrolling_texture_ionly_baseline.h264", "scrolling_texture_ionly_baseline_raw.yuv",
         320U, 240U, 30U);
     CHECK(minPsnr >= cIFrameMinPsnrDb);
     if (minPsnr >= cExcellentPsnrDb)
@@ -220,7 +220,7 @@ TEST_CASE("Quality I-only: bouncing ball vs raw source")
     // All-IDR encode of bouncing ball over noise. Tests intra prediction
     // accuracy on noisy content (stresses residual coding).
     double minPsnr = decodeAndMeasurePsnr(
-        "bouncing_ball_ionly.h264", "bouncing_ball_ionly_raw.yuv",
+        "bouncing_ball_ionly_baseline.h264", "bouncing_ball_ionly_baseline_raw.yuv",
         320U, 240U, 30U);
     CHECK(minPsnr >= cIFrameMinPsnrDb);
     if (minPsnr >= cExcellentPsnrDb)
@@ -232,7 +232,7 @@ TEST_CASE("Quality I-only: gradient pan vs raw source")
     // All-IDR encode of smooth gradient pan. Gradients are sensitive to
     // quantization rounding — tests transform precision.
     double minPsnr = decodeAndMeasurePsnr(
-        "gradient_pan_ionly.h264", "gradient_pan_ionly_raw.yuv",
+        "gradient_pan_ionly_baseline.h264", "gradient_pan_ionly_baseline_raw.yuv",
         320U, 240U, 30U);
     CHECK(minPsnr >= cIFrameMinPsnrDb);
     if (minPsnr >= cExcellentPsnrDb)
@@ -246,7 +246,7 @@ TEST_CASE("Quality I+P: scrolling texture vs raw source")
     // IDR every 10 frames. P-frames exercise motion compensation.
     // Known issue: P-frame inter prediction has quality bugs.
     double minPsnr = decodeAndMeasurePsnr(
-        "scrolling_texture.h264", "scrolling_texture_raw.yuv",
+        "scrolling_texture_baseline.h264", "scrolling_texture_baseline_raw.yuv",
         320U, 240U, 30U);
     CHECK(minPsnr >= cIPFrameMinPsnrDb);
 }
@@ -254,7 +254,7 @@ TEST_CASE("Quality I+P: scrolling texture vs raw source")
 TEST_CASE("Quality I+P: bouncing ball vs raw source")
 {
     double minPsnr = decodeAndMeasurePsnr(
-        "bouncing_ball.h264", "bouncing_ball_raw.yuv",
+        "bouncing_ball_baseline.h264", "bouncing_ball_baseline_raw.yuv",
         320U, 240U, 30U);
     CHECK(minPsnr >= cIPFrameMinPsnrDb);
 }
@@ -262,7 +262,7 @@ TEST_CASE("Quality I+P: bouncing ball vs raw source")
 TEST_CASE("Quality I+P: gradient pan vs raw source")
 {
     double minPsnr = decodeAndMeasurePsnr(
-        "gradient_pan.h264", "gradient_pan_raw.yuv",
+        "gradient_pan_baseline.h264", "gradient_pan_baseline_raw.yuv",
         320U, 240U, 30U);
     CHECK(minPsnr >= cIPFrameMinPsnrDb);
 }
@@ -275,7 +275,7 @@ TEST_CASE("Quality I+P: pan left (negative horizontal MV)")
     // Tests §8.4.1.3 MV prediction with negative MV components and
     // §8.4.2.2.1 luma MC with negative fractional offsets.
     double minPsnr = decodeAndMeasurePsnr(
-        "pan_left.h264", "pan_left_raw.yuv", 320U, 240U, 30U);
+        "pan_left_baseline.h264", "pan_left_baseline_raw.yuv", 320U, 240U, 30U);
     CHECK(minPsnr >= cIPFrameMinPsnrDb);
 }
 
@@ -284,7 +284,7 @@ TEST_CASE("Quality I+P: pan up (negative vertical MV)")
     // Pure vertical motion: dx=0, dy=-3. Tests vertical-only MC paths
     // and skip MV derivation with vertical-dominant neighbors. §8.4.2
     double minPsnr = decodeAndMeasurePsnr(
-        "pan_up.h264", "pan_up_raw.yuv", 320U, 240U, 30U);
+        "pan_up_baseline.h264", "pan_up_baseline_raw.yuv", 320U, 240U, 30U);
     CHECK(minPsnr >= cIPFrameMinPsnrDb);
 }
 
@@ -292,7 +292,7 @@ TEST_CASE("Quality I+P: pan down (positive vertical MV)")
 {
     // Pure downward motion: tests positive vertical-only MVs.
     double minPsnr = decodeAndMeasurePsnr(
-        "pan_down.h264", "pan_down_raw.yuv", 320U, 240U, 30U);
+        "pan_down_baseline.h264", "pan_down_baseline_raw.yuv", 320U, 240U, 30U);
     CHECK(minPsnr >= cIPFrameMinPsnrDb);
 }
 
@@ -302,7 +302,7 @@ TEST_CASE("Quality I+P: fast diagonal pan (large MVs)")
     // diagonal MC (all 16 fractional positions §8.4.2.2.1),
     // and high-motion skip derivation.
     double minPsnr = decodeAndMeasurePsnr(
-        "pan_fast_diag.h264", "pan_fast_diag_raw.yuv", 320U, 240U, 30U);
+        "pan_fast_diag_baseline.h264", "pan_fast_diag_baseline_raw.yuv", 320U, 240U, 30U);
     CHECK(minPsnr >= cIPFrameMinPsnrDb);
 }
 
@@ -311,7 +311,7 @@ TEST_CASE("Quality I+P: slow sub-pixel pan")
     // dx=1, dy=1: sub-pixel dominant motion. Exercises half-pel and
     // quarter-pel interpolation accuracy §8.4.2.2.1.
     double minPsnr = decodeAndMeasurePsnr(
-        "pan_slow.h264", "pan_slow_raw.yuv", 320U, 240U, 30U);
+        "pan_slow_baseline.h264", "pan_slow_baseline_raw.yuv", 320U, 240U, 30U);
     CHECK(minPsnr >= cIPFrameMinPsnrDb);
 }
 
@@ -320,7 +320,7 @@ TEST_CASE("Quality I+P: static scene (zero motion)")
     // No motion: all P-frames should use skip with MV=(0,0) per §8.4.1.1.
     // Tests zero-MV MC (full-pel copy) and skip-dominated decode.
     double minPsnr = decodeAndMeasurePsnr(
-        "static_scene.h264", "static_scene_raw.yuv", 320U, 240U, 30U);
+        "static_scene_baseline.h264", "static_scene_baseline_raw.yuv", 320U, 240U, 30U);
     CHECK(minPsnr >= cIPFrameMinPsnrDb);
 }
 

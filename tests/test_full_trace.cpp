@@ -32,7 +32,7 @@ static uint16_t crc16_buf(const int16_t* data, uint32_t count) {
 
 TEST_CASE("Full trace: bouncing ball IDR block-level decode")
 {
-    auto h264 = getFixture("bouncing_ball_ionly.h264");
+    auto h264 = getFixture("bouncing_ball_ionly_baseline.h264");
     if (h264.empty()) { MESSAGE("fixture not found"); return; }
 
     FILE* fp = std::fopen("build/trace_sub0h264.txt", "w");
