@@ -67,7 +67,7 @@ TEST_CASE("CABAC diag: flat_main MB(0,0) engine state trace")
     FILE* binLog = std::fopen("cabac_diag_trace.txt", "w");
     REQUIRE(binLog != nullptr);
     std::fprintf(binLog, "# binIdx ctxState newState symbol range offset\n");
-    decoder->cabacEngine().enableBinTrace(binLog, 2000U);
+    decoder->cabacEngine().enableBinTrace(binLog);
 
     std::vector<NalBounds> bounds;
     findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);

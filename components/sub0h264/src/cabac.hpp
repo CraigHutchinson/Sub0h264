@@ -452,20 +452,17 @@ public:
         if (codIRange_ < 256U)
             renormalize();
 
-        // CABAC bin trace — compiled out unless SUB0H264_TRACE is defined.
-        // Zero overhead in release builds. [CHECKED: no impact on hot path]
-#if SUB0H264_TRACE
-        if (binTraceEnabled_ && binTraceCount_ < binTraceMax_)
+        // CABAC bin trace — compiled out unless SUB0H264_ENTROPY_TRACE is defined.
+        // Zero overhead in production/release builds.
+#if defined(SUB0H264_ENTROPY_TRACE)
+        if (binTraceEnabled_ && binTraceLog_)
         {
-            if (binTraceLog_)
-            {
-                int32_t ctxIdx = binTraceCtxBase_ ? static_cast<int32_t>(&ctx - binTraceCtxBase_) : -1;
-                std::fprintf(binTraceLog_, "%lu %lu %u %lu %lu %lu %ld\n",
-                    (unsigned long)binTraceCount_, (unsigned long)state,
-                    (unsigned)ctx.mpsState, (unsigned long)symbol,
-                    (unsigned long)codIRange_, (unsigned long)codIOffset_,
-                    (long)ctxIdx);
-            }
+            int32_t ctxIdx = binTraceCtxBase_ ? static_cast<int32_t>(&ctx - binTraceCtxBase_) : -1;
+            std::fprintf(binTraceLog_, "%lu %lu %u %lu %lu %lu %ld\n",
+                (unsigned long)binTraceCount_, (unsigned long)state,
+                (unsigned)ctx.mpsState, (unsigned long)symbol,
+                (unsigned long)codIRange_, (unsigned long)codIOffset_,
+                (long)ctxIdx);
             ++binTraceCount_;
         }
 #endif
@@ -488,15 +485,14 @@ public:
             symbol = 0U;
         }
 
-#if SUB0H264_TRACE
-        if (binTraceEnabled_ && binTraceCount_ < binTraceMax_)
+#if defined(SUB0H264_ENTROPY_TRACE)
+        if (binTraceEnabled_ && binTraceLog_)
         {
-            if (binTraceLog_)
-                std::fprintf(binTraceLog_, "%lu BP %lu %lu %lu\n",
-                    (unsigned long)binTraceCount_,
-                    (unsigned long)symbol,
-                    (unsigned long)codIRange_,
-                    (unsigned long)codIOffset_);
+            std::fprintf(binTraceLog_, "%lu BP %lu %lu %lu\n",
+                (unsigned long)binTraceCount_,
+                (unsigned long)symbol,
+                (unsigned long)codIRange_,
+                (unsigned long)codIOffset_);
             ++binTraceCount_;
         }
 #endif
@@ -569,17 +565,26 @@ public:
     /** Get current offset (for diagnostic comparison). */
     uint32_t offset() const noexcept { return codIOffset_; }
 
-    /** Enable per-bin trace to a file — for CABAC debugging. */
-    void enableBinTrace(FILE* log, uint32_t maxBins = 200U,
-                        const CabacCtx* ctxBase = nullptr) noexcept
+    /** Enable per-bin trace to a file — for CABAC debugging.
+     *  Captures all bins until disableBinTrace() is called. Only has
+     *  effect in SUB0H264_ENTROPY_TRACE builds; no-op otherwise. */
+    void enableBinTrace([[maybe_unused]] FILE* log,
+                        [[maybe_unused]] const CabacCtx* ctxBase = nullptr) noexcept
     {
+#if defined(SUB0H264_ENTROPY_TRACE)
         binTraceLog_ = log;
         binTraceEnabled_ = true;
-        binTraceMax_ = maxBins;
         binTraceCount_ = 0U;
         binTraceCtxBase_ = ctxBase;
+#endif
     }
-    void disableBinTrace() noexcept { binTraceEnabled_ = false; }
+    /** Disable bin trace. No-op in non-trace builds. */
+    void disableBinTrace() noexcept
+    {
+#if defined(SUB0H264_ENTROPY_TRACE)
+        binTraceEnabled_ = false;
+#endif
+    }
 
     /** Capture a snapshot of the engine's arithmetic state.
      *  The snapshot includes codIRange, codIOffset, and the bitstream position.
@@ -613,15 +618,16 @@ private:
     uint32_t codIRange_ = 510U;
     uint32_t codIOffset_ = 0U;
 
-    // Bin trace (for CABAC debugging)
+    // Bin trace state — only meaningful in SUB0H264_ENTROPY_TRACE builds
+#if defined(SUB0H264_ENTROPY_TRACE)
     FILE* binTraceLog_ = nullptr;
     bool binTraceEnabled_ = false;
-    uint32_t binTraceMax_ = 0U;
     uint32_t binTraceCount_ = 0U;
     const CabacCtx* binTraceCtxBase_ = nullptr;
 public:
     uint32_t binTraceCount() const noexcept { return binTraceCount_; }
 private:
+#endif
 
     void renormalize() noexcept
     {

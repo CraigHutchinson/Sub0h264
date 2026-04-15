@@ -150,6 +150,25 @@ public:
     CabacContextSet& cabacContexts() noexcept { return cabacCtx_; }
     CabacNeighborCtx& cabacNeighbors() noexcept { return cabacNeighbor_; }
 
+    /** Set the FILE* that receives the entropy (CABAC/CAVLC) bin/symbol trace.
+     *  Pass nullptr to disable. Only has effect in SUB0H264_ENTROPY_TRACE builds.
+     *  Call before decoding starts. */
+    void setEntropyTraceOutput([[maybe_unused]] FILE* output) noexcept
+    {
+#if defined(SUB0H264_ENTROPY_TRACE)
+        entropyTraceFile_ = output;
+#endif
+    }
+
+    /** Set which CABAC slice (0-based) to trace (default 1 = first P-frame).
+     *  Slice N is traced; all other slices have CABAC trace disabled. */
+    void setEntropyTraceSlice([[maybe_unused]] uint32_t slice) noexcept
+    {
+#if defined(SUB0H264_ENTROPY_TRACE)
+        cabacTraceSlice_ = slice;
+#endif
+    }
+
     /** Enable per-section profiling. Pass nullptr to disable. */
     void setProfile(SectionProfile* profile) noexcept { profile_ = profile; }
 
@@ -188,6 +207,11 @@ private:
     std::vector<uint8_t> mbIntra4x4Modes_;  // [mbIdx * 16 + blkIdx]
 
     // CABAC state
+    uint32_t cabacSliceCount_ = 0U; ///< Counts CABAC slice inits; used for per-slice trace gating
+#if defined(SUB0H264_ENTROPY_TRACE)
+    FILE*    entropyTraceFile_  = nullptr; ///< Trace output file (set via setEntropyTraceOutput)
+    uint32_t cabacTraceSlice_   = 1U;      ///< Which CABAC slice to trace (set via setEntropyTraceSlice)
+#endif
     CabacEngine cabacEngine_;
     CabacContextSet cabacCtx_;
     CabacNeighborCtx cabacNeighbor_; ///< Per-MB CABAC neighbor state (skip, I4x4, CBP, chroma mode)
@@ -563,9 +587,10 @@ private:
         std::fill(mbIntra4x4Modes_.begin(), mbIntra4x4Modes_.end(), static_cast<uint8_t>(2U));
 
 #if SUB0H264_TRACE
-        std::printf("[DBG] Slice header parsed: type=%u firstMb=%lu frameNum=%u qpDelta=%d bitOffset=%lu\n",
+        std::printf("[DBG] Slice header parsed: type=%u firstMb=%lu frameNum=%u qpDelta=%d bitOffset=%lu cabacIdc=%u numRefL0=%u weightedPred=%u\n",
             static_cast<unsigned>(sh.sliceType_), (unsigned long)sh.firstMbInSlice_,
-            sh.frameNum_, sh.sliceQpDelta_, (unsigned long)br.bitOffset());
+            sh.frameNum_, sh.sliceQpDelta_, (unsigned long)br.bitOffset(),
+            sh.cabacInitIdc_, sh.numRefIdxActiveL0_, pps->weightedPredFlag_ ? 1U : 0U);
 #endif
 
         // Compute effective QP
@@ -594,8 +619,25 @@ private:
 
             // Initialize arithmetic engine — §9.3.1.2
             cabacEngine_.init(br);
-#ifdef SUB0H264_TRACE_I4X4_BLOCKS
-            cabacEngine_.enableBinTrace(stderr, 10000U, cabacCtx_.data());
+#if defined(SUB0H264_ENTROPY_TRACE)
+            // Entropy trace: enable CABAC bin trace for the target slice only.
+            // Target slice and output file are set at runtime via
+            // setEntropyTraceSlice() / setEntropyTraceOutput().
+            // Only manage the bin trace state when an output file is configured
+            // via setEntropyTraceOutput(). If null, leave any externally-set
+            // trace state alone (allows test code to call enableBinTrace directly).
+            if (entropyTraceFile_)
+            {
+                if (cabacSliceCount_ == cabacTraceSlice_)
+                {
+                    std::fprintf(entropyTraceFile_, "OUR_SLICE_START slice=%u R=%u O=%u\n",
+                        cabacSliceCount_, cabacEngine_.range(), cabacEngine_.offset());
+                    cabacEngine_.enableBinTrace(entropyTraceFile_, cabacCtx_.data());
+                }
+                else
+                    cabacEngine_.disableBinTrace();
+            }
+            ++cabacSliceCount_;
 #endif
 
             // Initialize per-MB CABAC neighbor context
@@ -691,6 +733,11 @@ private:
                     // Stop decoding if bitstream exhausted
                     if (br.isExhausted())
                         break;
+
+                    // Emit CABAC MB-start trace (a=200, b=bitPosition).
+                    // Allows tests to verify the CABAC bit-position at the start of each MB.
+                    trace_.onMbStart(mbX, mbY, 200U,
+                                     static_cast<uint32_t>(cabacEngine_.bitPosition()));
 
                     // Decode mb_skip_flag — §9.3.3.1.1.1
                     bool leftSkip, topSkip;
@@ -1614,10 +1661,11 @@ private:
 
     // ── P-frame decode methods ──────────────────────────────────────────
 
-    /** Fill all 16 4x4 blocks of an MB with the same MV. */
-    void setMbMotion(uint32_t mbIdx, MotionVector mv, int8_t refIdx) noexcept
+    /** Fill all 16 4x4 blocks of an MB with the same MV (and optional MVD for CABAC context). */
+    void setMbMotion(uint32_t mbIdx, MotionVector mv, int8_t refIdx,
+                     MotionVector mvd = {0, 0}) noexcept
     {
-        MbMotionInfo info = { mv, refIdx, true };
+        MbMotionInfo info = { mv, mvd, refIdx, true };
         for (uint32_t i = 0U; i < 16U; ++i)
             mbMotion_[mbIdx * 16U + i] = info;
     }
@@ -1627,9 +1675,10 @@ private:
      *  For 8x16: part 0 = cols 0-1 (8 blocks), part 1 = cols 2-3 (8 blocks).
      */
     void setPartitionMotion(uint32_t mbIdx, uint32_t mbType, uint32_t partIdx,
-                            MotionVector mv, int8_t refIdx) noexcept
+                            MotionVector mv, int8_t refIdx,
+                            MotionVector mvd = {0, 0}) noexcept
     {
-        MbMotionInfo info = { mv, refIdx, true };
+        MbMotionInfo info = { mv, mvd, refIdx, true };
         if (mbType == 1U) // 16x8
         {
             uint32_t startRow = partIdx * 2U;
@@ -1926,7 +1975,7 @@ private:
             // Partition 1 (bottom 16x8): §8.4.1.3.1 directional shortcut: use LEFT.
             {
                 MbMotionInfo a1 = getMotionAt4x4(mb4x - 1, mb4y + 2); // left at row 2
-                MbMotionInfo b1 = { mvPart[0], static_cast<int8_t>(refIdxL0[0]), true }; // partition 0
+                MbMotionInfo b1 = { mvPart[0], {}, static_cast<int8_t>(refIdxL0[0]), true }; // partition 0
                 // C = top-right of partition at (16, 7) relative to MB → unavailable.
                 MbMotionInfo c1 = getMotionAt4x4(mb4x + 4, mb4y + 1);
                 if (!c1.available)
@@ -1967,7 +2016,7 @@ private:
 
             // Partition 1 (right 8x16): C=topRight directly if same refIdx
             {
-                MbMotionInfo a1 = { mvPart[0], static_cast<int8_t>(refIdxL0[0]), true };
+                MbMotionInfo a1 = { mvPart[0], {}, static_cast<int8_t>(refIdxL0[0]), true };
                 MbMotionInfo b1 = getMotionAt4x4(mb4x + 2, mb4y - 1);
                 MbMotionInfo c1 = getMotionAt4x4(mb4x + 4, mb4y - 1);
                 if (!c1.available)
@@ -2014,7 +2063,7 @@ private:
                 trace_.onMvPrediction(mbX, mbY, s, mvp, {subMvdX[s], subMvdY[s]}, mv, a, b, c);
 
                 // Store this sub-partition's MV in its 4 blocks (2x2 in 4x4 grid)
-                MbMotionInfo info = { mv, static_cast<int8_t>(refIdxL0[s]), true };
+                MbMotionInfo info = { mv, {subMvdX[s], subMvdY[s]}, static_cast<int8_t>(refIdxL0[s]), true };
                 for (uint32_t r = 0U; r < 2U; ++r)
                     for (uint32_t cc = 0U; cc < 2U; ++cc)
                         mbMotion_[mbIdx * 16U + (subOffY[s] + r) * 4U + subOffX[s] + cc] = info;
@@ -2946,6 +2995,33 @@ private:
         uint8_t refIdxL0[4] = {};
         int16_t mvdX[4] = {}, mvdY[4] = {};
         uint32_t subMbType[4] = {};
+        const int32_t mb4x = static_cast<int32_t>(mbX) * 4;
+        const int32_t mb4y = static_cast<int32_t>(mbY) * 4;
+
+        // §9.3.3.1.1.7 — MVD context: absMvdNeighbor = |mvdA[comp]| + |mvdB[comp]|
+        // where A=left-neighbor partition, B=top-neighbor partition of the partition top-left.
+        // Within-MB neighbors (partitions decoded earlier in this MB) use local mvdX[]/mvdY[];
+        // cross-MB neighbors read the stored mvd from mbMotion_ via getMotionAt4x4().
+        auto getMvdComp = [&](int32_t blk4x, int32_t blk4y, bool xComp) -> int32_t {
+            if (blk4x < mb4x || blk4y < mb4y) {
+                // External: previous MB or row above
+                MbMotionInfo info = getMotionAt4x4(blk4x, blk4y);
+                if (!info.available) return 0;
+                return xComp ? info.mvd.x : info.mvd.y;
+            }
+            // Internal: within current MB — derive sub-partition index
+            uint32_t inCol = static_cast<uint32_t>(blk4x) - static_cast<uint32_t>(mb4x);
+            uint32_t inRow = static_cast<uint32_t>(blk4y) - static_cast<uint32_t>(mb4y);
+            uint32_t pIdx = 0U;
+            if      (mbTypeRaw == 1U) pIdx = (inRow >= 2U) ? 1U : 0U;       // 16x8
+            else if (mbTypeRaw == 2U) pIdx = (inCol >= 2U) ? 1U : 0U;       // 8x16
+            else /* P_8x8 */          pIdx = (inRow >= 2U ? 2U : 0U) + (inCol >= 2U ? 1U : 0U);
+            return xComp ? mvdX[pIdx] : mvdY[pIdx];
+        };
+        auto absMvdNbr = [&](int32_t tlX, int32_t tlY, bool xComp) -> int32_t {
+            return std::abs(getMvdComp(tlX - 1, tlY,     xComp))   // left
+                 + std::abs(getMvdComp(tlX,     tlY - 1, xComp));  // top
+        };
 
         if (mbTypeRaw <= 2U)
         {
@@ -2956,10 +3032,18 @@ private:
                     refIdxL0[p] = cabacDecodeRefIdx(cabacEngine_, cabacCtx_.data(), 0U,
                                                      numRefIdxL0Active - 1U);
             }
+            // Top-left 4x4 position of each partition (in absolute 4x4 units):
+            //   16x16 (p=0): (mb4x, mb4y)
+            //   16x8  (p=0): (mb4x, mb4y),   (p=1): (mb4x, mb4y+2)
+            //   8x16  (p=0): (mb4x, mb4y),   (p=1): (mb4x+2, mb4y)
             for (uint32_t p = 0U; p < numParts; ++p)
             {
-                mvdX[p] = cabacDecodeMvd(cabacEngine_, cabacCtx_.data(), cCtxMvdX, 0);
-                mvdY[p] = cabacDecodeMvd(cabacEngine_, cabacCtx_.data(), cCtxMvdY, 0);
+                int32_t tlX = mb4x + (mbTypeRaw == 2U && p == 1U ? 2 : 0); // 8x16 p1 → col+2
+                int32_t tlY = mb4y + (mbTypeRaw == 1U && p == 1U ? 2 : 0); // 16x8 p1 → row+2
+                int32_t nbrX = absMvdNbr(tlX, tlY, true);
+                int32_t nbrY = absMvdNbr(tlX, tlY, false);
+                mvdX[p] = cabacDecodeMvd(cabacEngine_, cabacCtx_.data(), cCtxMvdX, nbrX);
+                mvdY[p] = cabacDecodeMvd(cabacEngine_, cabacCtx_.data(), cCtxMvdY, nbrY);
             }
         }
         else
@@ -2973,28 +3057,38 @@ private:
                     refIdxL0[s] = cabacDecodeRefIdx(cabacEngine_, cabacCtx_.data(), 0U,
                                                      numRefIdxL0Active - 1U);
             }
+            // P_8x8 sub-partition origins in 4x4 units: (0,0),(2,0),(0,2),(2,2)
+            static constexpr int32_t c8x8Off4x[4] = {0, 2, 0, 2};
+            static constexpr int32_t c8x8Off4y[4] = {0, 0, 2, 2};
             // MVD per sub-partition — §7.3.5.2
-            // sub_mb_type 0=8x8(1 MVD), 1=8x4(2), 2=4x8(2), 3=4x4(4)
+            // sub_mb_type 0=8x8(1 MVD), 1=8x4(2 MVD), 2=4x8(2 MVD), 3=4x4(4 MVD)
             // Store first MVD per 8x8 for MV prediction; consume all for bitstream sync.
             for (uint32_t s = 0U; s < 4U; ++s)
             {
+                int32_t tlX = mb4x + c8x8Off4x[s];
+                int32_t tlY = mb4y + c8x8Off4y[s];
+                int32_t nbrX = absMvdNbr(tlX, tlY, true);
+                int32_t nbrY = absMvdNbr(tlX, tlY, false);
+
                 uint32_t numSubParts = 1U;
                 if (subMbType[s] == 1U || subMbType[s] == 2U) numSubParts = 2U;
                 else if (subMbType[s] == 3U) numSubParts = 4U;
 
                 for (uint32_t sp = 0U; sp < numSubParts; ++sp)
                 {
-                    int16_t dx = cabacDecodeMvd(cabacEngine_, cabacCtx_.data(), cCtxMvdX, 0);
-                    int16_t dy = cabacDecodeMvd(cabacEngine_, cabacCtx_.data(), cCtxMvdY, 0);
+                    // sp=0: use neighbor context; sp>0: use sp=0 MVD as context (§9.3.3.1.1.7)
+                    int32_t ctxX = (sp == 0U) ? nbrX : std::abs(mvdX[s]);
+                    int32_t ctxY = (sp == 0U) ? nbrY : std::abs(mvdY[s]);
+                    int16_t dx = cabacDecodeMvd(cabacEngine_, cabacCtx_.data(), cCtxMvdX, ctxX);
+                    int16_t dy = cabacDecodeMvd(cabacEngine_, cabacCtx_.data(), cCtxMvdY, ctxY);
                     if (sp == 0U) { mvdX[s] = dx; mvdY[s] = dy; }
                 }
             }
         }
 
         // MV prediction + MC — same logic as CAVLC path (§8.4.1.3)
+        // mb4x/mb4y declared earlier for MVD context derivation
         uint32_t mbIdx = mbY * widthInMbs_ + mbX;
-        int32_t mb4x = static_cast<int32_t>(mbX) * 4;
-        int32_t mb4y = static_cast<int32_t>(mbY) * 4;
 
         uint8_t predLuma[256], predU[64], predV[64];
         std::memset(predLuma, 128U, 256U);
@@ -3035,8 +3129,9 @@ private:
             MotionVector mv = { static_cast<int16_t>(mvp.x + partMvdX),
                                 static_cast<int16_t>(mvp.y + partMvdY) };
 
-            // Store MV for all 4x4 blocks in this partition
-            setPartitionMotion(mbIdx, mbTypeRaw, partIdx, mv, ri);
+            // Store MV (and MVD for CABAC §9.3.3.1.1.7 neighbor context)
+            setPartitionMotion(mbIdx, mbTypeRaw, partIdx, mv, ri,
+                               {partMvdX, partMvdY});
 
             // Luma MC
             int32_t refX = static_cast<int32_t>(mbX * cMbSize + partX) + (mv.x >> 2);
@@ -3073,6 +3168,8 @@ private:
                                   w.chromaWeight[1], w.chromaOffset[1], w.chromaWeightFlag);
             }
         };
+
+        // (per-step bp trace for this MB printed inline in MVD decode loop)
 
         if (mbTypeRaw == 0U)
         {
@@ -3111,11 +3208,20 @@ private:
         cabacNeighbor_[mbIdx].cbp = cbp;
 
         // §7.3.5: transform_size_8x8_flag ae(v) after CBP for P-inter. [CHECKED §7.3.5]
-        // Condition per spec: CodedBlockPatternLuma>0 && transform_8x8_mode_flag
+        // Condition per spec §7.3.5: CodedBlockPatternLuma>0 && transform_8x8_mode_flag
         //   && mb_type!=I_NxN && noSubMbPartSizeLessThan8x8Flag.
-        // For P_L0_16x16, noSubMbPartSizeLessThan8x8Flag=1 always (no sub-partitions).
+        // §7.3.5 noSubMbPartSizeLessThan8x8Flag:
+        //   Non-8x8 partition types (16x16, 16x8, 8x16): always 1 (no sub-partitions).
+        //   P_8x8: 0 if any sub-partition has width<8 or height<8 (subMbType 1,2,3).
+        //          1 only if all 4 sub-partitions are 8x8 (subMbType == 0). [CHECKED §7.3.5]
+        bool noSubMbPartSizeLessThan8x8Flag = true;
+        if (mbTypeRaw == 3U) // P_8x8
+        {
+            for (uint32_t s = 0U; s < 4U; ++s)
+                if (subMbType[s] != 0U) { noSubMbPartSizeLessThan8x8Flag = false; break; }
+        }
         bool use8x8Inter = false;
-        if (cbpLuma != 0U && pps.transform8x8Mode_ != 0U)
+        if (cbpLuma != 0U && pps.transform8x8Mode_ != 0U && noSubMbPartSizeLessThan8x8Flag)
         {
             use8x8Inter = cabacEngine_.decodeBin(cabacCtx_[cCtxTransform8x8]) != 0U;
         }
@@ -3179,9 +3285,11 @@ private:
                 if ((cbpLuma >> group8x8) & 1U)
                 {
                     // §9.3.3.1.1.9: coded_block_flag ctxIdxInc for luma 4x4 (cat 2)
-                    // P-inter: unavailable neighbor → condTermFlag=0 (not 1 as for intra)
-                    //TODO: This shoudl be 1 by defasult? Needs detailed spec, and also confirm different to other conditions of same name etc.
-                    uint32_t leftNnz = 0U, topNnz = 0U; // unavailable → not coded (inter)
+                    // For P-inter: unavailable neighbor → condTermFlag=0 (verified empirically).
+                    // NOTE: spec §9.3.3.1.1.9 says condTermFlag=1 for ctxBlockCat<5, but
+                    // that is the intra interpretation — for inter the effective behavior is 0.
+                    // [TODO: verify against reference encoder output vs spec §9.3.3.1.1.9]
+                    uint32_t leftNnz = 0U, topNnz = 0U; // unavailable → 0 for P-inter (empirical)
                     if (rasterIdx % 4U > 0U)
                         leftNnz = nnzLuma_[mbIdx * 16U + rasterIdx - 1U];
                     else if (mbX > 0U)
@@ -3192,8 +3300,8 @@ private:
                         topNnz = nnzLuma_[(mbIdx - widthInMbs_) * 16U + rasterIdx + 12U];
                     uint32_t cbfCtxInc = (leftNnz != 0U ? 1U : 0U) + (topNnz != 0U ? 2U : 0U);
 
-                    cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), coeffs, 16U, 2U, cbfCtxInc);
-                    nnzLuma_[mbIdx * 16U + rasterIdx] = 1U;
+                    uint32_t numNonZero = cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), coeffs, 16U, 2U, cbfCtxInc);
+                    nnzLuma_[mbIdx * 16U + rasterIdx] = (numNonZero > 0U) ? 1U : 0U;
                     inverseQuantize4x4(coeffs, qp);
                 }
                 else
@@ -3257,6 +3365,7 @@ private:
                 nnzCr_[mbIdx * 4U + bi] = (nnz > 0U) ? 1U : 0U;
             }
         }
+
 
         uint32_t uvStride = target.uvStride();
         for (uint32_t blkIdx = 0U; blkIdx < 4U; ++blkIdx)

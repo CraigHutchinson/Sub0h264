@@ -46,4 +46,6 @@ set(SUB0H264_TEST_SOURCES
     test_cabac_small.cpp
     test_hbands_pixel.cpp
     test_cabac_spec_units.cpp
+    test_pframe_cabac.cpp
+    test_pframe_cabac_diag.cpp
 )

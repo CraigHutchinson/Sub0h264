@@ -626,9 +626,8 @@ TEST_CASE("CABAC decode: flat gray per-MB bit positions for alignment check")
         decoder->processNal(nal);
     }
 
-    // With bitstream overrun protection, CABAC may decode fewer MBs
-    // than expected. Verify at least 1 MB was decoded.
-    REQUIRE(positions.size() >= 1U);
+    // Verify at least 3 MBs were decoded (needed for bit-position comparison).
+    REQUIRE(positions.size() >= 3U);
 
     MESSAGE("MB(0,0) start bit: " << positions[0].bitPos
             << " (Python: 33 after 9-bit init = 24+9)");
@@ -749,7 +748,7 @@ TEST_CASE("CABAC bin trace: first 200 bins of cabac_4mb_noisy")
     FILE* binLog = std::fopen("cabac_bin_trace.txt", "w");
     REQUIRE(binLog != nullptr);
     std::fprintf(binLog, "# binIdx ctxState newState symbol range offset\n");
-    decoder->cabacEngine().enableBinTrace(binLog, 500U);
+    decoder->cabacEngine().enableBinTrace(binLog);
 
     std::vector<NalBounds> bounds;
     findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
@@ -770,8 +769,9 @@ TEST_CASE("CABAC bin trace: first 200 bins of cabac_4mb_noisy")
     std::fclose(binLog);
     REQUIRE(frame != nullptr);
 
-    // Report file size
-    binLog = std::fopen("build/cabac_bin_trace.txt", "r");
+    // Report file size (same path as the write, so open succeeds regardless of CWD)
+    binLog = std::fopen("cabac_bin_trace.txt", "r");
+    REQUIRE(binLog != nullptr);
     std::fseek(binLog, 0, SEEK_END);
     long fileSize = std::ftell(binLog);
     std::fclose(binLog);

@@ -763,9 +763,9 @@ TEST_CASE("median3: spec-compliant median-of-three §8.4.1.3.1")
 
 TEST_CASE("computeMvPredictor: median of three available neighbors")
 {
-    MbMotionInfo a = {{4, 8}, 0, true};
-    MbMotionInfo b = {{12, 2}, 0, true};
-    MbMotionInfo c = {{8, 6}, 0, true};
+    MbMotionInfo a = {{4, 8}, {}, 0, true};
+    MbMotionInfo b = {{12, 2}, {}, 0, true};
+    MbMotionInfo c = {{8, 6}, {}, 0, true};
 
     MotionVector mvp = computeMvPredictor(a, b, c, 0);
     CHECK(mvp.x == 8);   // median(4, 12, 8)
@@ -774,7 +774,7 @@ TEST_CASE("computeMvPredictor: median of three available neighbors")
 
 TEST_CASE("computeMvPredictor: single neighbor available returns its MV")
 {
-    MbMotionInfo a = {{10, 20}, 0, true};
+    MbMotionInfo a = {{10, 20}, {}, 0, true};
     MbMotionInfo none = {};
 
     MotionVector mvp = computeMvPredictor(a, none, none, 0);

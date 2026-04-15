@@ -434,14 +434,31 @@ struct ResidualBlock4x4
  *  @param[out] block Decoded coefficients in raster order
  *  @return Result::Ok on success
  */
+/** Decode one 4x4 residual block using CAVLC.
+ *
+ *  @param traceFile  Optional FILE* for entropy trace output (SUB0H264_ENTROPY_TRACE builds).
+ *                    Pass nullptr (default) to disable per-symbol tracing.
+ *
+ *  When traceFile is non-null, emits per-symbol trace lines:
+ *    OUR_CAVLC coeff_token tc=N t1=M nC=K
+ *    OUR_CAVLC level[i]=V
+ *    OUR_CAVLC total_zeros=Z
+ *    OUR_CAVLC run_before[i]=R
+ */
 inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
                                       uint32_t maxCoeff, uint32_t startIdx,
-                                      ResidualBlock4x4& block) noexcept
+                                      ResidualBlock4x4& block,
+                                      [[maybe_unused]] FILE* traceFile = nullptr) noexcept
 {
     // §9.2 Step 2: coeff_token → TotalCoeff, TrailingOnes [CHECKED §9.2.1]
     // ~60% of blocks in typical P-frames have totalCoeff==0, so deferring
     // the 32-byte memset saves significant work on in-order cores.
     CoeffToken ct = decodeCoeffToken(br, nC);
+#if defined(SUB0H264_ENTROPY_TRACE)
+    if (traceFile)
+        std::fprintf(traceFile, "OUR_CAVLC coeff_token tc=%u t1=%u nC=%d\n",
+            ct.totalCoeff, ct.trailingOnes, nC);
+#endif
     block.totalCoeff = ct.totalCoeff;
 
     if (ct.totalCoeff == 0U)
@@ -488,6 +505,10 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
         }
 
         levels[levelIdx++] = static_cast<int16_t>(level);
+#if defined(SUB0H264_ENTROPY_TRACE)
+        if (traceFile)
+            std::fprintf(traceFile, "OUR_CAVLC level[%u]=%d\n", levelIdx - 1U, level);
+#endif
 
         /// Update suffixLength — ITU-T H.264 §9.2.2.
         /// Step 1: if suffixLength is 0, unconditionally set to 1.
@@ -526,6 +547,10 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
             if (totalZeros > maxTz)
                 totalZeros = maxTz;
         }
+#if defined(SUB0H264_ENTROPY_TRACE)
+        if (traceFile)
+            std::fprintf(traceFile, "OUR_CAVLC total_zeros=%u\n", totalZeros);
+#endif
 #if SUB0H264_TRACE
         // Trace total_zeros for all chroma AC blocks (maxCoeff=15) with tc 1..14
         if (maxCoeff == 15U && ct.totalCoeff >= 1U)
@@ -549,6 +574,10 @@ inline Result decodeResidualBlock4x4(BitReader& br, int32_t nC,
         {
             run = decodeRunBefore(br, zerosLeft);
             zerosLeft -= run;
+#if defined(SUB0H264_ENTROPY_TRACE)
+            if (traceFile)
+                std::fprintf(traceFile, "OUR_CAVLC run_before[%u]=%u\n", i, run);
+#endif
         }
         else if (i == ct.totalCoeff - 1U)
         {

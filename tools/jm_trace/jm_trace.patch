@@ -1,0 +1,142 @@
+diff --git a/source/app/ldecod/biaridecod.c b/source/app/ldecod/biaridecod.c
+index b900495..06f49a7 100644
+--- a/source/app/ldecod/biaridecod.c
++++ b/source/app/ldecod/biaridecod.c
+@@ -22,6 +22,12 @@
+ #include "memalloc.h"
+ #include "biaridecod.h"
+ 
++// Trace only slices >= JM_TRACE_FROM_SLICE (0=all, 1=skip IDR)
++#define JM_TRACE_FROM_SLICE 1
++#define JM_TRACE_MAX_BINS   INT_MAX
++static int jm_bin_count = 0;
++static int jm_slice_count = 0; // incremented at each CABAC init
++
+ 
+ #define B_BITS    10      // Number of bits to represent the whole coding interval
+ #define HALF      0x01FE  //(1 << (B_BITS-1)) - 2
+@@ -100,6 +106,10 @@ static inline unsigned int getword(DecodingEnvironmentPtr dep)
+ {
+   int *len = dep->Dcodestrm_len;
+   byte *p_code_strm = &dep->Dcodestrm[*len];
++  // Trace getword calls between slice start (jm_bin_count==0) and first bin
++  if (jm_slice_count >= JM_TRACE_FROM_SLICE && jm_bin_count == 0)
++    fprintf(stderr, "JM_GETWORD: byteOff=%d bytes=[%02X %02X] V_before=%u bl_before=?\n",
++      *len, p_code_strm[0], p_code_strm[1], dep->Dvalue);
+ #if(TRACE==2)
+   fprintf(p_trace, "get_byte: %d\n", *len);
+   fprintf(p_trace, "get_byte: %d\n", *len + 1);
+@@ -121,12 +131,28 @@ void arideco_start_decoding(DecodingEnvironmentPtr dep, unsigned char *code_buff
+   dep->Dcodestrm_len  = code_len;
+   *dep->Dcodestrm_len = firstbyte;
+ 
++  // Print the CABAC start byte offset before reading
++  if (jm_slice_count >= JM_TRACE_FROM_SLICE)
++    fprintf(stderr, "JM_CABAC_BYTES: byteOff=%d bytes=[%02X %02X %02X]\n",
++      firstbyte,
++      code_buffer[firstbyte], code_buffer[firstbyte+1], code_buffer[firstbyte+2]);
++
+   dep->Dvalue = getbyte(dep);
+   dep->Dvalue = (dep->Dvalue << 16) | getword(dep); // lookahead of 2 bytes: always make sure that bitstream buffer
+                                         // contains 2 more bytes than actual bitstream
+   dep->DbitsLeft = 15;
+   dep->Drange = HALF;
+ 
++  // Print slice marker and reset per-slice bin counter
++  if (jm_slice_count >= JM_TRACE_FROM_SLICE)
++  {
++    unsigned int eff_O = dep->Dvalue >> dep->DbitsLeft;
++    fprintf(stderr, "JM_SLICE_START slice=%d R=%u O=%u Dvalue=%u\n",
++      jm_slice_count, dep->Drange, eff_O, dep->Dvalue);
++  }
++  jm_slice_count++;
++  jm_bin_count = 0; // reset bin index per-slice
++
+ #if (2==TRACE)
+   fprintf(p_trace, "value: %d firstbyte: %d code_len: %d\n", dep->Dvalue >> dep->DbitsLeft, firstbyte, *code_len);
+ #endif
+@@ -160,21 +186,28 @@ int arideco_bits_read(DecodingEnvironmentPtr dep)
+ ************************************************************************
+ */
+ unsigned int biari_decode_symbol(DecodingEnvironment *dep, BiContextType *bi_ct )
+-{  
++{
+   unsigned int bit    = bi_ct->MPS;
+   unsigned int *value = &dep->Dvalue;
+-  unsigned int *range = &dep->Drange;  
++  unsigned int *range = &dep->Drange;
+   uint16       *state = &bi_ct->state;
+   unsigned int rLPS   = rLPS_table_64x4[*state][(*range>>6) & 0x03];
+   int *DbitsLeft = &dep->DbitsLeft;
++  unsigned int pre_value = *value, pre_range = *range;
++  int pre_state = *state, pre_mps = bi_ct->MPS, pre_bits = *DbitsLeft;
+ 
+   *range -= rLPS;
+ 
+   if(*value < (*range << *DbitsLeft))   //MPS
+   {
+-    *state = AC_next_state_MPS_64[*state]; // next state 
++    *state = AC_next_state_MPS_64[*state]; // next state
+     if( *range >= QUARTER )
+     {
++      if (jm_slice_count >= JM_TRACE_FROM_SLICE && jm_bin_count < JM_TRACE_MAX_BINS)
++        fprintf(stderr, "JM_BIN %d: s=%d mps=%d R=%u V=%u bl=%d rLPS=%u -> bit=%d R2=%u V2=%u bl2=%d\n",
++          jm_bin_count, pre_state, pre_mps, pre_range, pre_value, pre_bits,
++          rLPS, bit, *range, *value, *DbitsLeft);
++      jm_bin_count++;
+       return (bit);
+     }
+     else 
+@@ -198,10 +231,16 @@ unsigned int biari_decode_symbol(DecodingEnvironment *dep, BiContextType *bi_ct
+     *state = AC_next_state_LPS_64[*state]; // next state 
+   }
+ 
++  if (jm_slice_count >= JM_TRACE_FROM_SLICE && jm_bin_count < JM_TRACE_MAX_BINS)
++    fprintf(stderr, "JM_BIN %d: s=%d mps=%d R=%u V=%u bl=%d rLPS=%u -> bit=%d R2=%u V2=%u bl2=%d\n",
++      jm_bin_count, pre_state, pre_mps, pre_range, pre_value, pre_bits,
++      rLPS, bit, *range, *value, *DbitsLeft);
++  jm_bin_count++;
++
+   if( *DbitsLeft > 0 )
+-  {     
++  {
+     return (bit);
+-  } 
++  }
+   else
+   {
+     *value <<= 16;
+@@ -228,23 +267,28 @@ unsigned int biari_decode_symbol_eq_prob(DecodingEnvironmentPtr dep)
+    unsigned int *value = &dep->Dvalue;
+    int *DbitsLeft = &dep->DbitsLeft;
+ 
+-  if(--(*DbitsLeft) == 0)  
++  if(--(*DbitsLeft) == 0)
+   {
+-    *value = (*value << 16) | getword( dep );  // lookahead of 2 bytes: always make sure that bitstream buffer
+-                                             // contains 2 more bytes than actual bitstream
++    *value = (*value << 16) | getword( dep );
+     *DbitsLeft = 16;
+   }
+   tmp_value  = *value - (dep->Drange << *DbitsLeft);
+ 
++  unsigned int bit;
+   if (tmp_value < 0)
+   {
+-    return 0;
++    bit = 0;
+   }
+   else
+   {
+     *value = tmp_value;
+-    return 1;
++    bit = 1;
+   }
++  if (jm_slice_count >= JM_TRACE_FROM_SLICE && jm_bin_count < JM_TRACE_MAX_BINS)
++    fprintf(stderr, "JM_BIN %d: s=-1 mps=-1 R=%u V=%u bl=%d rLPS=0 -> bit=%d R2=%u V2=%u bl2=%d\n",
++      jm_bin_count, dep->Drange, *value, *DbitsLeft, bit, dep->Drange, *value, *DbitsLeft);
++  jm_bin_count++;
++  return bit;
+ }
+ 
+ /*!

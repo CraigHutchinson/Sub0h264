@@ -25,9 +25,10 @@ struct MotionVector
 /// Per-MB motion information stored for neighbor context.
 struct MbMotionInfo
 {
-    MotionVector mv;          ///< Motion vector (L0)
-    int8_t refIdx = -1;       ///< Reference frame index (-1 = intra/unavailable)
-    bool available = false;   ///< True if this MB/partition is available
+    MotionVector mv;           ///< Motion vector (L0, after adding MVD to predictor)
+    MotionVector mvd;          ///< Decoded MVD — stored for CABAC §9.3.3.1.1.7 context
+    int8_t refIdx = -1;        ///< Reference frame index (-1 = intra/unavailable)
+    bool available = false;    ///< True if this MB/partition is available
 };
 
 /** Compute the median of three signed values.
