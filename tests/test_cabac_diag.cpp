@@ -63,11 +63,21 @@ TEST_CASE("CABAC diag: flat_main MB(0,0) engine state trace")
         }
     });
 
-    // Enable bin trace too
+    // Also capture CABAC bins via the existing callback (append bin events)
     FILE* binLog = std::fopen("cabac_diag_trace.txt", "w");
     REQUIRE(binLog != nullptr);
-    std::fprintf(binLog, "# binIdx ctxState newState symbol range offset\n");
-    decoder->cabacEngine().enableBinTrace(binLog);
+    std::fprintf(binLog, "# binIdx ctxIdx symbol range offset\n");
+    auto origCallback = decoder->trace().callback_;
+    decoder->trace().setCallback([&](const TraceEvent& e) {
+        if (e.type == TraceEventType::CabacBin)
+        {
+            std::fprintf(binLog, "%u %d %u %u %d\n",
+                e.a, static_cast<int32_t>(e.b), e.c, e.d,
+                e.data ? static_cast<int>(e.data[0]) : 0);
+        }
+        // Forward to the original callback for structural events
+        if (origCallback) origCallback(e);
+    });
 
     std::vector<NalBounds> bounds;
     findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
@@ -80,7 +90,6 @@ TEST_CASE("CABAC diag: flat_main MB(0,0) engine state trace")
             break;
     }
 
-    decoder->cabacEngine().disableBinTrace();
     std::fclose(binLog);
 
     MESSAGE("MB(0,0) start bit: " << mbStartBit);

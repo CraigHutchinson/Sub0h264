@@ -11,7 +11,7 @@ endforeach()
 
 add_executable(Sub0h264_Tests ${_all_sources})
 
-target_link_libraries(Sub0h264_Tests PRIVATE Sub0h264::Sub0h264)
+target_link_libraries(Sub0h264_Tests PRIVATE Sub0h264::Sub0h264_Traced)
 target_include_directories(Sub0h264_Tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/vendor"
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -20,7 +20,6 @@ target_include_directories(Sub0h264_Tests PRIVATE
 # Path to test fixtures + Version.h from build dir for traceability
 target_compile_definitions(Sub0h264_Tests PRIVATE
     SUB0H264_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
-    SUB0H264_ENTROPY_TRACE=1
 )
 target_link_libraries(Sub0h264_Tests PRIVATE version::version)
 

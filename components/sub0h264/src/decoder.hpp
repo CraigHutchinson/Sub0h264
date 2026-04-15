@@ -150,25 +150,6 @@ public:
     CabacContextSet& cabacContexts() noexcept { return cabacCtx_; }
     CabacNeighborCtx& cabacNeighbors() noexcept { return cabacNeighbor_; }
 
-    /** Set the FILE* that receives the entropy (CABAC/CAVLC) bin/symbol trace.
-     *  Pass nullptr to disable. Only has effect in SUB0H264_ENTROPY_TRACE builds.
-     *  Call before decoding starts. */
-    void setEntropyTraceOutput([[maybe_unused]] FILE* output) noexcept
-    {
-#if defined(SUB0H264_ENTROPY_TRACE)
-        entropyTraceFile_ = output;
-#endif
-    }
-
-    /** Set which CABAC slice (0-based) to trace (default 1 = first P-frame).
-     *  Slice N is traced; all other slices have CABAC trace disabled. */
-    void setEntropyTraceSlice([[maybe_unused]] uint32_t slice) noexcept
-    {
-#if defined(SUB0H264_ENTROPY_TRACE)
-        cabacTraceSlice_ = slice;
-#endif
-    }
-
     /** Enable per-section profiling. Pass nullptr to disable. */
     void setProfile(SectionProfile* profile) noexcept { profile_ = profile; }
 
@@ -207,11 +188,7 @@ private:
     std::vector<uint8_t> mbIntra4x4Modes_;  // [mbIdx * 16 + blkIdx]
 
     // CABAC state
-    uint32_t cabacSliceCount_ = 0U; ///< Counts CABAC slice inits; used for per-slice trace gating
-#if defined(SUB0H264_ENTROPY_TRACE)
-    FILE*    entropyTraceFile_  = nullptr; ///< Trace output file (set via setEntropyTraceOutput)
-    uint32_t cabacTraceSlice_   = 1U;      ///< Which CABAC slice to trace (set via setEntropyTraceSlice)
-#endif
+    uint32_t cabacSliceCount_ = 0U; ///< Counts CABAC slice inits for SliceStart event indexing
     CabacEngine cabacEngine_;
     CabacContextSet cabacCtx_;
     CabacNeighborCtx cabacNeighbor_; ///< Per-MB CABAC neighbor state (skip, I4x4, CBP, chroma mode)
@@ -595,10 +572,12 @@ private:
 
         // Compute effective QP
         int32_t sliceQp = pps->picInitQp_ + sh.sliceQpDelta_;
-#ifdef SUB0H264_TRACE_I4X4_BLOCKS
-        std::fprintf(stderr, "SLICE: picInitQp=%d qpDelta=%d sliceQp=%d\n",
-            pps->picInitQp_, sh.sliceQpDelta_, sliceQp);
-#endif
+
+        // Emit SliceStart trace event (always — cheap callback check).
+        // The callback decides whether to enable entropy tracing for this slice.
+        trace_.onSliceStart(cabacSliceCount_,
+            static_cast<uint32_t>(sh.sliceType_),
+            pps->isCabac(), sliceQp);
 
         // Reference frame is obtained AFTER buildRefListL0() for P-slices
         // (moved below to avoid using stale L0 list from previous frame)
@@ -619,26 +598,14 @@ private:
 
             // Initialize arithmetic engine — §9.3.1.2
             cabacEngine_.init(br);
-#if defined(SUB0H264_ENTROPY_TRACE)
-            // Entropy trace: enable CABAC bin trace for the target slice only.
-            // Target slice and output file are set at runtime via
-            // setEntropyTraceSlice() / setEntropyTraceOutput().
-            // Only manage the bin trace state when an output file is configured
-            // via setEntropyTraceOutput(). If null, leave any externally-set
-            // trace state alone (allows test code to call enableBinTrace directly).
-            if (entropyTraceFile_)
-            {
-                if (cabacSliceCount_ == cabacTraceSlice_)
-                {
-                    std::fprintf(entropyTraceFile_, "OUR_SLICE_START slice=%u R=%u O=%u\n",
-                        cabacSliceCount_, cabacEngine_.range(), cabacEngine_.offset());
-                    cabacEngine_.enableBinTrace(entropyTraceFile_, cabacCtx_.data());
-                }
-                else
-                    cabacEngine_.disableBinTrace();
-            }
-            ++cabacSliceCount_;
+            // Emit CabacInit trace event and bind trace to the engine.
+            // The callback decides whether to act on this slice's bins.
+#if SUB0H264_TRACE
+            trace_.onCabacInit(cabacSliceCount_, cabacEngine_.range(),
+                               cabacEngine_.offset());
+            cabacEngine_.setTrace(&trace_, cabacCtx_.data());
 #endif
+            ++cabacSliceCount_;
 
             // Initialize per-MB CABAC neighbor context
             cabacNeighbor_.init(widthInMbs_, heightInMbs_);

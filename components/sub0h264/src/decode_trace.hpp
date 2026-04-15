@@ -60,6 +60,20 @@ enum class TraceEventType : uint8_t
     // Level: pixel
     BlockPixels,      ///< a=scanIdx; data=pred[16] then output[16]
     MvPrediction,     ///< a=partIdx, data=[mvpX,mvpY,mvdX,mvdY,mvX,mvY,...]
+
+    // Level: slice
+    SliceStart,       ///< a=sliceIdx, b=sliceType, c=cabacFlag, d=sliceQp
+
+    // Level: entropy — CABAC (emitted when SUB0H264_TRACE is defined)
+    CabacInit,        ///< a=sliceIdx, b=range, c=offset (after 9-bit init)
+    CabacBin,         ///< a=binIdx, b=ctxIdx (-1 for bypass), c=decodedBit,
+                      ///  d=postRange; data=[postOffset, preState, preMps]
+
+    // Level: entropy — CAVLC (emitted when SUB0H264_TRACE is defined)
+    CavlcCoeffToken,  ///< a=totalCoeff, b=trailingOnes, c=nC
+    CavlcLevel,       ///< a=levelIdx, b=levelValue
+    CavlcTotalZeros,  ///< a=totalZeros
+    CavlcRunBefore,   ///< a=runIdx, b=runValue
 };
 
 /// Structured trace event — passed to callbacks.
@@ -205,6 +219,63 @@ struct DecodeTrace
                         buf[6], buf[7], buf[8], buf[9], buf[10], buf[11]);
 #endif
     }
+
+    // ── Slice-level events ──────────────────────────────────────────
+
+    void onSliceStart(uint32_t sliceIdx, uint32_t sliceType,
+                      bool cabac, int32_t sliceQp) const noexcept
+    {
+        emit({TraceEventType::SliceStart, 0, 0,
+              sliceIdx, sliceType, cabac ? 1U : 0U,
+              static_cast<uint32_t>(sliceQp), nullptr, 0});
+    }
+
+    // ── Entropy-level events (gated by SUB0H264_TRACE) ────────────
+
+#if SUB0H264_TRACE
+    void onCabacInit(uint32_t sliceIdx, uint32_t range,
+                     uint32_t offset) const noexcept
+    {
+        emit({TraceEventType::CabacInit, 0, 0,
+              sliceIdx, range, offset, 0, nullptr, 0});
+    }
+
+    void onCabacBin(uint32_t binIdx, int32_t ctxIdx, uint32_t bit,
+                    uint32_t postRange, int16_t postOffset,
+                    int16_t preState, int16_t preMps) const noexcept
+    {
+        int16_t buf[3] = { postOffset, preState, preMps };
+        emit({TraceEventType::CabacBin, 0, 0,
+              binIdx, static_cast<uint32_t>(ctxIdx), bit,
+              postRange, buf, 3});
+    }
+
+    void onCavlcCoeffToken(uint32_t totalCoeff, uint32_t trailingOnes,
+                           int32_t nC) const noexcept
+    {
+        emit({TraceEventType::CavlcCoeffToken, 0, 0,
+              totalCoeff, trailingOnes, static_cast<uint32_t>(nC),
+              0, nullptr, 0});
+    }
+
+    void onCavlcLevel(uint32_t levelIdx, int32_t value) const noexcept
+    {
+        emit({TraceEventType::CavlcLevel, 0, 0,
+              levelIdx, static_cast<uint32_t>(value), 0, 0, nullptr, 0});
+    }
+
+    void onCavlcTotalZeros(uint32_t totalZeros) const noexcept
+    {
+        emit({TraceEventType::CavlcTotalZeros, 0, 0,
+              totalZeros, 0, 0, 0, nullptr, 0});
+    }
+
+    void onCavlcRunBefore(uint32_t runIdx, uint32_t value) const noexcept
+    {
+        emit({TraceEventType::CavlcRunBefore, 0, 0,
+              runIdx, value, 0, 0, nullptr, 0});
+    }
+#endif // SUB0H264_TRACE
 
     /** Printf-style log (only with SUB0H264_TRACE). */
     void log([[maybe_unused]] const char* fmt, ...) const noexcept

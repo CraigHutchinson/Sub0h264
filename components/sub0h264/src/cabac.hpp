@@ -12,10 +12,10 @@
 #define CROG_SUB0H264_CABAC_HPP
 
 #include "bitstream.hpp"
+#include "decode_trace.hpp"
 
 #include <cinttypes>
 #include <cstdint>
-#include <cstdio> // for FILE* in bin trace
 #include <cstring>
 #include <array>
 
@@ -452,18 +452,16 @@ public:
         if (codIRange_ < 256U)
             renormalize();
 
-        // CABAC bin trace — compiled out unless SUB0H264_ENTROPY_TRACE is defined.
+        // CABAC bin trace — compiled out unless SUB0H264_TRACE is defined.
         // Zero overhead in production/release builds.
-#if defined(SUB0H264_ENTROPY_TRACE)
-        if (binTraceEnabled_ && binTraceLog_)
+#if SUB0H264_TRACE
+        if (trace_ && trace_->hasCallback())
         {
-            int32_t ctxIdx = binTraceCtxBase_ ? static_cast<int32_t>(&ctx - binTraceCtxBase_) : -1;
-            std::fprintf(binTraceLog_, "%lu %lu %u %lu %lu %lu %ld\n",
-                (unsigned long)binTraceCount_, (unsigned long)state,
-                (unsigned)ctx.mpsState, (unsigned long)symbol,
-                (unsigned long)codIRange_, (unsigned long)codIOffset_,
-                (long)ctxIdx);
-            ++binTraceCount_;
+            int32_t ctxIdx = ctxBase_ ? static_cast<int32_t>(&ctx - ctxBase_) : -1;
+            trace_->onCabacBin(binCount_++, ctxIdx, symbol,
+                codIRange_, static_cast<int16_t>(codIOffset_),
+                static_cast<int16_t>(state),
+                static_cast<int16_t>(state >> 6U));
         }
 #endif
 
@@ -485,15 +483,12 @@ public:
             symbol = 0U;
         }
 
-#if defined(SUB0H264_ENTROPY_TRACE)
-        if (binTraceEnabled_ && binTraceLog_)
+#if SUB0H264_TRACE
+        if (trace_ && trace_->hasCallback())
         {
-            std::fprintf(binTraceLog_, "%lu BP %lu %lu %lu\n",
-                (unsigned long)binTraceCount_,
-                (unsigned long)symbol,
-                (unsigned long)codIRange_,
-                (unsigned long)codIOffset_);
-            ++binTraceCount_;
+            trace_->onCabacBin(binCount_++, -1, symbol,
+                codIRange_, static_cast<int16_t>(codIOffset_),
+                -1, -1);
         }
 #endif
 
@@ -565,24 +560,19 @@ public:
     /** Get current offset (for diagnostic comparison). */
     uint32_t offset() const noexcept { return codIOffset_; }
 
-    /** Enable per-bin trace to a file — for CABAC debugging.
-     *  Captures all bins until disableBinTrace() is called. Only has
-     *  effect in SUB0H264_ENTROPY_TRACE builds; no-op otherwise. */
-    void enableBinTrace([[maybe_unused]] FILE* log,
-                        [[maybe_unused]] const CabacCtx* ctxBase = nullptr) noexcept
+    /** Set the trace system for CABAC bin event emission.
+     *  When trace is non-null and has a callback, each decoded bin emits
+     *  a CabacBin TraceEvent. Only compiled in SUB0H264_TRACE builds.
+     *  @param trace  Pointer to the decoder's DecodeTrace (nullable)
+     *  @param ctxBase  Base of the context array for ctxIdx computation
+     */
+    void setTrace([[maybe_unused]] const DecodeTrace* trace,
+                  [[maybe_unused]] const CabacCtx* ctxBase = nullptr) noexcept
     {
-#if defined(SUB0H264_ENTROPY_TRACE)
-        binTraceLog_ = log;
-        binTraceEnabled_ = true;
-        binTraceCount_ = 0U;
-        binTraceCtxBase_ = ctxBase;
-#endif
-    }
-    /** Disable bin trace. No-op in non-trace builds. */
-    void disableBinTrace() noexcept
-    {
-#if defined(SUB0H264_ENTROPY_TRACE)
-        binTraceEnabled_ = false;
+#if SUB0H264_TRACE
+        trace_ = trace;
+        ctxBase_ = ctxBase;
+        binCount_ = 0U;
 #endif
     }
 
@@ -618,14 +608,13 @@ private:
     uint32_t codIRange_ = 510U;
     uint32_t codIOffset_ = 0U;
 
-    // Bin trace state — only meaningful in SUB0H264_ENTROPY_TRACE builds
-#if defined(SUB0H264_ENTROPY_TRACE)
-    FILE* binTraceLog_ = nullptr;
-    bool binTraceEnabled_ = false;
-    uint32_t binTraceCount_ = 0U;
-    const CabacCtx* binTraceCtxBase_ = nullptr;
+    // Bin trace state — only meaningful in SUB0H264_TRACE builds
+#if SUB0H264_TRACE
+    const DecodeTrace* trace_ = nullptr;
+    const CabacCtx* ctxBase_ = nullptr;
+    uint32_t binCount_ = 0U;
 public:
-    uint32_t binTraceCount() const noexcept { return binTraceCount_; }
+    uint32_t binCount() const noexcept { return binCount_; }
 private:
 #endif
 

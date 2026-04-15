@@ -5,7 +5,7 @@ Usage:
 
 Reads both traces, aligns at slice start, and reports the first divergence point.
 
-Our trace format (from sub0h264_lockstep):
+Our trace format (from sub0h264_trace --level entropy):
     OUR_SLICE_START slice=N R=510 O=...
     <binIdx> <pre_state_raw> <post_mpsState_raw> <decoded_bit> <post_range> <post_offset> <ctxIdx>
     <binIdx> BP <decoded_bit> <post_range> <post_offset>

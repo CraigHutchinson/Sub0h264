@@ -31,15 +31,14 @@ endif()
 # The library is built from components/sub0h264/
 add_subdirectory(components/sub0h264)
 
-# Alias target for consumers: Sub0h264::Sub0h264
+# Alias targets for consumers
 add_library(Sub0h264::Sub0h264 ALIAS sub0h264)
+add_library(Sub0h264::Sub0h264_Traced ALIAS sub0h264_traced)
 
 if(SUB0H264_BUILD_TESTING AND NOT IS_SUBPROJECT)
     enable_testing()
     add_subdirectory(tests)
     add_subdirectory(test_apps/trace)
-    add_subdirectory(test_apps/lockstep)
-    # reference_decoder removed — main decoder CABAC is now spec-compliant
 endif()
 
 # Install project if not included by add_subdirectory() from another project

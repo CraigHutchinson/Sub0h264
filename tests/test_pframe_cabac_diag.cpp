@@ -44,12 +44,20 @@ TEST_CASE("CABAC P-frame diag: scrolling_texture_high first P-frame trace")
         }
     });
 
-    // Enable CABAC bin trace for the first 5000 bins
+    // Capture CABAC bins via the trace callback
     FILE* binLog = std::fopen("pframe_cabac_trace.txt", "w");
     REQUIRE(binLog != nullptr);
-    std::fprintf(binLog, "# frameIdx slice_type ctxIdx symbol range offset\n");
-    // We can't use enableBinTrace per-frame, so trace all bins
-    decoder->cabacEngine().enableBinTrace(binLog);
+    std::fprintf(binLog, "# binIdx ctxIdx symbol range offset\n");
+    auto origCallback = decoder->trace().callback_;
+    decoder->trace().setCallback([&](const TraceEvent& e) {
+        if (e.type == TraceEventType::CabacBin)
+        {
+            std::fprintf(binLog, "%u %d %u %u %d\n",
+                e.a, static_cast<int32_t>(e.b), e.c, e.d,
+                e.data ? static_cast<int>(e.data[0]) : 0);
+        }
+        if (origCallback) origCallback(e);
+    });
 
     std::vector<NalBounds> bounds;
     findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
@@ -61,28 +69,24 @@ TEST_CASE("CABAC P-frame diag: scrolling_texture_high first P-frame trace")
         DecodeStatus status = decoder->processNal(nal);
         if (status == DecodeStatus::FrameDecoded)
         {
-            // Detect if this was a P-frame by checking if MV data exists
             const Frame* frame = decoder->currentFrame();
             if (frame && frameIdx == 0U)
             {
-                // IDR frame decoded
                 MESSAGE("IDR frame " << frameIdx << " decoded: "
                         << frame->width() << "x" << frame->height());
             }
             if (frameIdx == 1U)
             {
-                // First P-frame — check pixel values at MB(0,0)
                 MESSAGE("=== First P-frame MB(0,0) first row ===");
                 for (uint32_t c = 0; c < 16; ++c)
                     MESSAGE("  y(" << c << ",0) = " << (int)frame->y(c, 0));
                 firstPFrameIdx = frameIdx;
             }
             ++frameIdx;
-            if (frameIdx >= 3U) break; // Only decode first 3 frames
+            if (frameIdx >= 3U) break;
         }
     }
 
-    decoder->cabacEngine().disableBinTrace();
     std::fclose(binLog);
 
     MESSAGE("Decoded " << frameIdx << " frames");

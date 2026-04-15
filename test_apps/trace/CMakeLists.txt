@@ -10,7 +10,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 add_executable(sub0h264_trace main.cpp)
-target_link_libraries(sub0h264_trace PRIVATE Sub0h264::Sub0h264)
+target_link_libraries(sub0h264_trace PRIVATE Sub0h264::Sub0h264_Traced)
 target_include_directories(sub0h264_trace PRIVATE
     "${CMAKE_SOURCE_DIR}/components/sub0h264/src"
 )

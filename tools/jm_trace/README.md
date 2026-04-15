@@ -51,18 +51,18 @@ docs/reference/jm/build/ldecod/ldecod -i tests/fixtures/bouncing_ball_main.h264 
 
 ## Running Sub0h264 to produce a trace
 
-Build the lock-step tool with entropy trace enabled:
+Build the trace tool (links against the traced library variant):
 
 ```bash
 cmake --preset default
-cmake --build --preset default --target sub0h264_lockstep
+cmake --build --preset default --target sub0h264_trace
 ```
 
 Decode the same fixture:
 
 ```bash
-build/default/test_apps/lockstep/sub0h264_lockstep \
-    tests/fixtures/bouncing_ball_main.h264 --slice 1 2> our_trace.txt
+build/default/test_apps/trace/sub0h264_trace \
+    tests/fixtures/bouncing_ball_main.h264 --level entropy --slice 1 2> our_trace.txt
 ```
 
 ## Comparing the two traces

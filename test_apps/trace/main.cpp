@@ -39,7 +39,7 @@ using namespace sub0h264;
 
 // ── Detail levels ───────────────────────────────────────────────────────
 
-enum class TraceLevel { Summary, Mb, Block, Coeff, Pixel };
+enum class TraceLevel { Summary, Mb, Block, Coeff, Pixel, Entropy };
 
 static TraceLevel parseLevel(const char* s)
 {
@@ -48,6 +48,7 @@ static TraceLevel parseLevel(const char* s)
     if (std::strcmp(s, "block") == 0) return TraceLevel::Block;
     if (std::strcmp(s, "coeff") == 0) return TraceLevel::Coeff;
     if (std::strcmp(s, "pixel") == 0) return TraceLevel::Pixel;
+    if (std::strcmp(s, "entropy") == 0) return TraceLevel::Entropy;
     std::fprintf(stderr, "Unknown level '%s' — using 'mb'\n", s);
     return TraceLevel::Mb;
 }
@@ -192,7 +193,8 @@ int main(int argc, char** argv)
         std::printf("Options:\n");
         std::printf("  --frame N          Decode only frame N\n");
         std::printf("  --mb X,Y           Filter to macroblock (X,Y)\n");
-        std::printf("  --level LEVEL      summary|mb|block|coeff|pixel\n");
+        std::printf("  --level LEVEL      summary|mb|block|coeff|pixel|entropy\n");
+        std::printf("  --slice N          Target CABAC slice for entropy trace (default 1)\n");
         std::printf("  --dump FILE.yuv    Dump decoded frames\n");
         std::printf("  --compare FILE.yuv Compare against reference YUV\n");
         return 1;
@@ -203,12 +205,15 @@ int main(int argc, char** argv)
     const char* dumpPath = nullptr;
     const char* comparePath = nullptr;
     int32_t targetFrame = -1; // -1 = all
+    uint32_t targetSlice = 1U; // for --level entropy
     TraceState state;
 
     for (int i = 2; i < argc; ++i)
     {
         if (std::strcmp(argv[i], "--frame") == 0 && i + 1 < argc)
             targetFrame = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--slice") == 0 && i + 1 < argc)
+            targetSlice = static_cast<uint32_t>(std::atoi(argv[++i]));
         else if (std::strcmp(argv[i], "--mb") == 0 && i + 1 < argc)
         {
             ++i;
@@ -221,6 +226,10 @@ int main(int argc, char** argv)
         else if (std::strcmp(argv[i], "--compare") == 0 && i + 1 < argc)
             comparePath = argv[++i];
     }
+
+    // For entropy mode: if no explicit --frame given, stop after the target slice
+    if (state.level == TraceLevel::Entropy && targetFrame < 0)
+        targetFrame = static_cast<int32_t>(targetSlice);
 
     // Load input
     auto h264 = loadFile(inputPath);
@@ -241,7 +250,53 @@ int main(int argc, char** argv)
 
     // Set up decoder with trace callback
     H264Decoder decoder;
-    decoder.trace().setCallback([&state](const TraceEvent& e) {
+    bool entropyActive = false; // tracks whether the current slice is being traced
+
+    decoder.trace().setCallback([&](const TraceEvent& e) {
+        // Entropy mode: emit lock-step compatible output to stderr
+        if (state.level == TraceLevel::Entropy)
+        {
+            switch (e.type)
+            {
+            case TraceEventType::SliceStart:
+                entropyActive = (e.a == targetSlice);
+                return;
+            case TraceEventType::CabacInit:
+                if (entropyActive)
+                    std::fprintf(stderr, "OUR_SLICE_START slice=%u R=%u O=%u\n",
+                                 e.a, e.b, e.c);
+                return;
+            case TraceEventType::CabacBin:
+                if (entropyActive && e.data)
+                {
+                    int32_t ctxIdx = static_cast<int32_t>(e.b);
+                    if (ctxIdx < 0)
+                    {
+                        // Bypass bin
+                        std::fprintf(stderr, "%u BP %u %u %u\n",
+                            e.a, e.c, e.d,
+                            static_cast<uint32_t>(e.data[0]));
+                    }
+                    else
+                    {
+                        // Context bin: binIdx preState postMpsState bit range offset ctxIdx
+                        std::fprintf(stderr, "%u %d %u %u %u %u %d\n",
+                            e.a,
+                            static_cast<int>(e.data[1]),     // preState
+                            static_cast<uint32_t>(e.data[2]) | (e.c << 6U), // postMpsState (packed)
+                            e.c, e.d,
+                            static_cast<uint32_t>(e.data[0]), // postOffset
+                            ctxIdx);
+                    }
+                }
+                return;
+            default:
+                break;
+            }
+            return; // entropy mode ignores structural events
+        }
+
+        // Structural trace modes (summary/mb/block/coeff/pixel)
         traceCallback(e, state);
     });
 
@@ -257,7 +312,8 @@ int main(int argc, char** argv)
                 state.level == TraceLevel::Summary ? "summary" :
                 state.level == TraceLevel::Mb ? "mb" :
                 state.level == TraceLevel::Block ? "block" :
-                state.level == TraceLevel::Coeff ? "coeff" : "pixel");
+                state.level == TraceLevel::Coeff ? "coeff" :
+                state.level == TraceLevel::Pixel ? "pixel" : "entropy");
 
     // Decode
     std::vector<NalBounds> bounds;

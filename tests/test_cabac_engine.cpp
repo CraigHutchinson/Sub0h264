@@ -744,11 +744,20 @@ TEST_CASE("CABAC bin trace: first 200 bins of cabac_4mb_noisy")
 
     auto decoder = std::make_unique<H264Decoder>();
 
-    // Enable bin trace to file via the public engine accessor
+    // Capture CABAC bins via the trace callback and write to file
     FILE* binLog = std::fopen("cabac_bin_trace.txt", "w");
     REQUIRE(binLog != nullptr);
-    std::fprintf(binLog, "# binIdx ctxState newState symbol range offset\n");
-    decoder->cabacEngine().enableBinTrace(binLog);
+    std::fprintf(binLog, "# binIdx ctxIdx symbol range offset\n");
+    uint32_t binsCaptured = 0U;
+    decoder->trace().setCallback([&](const TraceEvent& e) {
+        if (e.type == TraceEventType::CabacBin)
+        {
+            std::fprintf(binLog, "%u %d %u %u %d\n",
+                e.a, static_cast<int32_t>(e.b), e.c, e.d,
+                e.data ? static_cast<int>(e.data[0]) : 0);
+            ++binsCaptured;
+        }
+    });
 
     std::vector<NalBounds> bounds;
     findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
@@ -765,18 +774,10 @@ TEST_CASE("CABAC bin trace: first 200 bins of cabac_4mb_noisy")
         }
     }
 
-    decoder->cabacEngine().disableBinTrace();
     std::fclose(binLog);
     REQUIRE(frame != nullptr);
-
-    // Report file size (same path as the write, so open succeeds regardless of CWD)
-    binLog = std::fopen("cabac_bin_trace.txt", "r");
-    REQUIRE(binLog != nullptr);
-    std::fseek(binLog, 0, SEEK_END);
-    long fileSize = std::ftell(binLog);
-    std::fclose(binLog);
-    MESSAGE("Bin trace file: " << fileSize << " bytes");
-    CHECK(fileSize > 100);
+    MESSAGE("Bins captured: " << binsCaptured);
+    CHECK(binsCaptured > 100U);
 
     // Compare first 4x4 block against expected (flat gray = 122)
     MESSAGE("CABAC IDR MB(0,0) first 4x4 block (expected ~122 everywhere):");
