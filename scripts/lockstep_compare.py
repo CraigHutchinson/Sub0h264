@@ -114,22 +114,26 @@ def parse_jm_trace(path, target_slice=1):
                 continue
             # JM_BIN N: s=... mps=... R=... V=... bl=... rLPS=... -> bit=... R2=... V2=... bl2=...
             m = re.match(
-                r'JM_BIN (\d+): s=(-?\d+) mps=(-?\d+) R=(\d+) V=(\d+) bl=(\d+) rLPS=(\d+) -> bit=(\d+) R2=(\d+) V2=(\d+) bl2=(\d+)',
+                r'JM_BIN (\d+): s=(-?\d+) mps=(-?\d+) R=(\d+) V=(\d+) bl=(-?\d+) rLPS=(\d+) -> bit=(\d+) R2=(\d+) V2=(\d+) bl2=(-?\d+)',
                 line
             )
             if m:
                 V2 = int(m.group(10))
                 bl2 = int(m.group(11))
+                bl_pre = int(m.group(6))
+                # When DbitsLeft < 0, the engine has a pending byte refill.
+                # The post-offset (V2 >> bl2) is invalid; mark it for skip.
+                o2_valid = bl2 >= 0
                 b = {
                     'idx': int(m.group(1)),
                     'pre_state': int(m.group(2)),
                     'pre_mps': int(m.group(3)),
                     'pre_R': int(m.group(4)),
-                    'pre_O': int(m.group(5)) >> int(m.group(6)),
+                    'pre_O': int(m.group(5)) >> max(bl_pre, 0),
                     'rLPS': int(m.group(7)),
                     'bit': int(m.group(8)),
                     'R2': int(m.group(9)),
-                    'O2': V2 >> bl2,
+                    'O2': V2 >> bl2 if o2_valid else None,
                     'bypass': (int(m.group(2)) == -1),
                 }
                 bins.append(b)
@@ -155,7 +159,8 @@ def compare(our_bins, jm_bins, max_show=30):
         # Compare decoded bit, post-range, post-offset, pre-state, pre-mps
         bit_ok  = (j['bit'] == o['bit'])
         R2_ok   = (j['R2'] == o['R2'])
-        O2_ok   = (j['O2'] == o['O2'])
+        # Skip O2 comparison when JM has pending byte refill (bl2 < 0 → O2=None)
+        O2_ok   = (j['O2'] is None) or (j['O2'] == o['O2'])
         # State comparison (bypass bins have s=-1 in both)
         if j['bypass'] or o['bypass']:
             state_ok = (j['bypass'] == o['bypass'])
