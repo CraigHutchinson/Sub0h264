@@ -332,3 +332,70 @@ TEST_CASE("CABAC P-frame: scrolling_texture_high decodes at least 2 frames witho
 
     CHECK(frameCount >= 2U);
 }
+
+TEST_CASE("CABAC P-frame 1: PSNR >= 40 dB vs raw source (regression guard)")
+{
+    // Guards the fixes for:
+    //   - MVD 3rd-order Exp-Golomb (k=3 not k=0) — §9.3.2.3 Table 9-37
+    //   - P_8x8 per-sub-partition motion/MVD storage — §6.4.2.1
+    //   - Skip MB CABAC neighbor CBP = 0 — §9.3.3.1.1.4
+    // Frame 1 (first P-frame, numRefL0=1) must decode at 40+ dB vs raw source.
+    auto h264 = getFixture("scrolling_texture_high.h264");
+    auto raw  = getFixture("scrolling_texture_high_raw.yuv");
+    if (h264.empty() || raw.empty())
+    {
+        MESSAGE("scrolling_texture_high fixture not found - skipping");
+        return;
+    }
+
+    auto decoder = std::make_unique<H264Decoder>();
+    std::vector<NalBounds> bounds;
+    findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
+
+    uint32_t frameCount = 0U;
+    double frame1Psnr = 0.0;
+    for (const auto& b : bounds)
+    {
+        NalUnit nal;
+        if (!parseNalUnit(h264.data() + b.offset, b.size, nal))
+            continue;
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
+        {
+            if (frameCount == 1U) // First P-frame
+            {
+                const Frame* frame = decoder->currentFrame();
+                REQUIRE(frame != nullptr);
+                uint32_t w = frame->width(), h = frame->height();
+                uint32_t lumaSize = w * h;
+                uint32_t frameSize = lumaSize + 2U * (w / 2U) * (h / 2U);
+                REQUIRE(raw.size() >= 2U * frameSize);
+
+                // Compute luma PSNR vs raw source frame 1
+                const uint8_t* refY = raw.data() + frameSize; // frame 1 raw
+                double sse = 0.0;
+                for (uint32_t r = 0U; r < h; ++r)
+                {
+                    const uint8_t* decRow = frame->yRow(r);
+                    const uint8_t* refRow = refY + r * w;
+                    for (uint32_t c = 0U; c < w; ++c)
+                    {
+                        double d = static_cast<double>(decRow[c]) - refRow[c];
+                        sse += d * d;
+                    }
+                }
+                double mse = sse / lumaSize;
+                frame1Psnr = (mse > 0.0) ? 10.0 * std::log10(255.0 * 255.0 / mse) : 999.0;
+                MESSAGE("CABAC P-frame 1 PSNR: " << frame1Psnr << " dB");
+            }
+            ++frameCount;
+            if (frameCount >= 2U)
+                break;
+        }
+    }
+
+    REQUIRE(frameCount >= 2U);
+    // Frame 1 should decode near-perfectly (52+ dB with current fixes).
+    // Use 40 dB as a conservative threshold to catch regressions without
+    // being brittle to minor IDCT rounding changes.
+    CHECK(frame1Psnr >= 40.0);
+}
