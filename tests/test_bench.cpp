@@ -140,9 +140,9 @@ TEST_CASE("Bench: Still High 640x480" * doctest::test_suite("bench"))
 
 TEST_CASE("Bench: Tapo C110 stream2" * doctest::test_suite("bench"))
 {
-    auto data = getFixture("tapo_c110_stream2_baseline.h264");
+    auto data = getFixture("tapo_c110_stream2_high.h264");
     if (data.empty()) { MESSAGE("tapo fixture not available — skipping"); return; }
-    benchStream("Tapo C110 stream2", "tapo_c110_stream2_baseline.h264");
+    benchStream("Tapo C110 stream2", "tapo_c110_stream2_high.h264");
 }
 
 /** Run a profiled decode: measures per-section timing breakdown. */

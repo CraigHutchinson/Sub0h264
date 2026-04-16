@@ -15,7 +15,7 @@ Usage:
     python scripts/capture_tapo_stream2.py [--outdir tests/fixtures]
 
 Output:
-    tests/fixtures/tapo_c110_stream2_baseline.h264
+    tests/fixtures/tapo_c110_stream2_high.h264
 
 SPDX-License-Identifier: MIT
 """
@@ -100,7 +100,7 @@ def main():
         print("  set TAPO_RTSP_PASS=<your_password>")
         sys.exit(1)
 
-    output = os.path.join(args.outdir, "tapo_c110_stream2_baseline.h264")
+    output = os.path.join(args.outdir, "tapo_c110_stream2_high.h264")
     os.makedirs(args.outdir, exist_ok=True)
 
     if not capture(host, user, password, output, args.duration):

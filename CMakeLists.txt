@@ -39,6 +39,7 @@ if(SUB0H264_BUILD_TESTING AND NOT IS_SUBPROJECT)
     enable_testing()
     add_subdirectory(tests)
     add_subdirectory(test_apps/trace)
+    add_subdirectory(test_apps/shootout)
 endif()
 
 # Install project if not included by add_subdirectory() from another project
