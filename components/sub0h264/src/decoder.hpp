@@ -326,6 +326,20 @@ private:
         return cChromaQpTable[clampQpIdx(qp + offset)];
     }
 
+    /** Decode transform_size_8x8_flag via CABAC — §9.3.3.1.1.10.
+     *  ctxInc = condTermFlagA + condTermFlagB from neighbor transform flags.
+     *  Stores the decoded flag in cabacNeighbor_ for future context derivation.
+     *  Used by both I_NxN and P-inter decode paths. */
+    bool decodeCabacTransform8x8Flag(uint32_t mbX, uint32_t mbY,
+                                      uint32_t mbIdx) noexcept
+    {
+        uint32_t t8x8A = (mbX > 0U) ? (cabacNeighbor_[mbIdx - 1U].transform8x8() ? 1U : 0U) : 0U;
+        uint32_t t8x8B = (mbY > 0U) ? (cabacNeighbor_[mbIdx - widthInMbs_].transform8x8() ? 1U : 0U) : 0U;
+        bool flag = cabacEngine_.decodeBin(cabacCtx_[cCtxTransform8x8 + t8x8A + t8x8B]) != 0U;
+        cabacNeighbor_[mbIdx].setTransform8x8(flag);
+        return flag;
+    }
+
     /** Dequantize four chroma 2x2 DC coefficients after inverse Hadamard.
      *  [CHECKED FM-10]
      */
@@ -2519,13 +2533,11 @@ private:
         //   Step 6 — mb_qp_delta ae(v): only if cbp > 0. [CHECKED §7.3.5]
         //   Step 7 — residual(0,15). [CHECKED §7.3.5.3]
 
-        // §7.3.5: transform_size_8x8_flag before mb_pred for I_NxN. [CHECKED §7.3.5]
+        // §7.3.5: transform_size_8x8_flag before mb_pred for I_NxN.
+        uint32_t mbIdx = mbY * widthInMbs_ + mbX;
         bool use8x8Transform = false;
         if (pps.transform8x8Mode_ != 0U)
-        {
-            use8x8Transform = cabacEngine_.decodeBin(
-                cabacCtx_[cCtxTransform8x8]) != 0U;
-        }
+            use8x8Transform = decodeCabacTransform8x8Flag(mbX, mbY, mbIdx);
 
         uint8_t predModes[16] = {};
         uint32_t numModeBlocks = use8x8Transform ? 4U : 16U;
@@ -2612,7 +2624,6 @@ private:
         }
 
         // Chroma pred mode — §9.3.3.1.1.7: ctxInc from neighbor chroma modes
-        uint32_t mbIdx = mbY * widthInMbs_ + mbX;
         uint32_t chromaCtxInc = cabacNeighbor_.chromaModeCtxInc(mbX, mbY);
         uint32_t chromaPredMode = cabacDecodeIntraChromaMode(cabacEngine_, cabacCtx_.data(),
                                                               chromaCtxInc);
@@ -3323,15 +3334,7 @@ private:
         }
         bool use8x8Inter = false;
         if (cbpLuma != 0U && pps.transform8x8Mode_ != 0U && noSubMbPartSizeLessThan8x8Flag)
-        {
-            // §9.3.3.1.1.10: ctxInc = condTermFlagA + condTermFlagB
-            // condTermFlagN = neighbor's luma_transform_size_8x8_flag.
-            // Unavailable neighbors → condTermFlag = 0. [CHECKED JM reference]
-            uint32_t t8x8A = (mbX > 0U) ? (cabacNeighbor_[mbIdx - 1U].transform8x8() ? 1U : 0U) : 0U;
-            uint32_t t8x8B = (mbY > 0U) ? (cabacNeighbor_[mbIdx - widthInMbs_].transform8x8() ? 1U : 0U) : 0U;
-            use8x8Inter = cabacEngine_.decodeBin(cabacCtx_[cCtxTransform8x8 + t8x8A + t8x8B]) != 0U;
-        }
-        cabacNeighbor_[mbIdx].setTransform8x8(use8x8Inter);
+            use8x8Inter = decodeCabacTransform8x8Flag(mbX, mbY, mbIdx);
 
         // §7.3.5: mb_qp_delta ae(v) — only if cbp > 0 for P-inter. [CHECKED §7.3.5]
         int32_t qp = mbQp;
