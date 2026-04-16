@@ -40,10 +40,12 @@ struct MbCabacInfo
     bool isI4x4() const noexcept { return (flags & 0x01U) != 0U; }
     bool isSkip() const noexcept { return (flags & 0x02U) != 0U; }
     bool isI16x16() const noexcept { return (flags & 0x04U) != 0U; }
+    bool transform8x8() const noexcept { return (flags & 0x08U) != 0U; }
 
     void setI4x4(bool v) noexcept { flags = v ? (flags | 0x01U) : (flags & ~0x01U); }
     void setSkip(bool v) noexcept { flags = v ? (flags | 0x02U) : (flags & ~0x02U); }
     void setI16x16(bool v) noexcept { flags = v ? (flags | 0x04U) : (flags & ~0x04U); }
+    void setTransform8x8(bool v) noexcept { flags = v ? (flags | 0x08U) : (flags & ~0x08U); }
 
     uint8_t lumaCbp() const noexcept { return cbp & 0x0FU; }
     uint8_t chromaCbp() const noexcept { return (cbp >> 4U) & 0x03U; }

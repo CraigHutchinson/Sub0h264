@@ -721,6 +721,7 @@ private:
                     {
                         cabacNeighbor_[mbAddr].setSkip(true);
                         cabacNeighbor_[mbAddr].setI4x4(false);
+                        cabacNeighbor_[mbAddr].setTransform8x8(false);
                         // Skip MBs have no residual → CBP = 0, no DC CBF.
                         // Must set explicitly so neighbor CBP context derivation
                         // (§9.3.3.1.1.4) sees the skip MB as "not coded".
@@ -3323,8 +3324,14 @@ private:
         bool use8x8Inter = false;
         if (cbpLuma != 0U && pps.transform8x8Mode_ != 0U && noSubMbPartSizeLessThan8x8Flag)
         {
-            use8x8Inter = cabacEngine_.decodeBin(cabacCtx_[cCtxTransform8x8]) != 0U;
+            // §9.3.3.1.1.10: ctxInc = condTermFlagA + condTermFlagB
+            // condTermFlagN = neighbor's luma_transform_size_8x8_flag.
+            // Unavailable neighbors → condTermFlag = 0. [CHECKED JM reference]
+            uint32_t t8x8A = (mbX > 0U) ? (cabacNeighbor_[mbIdx - 1U].transform8x8() ? 1U : 0U) : 0U;
+            uint32_t t8x8B = (mbY > 0U) ? (cabacNeighbor_[mbIdx - widthInMbs_].transform8x8() ? 1U : 0U) : 0U;
+            use8x8Inter = cabacEngine_.decodeBin(cabacCtx_[cCtxTransform8x8 + t8x8A + t8x8B]) != 0U;
         }
+        cabacNeighbor_[mbIdx].setTransform8x8(use8x8Inter);
 
         // §7.3.5: mb_qp_delta ae(v) — only if cbp > 0 for P-inter. [CHECKED §7.3.5]
         int32_t qp = mbQp;
