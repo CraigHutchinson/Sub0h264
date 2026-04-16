@@ -399,3 +399,71 @@ TEST_CASE("CABAC P-frame 1: PSNR >= 40 dB vs raw source (regression guard)")
     // being brittle to minor IDCT rounding changes.
     CHECK(frame1Psnr >= 40.0);
 }
+
+TEST_CASE("CABAC P-frame multi-ref: frames 2-4 PSNR >= 40 dB (regression guard)")
+{
+    // Guards multi-ref CABAC fixes:
+    //   - ref_idx unbounded unary decode (§9.3.3.1.2)
+    //   - Immediate refIdx storage for all partition types (§9.3.3.1.1.6)
+    //   - I-in-P mb_type contexts 17-20 (§9.3.3.1.2)
+    //   - Per-partition reference lookup via DPB L0 list
+    // Frames 2-4 use numRefIdxActiveL0 > 1 with ref_pic_list_modification.
+    auto h264 = getFixture("scrolling_texture_high.h264");
+    auto raw  = getFixture("scrolling_texture_high_raw.yuv");
+    if (h264.empty() || raw.empty())
+    {
+        MESSAGE("scrolling_texture_high fixture not found - skipping");
+        return;
+    }
+
+    auto decoder = std::make_unique<H264Decoder>();
+    std::vector<NalBounds> bounds;
+    findNalUnits(h264.data(), static_cast<uint32_t>(h264.size()), bounds);
+
+    uint32_t frameCount = 0U;
+    double minMultiRefPsnr = 999.0;
+    for (const auto& b : bounds)
+    {
+        NalUnit nal;
+        if (!parseNalUnit(h264.data() + b.offset, b.size, nal))
+            continue;
+        if (decoder->processNal(nal) == DecodeStatus::FrameDecoded)
+        {
+            // Check frames 2-4 (multi-ref P-frames)
+            if (frameCount >= 2U && frameCount <= 4U)
+            {
+                const Frame* frame = decoder->currentFrame();
+                REQUIRE(frame != nullptr);
+                uint32_t w = frame->width(), h = frame->height();
+                uint32_t lumaSize = w * h;
+                uint32_t frameSize = lumaSize + 2U * (w / 2U) * (h / 2U);
+                REQUIRE(raw.size() >= (frameCount + 1U) * frameSize);
+
+                const uint8_t* refY = raw.data() + frameCount * frameSize;
+                double sse = 0.0;
+                for (uint32_t r = 0U; r < h; ++r)
+                {
+                    const uint8_t* decRow = frame->yRow(r);
+                    const uint8_t* refRow = refY + r * w;
+                    for (uint32_t c = 0U; c < w; ++c)
+                    {
+                        double d = static_cast<double>(decRow[c]) - refRow[c];
+                        sse += d * d;
+                    }
+                }
+                double mse = sse / lumaSize;
+                double psnr = (mse > 0.0) ? 10.0 * std::log10(255.0 * 255.0 / mse) : 999.0;
+                MESSAGE("CABAC multi-ref frame " << frameCount << " PSNR: " << psnr << " dB");
+                if (psnr < minMultiRefPsnr) minMultiRefPsnr = psnr;
+            }
+            ++frameCount;
+            if (frameCount > 4U)
+                break;
+        }
+    }
+
+    REQUIRE(frameCount > 4U);
+    // Frames 2-4 should decode well with multi-ref fixes (currently 52+ dB).
+    // Conservative 40 dB threshold catches regressions.
+    CHECK(minMultiRefPsnr >= 40.0);
+}
