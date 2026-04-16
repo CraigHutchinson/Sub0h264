@@ -681,6 +681,9 @@ private:
                                 sh.refPicListModificationL0_ ? sh.reorderCmdsL0_ : nullptr);
 
             // Get reference frame AFTER building L0 list (avoids stale reference)
+#if SUB0H264_TRACE
+            // (L0 list built — per-partition ref lookup via getRef() in doPartitionMC)
+#endif
             refFrame = dpb_.getReference(0U);
             if (!refFrame)
                 return DecodeStatus::Error;
@@ -758,7 +761,7 @@ private:
                             cabacNeighbor_[mbAddr].setI4x4(false);
                             int64_t ciT0 = profile_ ? sub0h264TimerUs() : 0;
                             decodeCabacPInterMb(br, *sps, *pps, sh, mbQp,
-                                                mbTypeRaw, *decodeTarget, *refFrame, mbX, mbY);
+                                                mbTypeRaw, *decodeTarget, mbX, mbY);
                             if (profile_) profile_->interPredUs += sub0h264TimerUs() - ciT0;
                         }
                     }
@@ -2968,7 +2971,7 @@ private:
     void decodeCabacPInterMb(BitReader& br, const Sps& sps, const Pps& pps,
                               const SliceHeader& sh,
                               int32_t& mbQp, uint32_t mbTypeRaw,
-                              Frame& target, const Frame& ref,
+                              Frame& target,
                               uint32_t mbX, uint32_t mbY) noexcept
     {
         // §7.3.5 macroblock_layer() sequencing for P-inter (CABAC): [PARTIAL §7.3.5]
@@ -3116,12 +3119,21 @@ private:
         std::memset(predU, 128U, 64U);
         std::memset(predV, 128U, 64U);
 
+        // Per-partition reference lookup via DPB L0 list — §8.4.2
+        auto getRef = [this](uint8_t idx) -> const Frame& {
+            const Frame* f = dpb_.getReference(idx);
+            if (!f) f = dpb_.getReference(0U);
+            return *f;
+        };
+
         // Per-partition MV prediction, MC, and storage
         auto doPartitionMC = [&](uint32_t partIdx, uint8_t partRefIdx,
                                   int16_t partMvdX, int16_t partMvdY,
                                   uint32_t partX, uint32_t partY,
                                   uint32_t partW, uint32_t partH)
         {
+            const Frame& ref = getRef(partRefIdx);
+
             // MV predictor — same neighbor lookup as CAVLC
             MbMotionInfo a = getMotionAt4x4(mb4x + static_cast<int32_t>(partX) / 4 - 1,
                                              mb4y + static_cast<int32_t>(partY) / 4);
