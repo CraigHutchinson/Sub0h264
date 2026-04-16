@@ -3085,7 +3085,20 @@ private:
             {
                 if (numRefIdxL0Active > 1U)
                 {
-                    uint32_t ctxInc = refIdxCtxInc(mb4x + c8x8Off4x[s], mb4y + c8x8Off4y[s]);
+                    int32_t tlX = mb4x + c8x8Off4x[s];
+                    int32_t tlY = mb4y + c8x8Off4y[s];
+                    uint32_t ctxInc = refIdxCtxInc(tlX, tlY);
+#if SUB0H264_TRACE
+                    if (mbX < 2U && mbY == 0U)
+                    {
+                        MbMotionInfo leftN = getMotionAt4x4(tlX - 1, tlY);
+                        MbMotionInfo topN  = getMotionAt4x4(tlX, tlY - 1);
+                        std::fprintf(stderr, "REFIDX_CTX MB(%u,%u) sub%u tl=(%d,%d) leftAvail=%d leftRef=%d topAvail=%d topRef=%d ctxInc=%u\n",
+                            mbX, mbY, s, tlX, tlY,
+                            leftN.available ? 1 : 0, leftN.refIdx,
+                            topN.available ? 1 : 0, topN.refIdx, ctxInc);
+                    }
+#endif
                     refIdxL0[s] = cabacDecodeRefIdx(cabacEngine_, cabacCtx_.data(), ctxInc,
                                                      numRefIdxL0Active - 1U);
                 }

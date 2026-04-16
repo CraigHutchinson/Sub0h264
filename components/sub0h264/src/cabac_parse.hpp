@@ -746,21 +746,19 @@ inline uint8_t cabacDecodeRefIdx(CabacEngine& engine, CabacCtx* ctx,
     if (maxRefIdx == 0U)
         return 0U; // Only one reference — no decode needed
 
-    // bin[0]: ctxIdx = 54 + ctxInc0
+    // bin[0]: ctxIdx = 54 + ctxInc0  [CHECKED §9.3.3.1.1.6]
     if (engine.decodeBin(ctx[cCtxRefIdx + ctxInc0]) == 0U)
         return 0U;
 
-    // bin[1]: ctxIdx = 54 + 4
-    if (engine.decodeBin(ctx[cCtxRefIdx + 4U]) == 0U)
-        return 1U;
-
-    // bins[2+]: ctxIdx = 54 + 5 (truncated unary, max = maxRefIdx)
-    uint8_t refIdx = 2U;
-    while (refIdx < maxRefIdx)
+    // bins[1+]: unary decode with ctx_offset=1 — §9.3.3.1.2 Table 9-39.
+    // JM reference decoder uses unbounded unary (not truncated at maxRefIdx).
+    // bin[1]: ctxIdx = 54 + 4, bins[2+]: ctxIdx = 54 + 5.
+    uint8_t refIdx = 1U;
+    uint32_t ctxOff = 4U;
+    while (engine.decodeBin(ctx[cCtxRefIdx + ctxOff]) != 0U)
     {
-        if (engine.decodeBin(ctx[cCtxRefIdx + 5U]) == 0U)
-            break;
         ++refIdx;
+        ctxOff = 5U; // bins 2+ all use ctxInc=5
     }
     return refIdx;
 }
