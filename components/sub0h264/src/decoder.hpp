@@ -3045,15 +3045,50 @@ private:
         if (mbTypeRaw <= 2U)
         {
             // 16x16 / 16x8 / 8x16: §7.3.5.1 ref_idx ALL first, then mvd ALL
-            for (uint32_t p = 0U; p < numParts; ++p)
+            // Store each refIdx immediately so the second partition's context
+            // derivation (§9.3.3.1.1.6) can see the first partition's refIdx.
             {
-                if (numRefIdxL0Active > 1U)
+                uint32_t mi = mbY * widthInMbs_ + mbX;
+                for (uint32_t p = 0U; p < numParts; ++p)
                 {
-                    int32_t tlX = mb4x + (mbTypeRaw == 2U && p == 1U ? 2 : 0);
-                    int32_t tlY = mb4y + (mbTypeRaw == 1U && p == 1U ? 2 : 0);
-                    uint32_t ctxInc = refIdxCtxInc(tlX, tlY);
-                    refIdxL0[p] = cabacDecodeRefIdx(cabacEngine_, cabacCtx_.data(), ctxInc,
-                                                     numRefIdxL0Active - 1U);
+                    if (numRefIdxL0Active > 1U)
+                    {
+                        int32_t tlX = mb4x + (mbTypeRaw == 2U && p == 1U ? 2 : 0);
+                        int32_t tlY = mb4y + (mbTypeRaw == 1U && p == 1U ? 2 : 0);
+                        uint32_t ctxInc = refIdxCtxInc(tlX, tlY);
+                        refIdxL0[p] = cabacDecodeRefIdx(cabacEngine_, cabacCtx_.data(), ctxInc,
+                                                         numRefIdxL0Active - 1U);
+                    }
+                    // Store partition refIdx to mbMotion_ for neighbor context
+                    int8_t ri = static_cast<int8_t>(refIdxL0[p]);
+                    if (mbTypeRaw == 0U) // 16x16: all blocks
+                    {
+                        for (uint32_t i = 0U; i < 16U; ++i)
+                        {
+                            mbMotion_[mi * 16U + i].refIdx = ri;
+                            mbMotion_[mi * 16U + i].available = true;
+                        }
+                    }
+                    else if (mbTypeRaw == 1U) // 16x8: 2 rows per partition
+                    {
+                        uint32_t sr = p * 2U;
+                        for (uint32_t r = sr; r < sr + 2U; ++r)
+                            for (uint32_t c = 0U; c < 4U; ++c)
+                            {
+                                mbMotion_[mi * 16U + r * 4U + c].refIdx = ri;
+                                mbMotion_[mi * 16U + r * 4U + c].available = true;
+                            }
+                    }
+                    else // 8x16: 2 cols per partition
+                    {
+                        uint32_t sc = p * 2U;
+                        for (uint32_t r = 0U; r < 4U; ++r)
+                            for (uint32_t c = sc; c < sc + 2U; ++c)
+                            {
+                                mbMotion_[mi * 16U + r * 4U + c].refIdx = ri;
+                                mbMotion_[mi * 16U + r * 4U + c].available = true;
+                            }
+                    }
                 }
             }
             // Top-left 4x4 position of each partition (in absolute 4x4 units):
