@@ -199,6 +199,7 @@ private:
 
     uint16_t widthInMbs_ = 0U;
     uint16_t heightInMbs_ = 0U;
+    uint16_t prevRefFrameNum_ = 0U; ///< §8.2.5.2: PrevRefFrameNum for gap detection
 
     /** Get nC (CAVLC context) for a luma 4x4 block.
      *  nC = (leftNnz + topNnz + 1) >> 1
@@ -550,6 +551,7 @@ private:
         if (isIdr)
         {
             dpb_.flush();
+            prevRefFrameNum_ = sh.frameNum_; // §8.2.5.2: reset at IDR
             // Re-get decode target after flush
             decodeTarget = dpb_.getDecodeTarget();
         }
@@ -914,6 +916,7 @@ private:
         if (nal.refIdc != 0U)
         {
             dpb_.markAsReference(sh.frameNum_);
+            prevRefFrameNum_ = sh.frameNum_;
 
             // Apply MMCO commands for non-IDR adaptive marking — §8.2.5.4
             if (!sh.isIdr_ && sh.decRefPicMarking_.adaptiveRefPicMarking_ &&
@@ -3027,8 +3030,9 @@ private:
                  + std::abs(getMvdComp(tlX,     tlY - 1, xComp));  // top
         };
 
-        // §9.3.3.1.1.6: ref_idx context derivation — ctxInc from neighbor refIdx.
+        // §9.3.3.1.1.6: ref_idx context derivation — ctxInc from partition neighbors.
         // condTermFlagA = (refIdxA > 0), condTermFlagB = (refIdxB > 0).
+        // Uses 4x4-block-level neighbor lookup (same as JM's get4x4Neighbour).
         // Unavailable neighbors → condTermFlag = 0. [CHECKED §9.3.3.1.1.6]
         auto refIdxCtxInc = [&](int32_t tlX, int32_t tlY) -> uint32_t {
             MbMotionInfo left = getMotionAt4x4(tlX - 1, tlY);
@@ -3075,6 +3079,8 @@ private:
             static constexpr int32_t c8x8Off4x[4] = {0, 2, 0, 2};
             static constexpr int32_t c8x8Off4y[4] = {0, 0, 2, 2};
             // ref_idx per sub-partition — §7.3.5.2
+            // Must store each refIdx immediately so subsequent sub-partitions
+            // can use it for context derivation (§9.3.3.1.1.6 needs neighbor refIdx).
             for (uint32_t s = 0U; s < 4U; ++s)
             {
                 if (numRefIdxL0Active > 1U)
@@ -3083,6 +3089,19 @@ private:
                     refIdxL0[s] = cabacDecodeRefIdx(cabacEngine_, cabacCtx_.data(), ctxInc,
                                                      numRefIdxL0Active - 1U);
                 }
+                // Store refIdx to mbMotion_ so neighbors see it during decode.
+                // MV/MVD will be overwritten later in doPartitionMC; only refIdx
+                // matters here for context derivation.
+                uint32_t sr = (s >> 1U) * 2U;
+                uint32_t sc = (s & 1U) * 2U;
+                int8_t ri = static_cast<int8_t>(refIdxL0[s]);
+                uint32_t mi = mbY * widthInMbs_ + mbX;
+                for (uint32_t r = sr; r < sr + 2U; ++r)
+                    for (uint32_t cc = sc; cc < sc + 2U; ++cc)
+                    {
+                        mbMotion_[mi * 16U + r * 4U + cc].refIdx = ri;
+                        mbMotion_[mi * 16U + r * 4U + cc].available = true;
+                    }
             }
             // MVD per sub-partition — §7.3.5.2
             // sub_mb_type 0=8x8(1 MVD), 1=8x4(2 MVD), 2=4x8(2 MVD), 3=4x4(4 MVD)

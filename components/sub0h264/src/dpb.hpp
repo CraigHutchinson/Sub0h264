@@ -269,6 +269,93 @@ public:
         refListL0_.clear();
     }
 
+    /** §8.2.5.3: Sliding window decoded reference picture marking.
+     *  If the number of short-term + long-term references >= maxRefFrames,
+     *  evict the oldest (smallest frameNum) short-term reference. */
+    void applySlidingWindow() noexcept
+    {
+        uint32_t numRefs = 0U;
+        for (const auto& e : entries_)
+            if (e.occupied && e.isReference)
+                ++numRefs;
+
+        if (numRefs >= maxRefFrames_)
+        {
+            DpbEntry* oldest = nullptr;
+            for (auto& e : entries_)
+            {
+                if (e.occupied && e.isReference && !e.isLongTerm)
+                {
+                    if (!oldest || e.frameNum < oldest->frameNum)
+                        oldest = &e;
+                }
+            }
+            if (oldest)
+            {
+                oldest->isReference = false;
+                oldest->occupied = false;
+            }
+        }
+    }
+
+    /** Fill gaps in frame_num with non-existing reference frames — §8.2.5.2.
+     *
+     *  When frame_num is not equal to (PrevRefFrameNum + 1) % MaxFrameNum,
+     *  generate non-existing short-term reference frames for each missing
+     *  frame_num value. The generated frames occupy DPB slots but their
+     *  sample values are unspecified (the spec guarantees they are never
+     *  used for actual inter prediction, only for reference list ordering).
+     *
+     *  @param prevRefFrameNum  frame_num of the most recently decoded reference
+     *  @param currFrameNum     frame_num of the current picture
+     *  @param maxFrameNum      MaxFrameNum = 1 << sps.bitsInFrameNum_
+     */
+    void fillGapsInFrameNum(uint16_t prevRefFrameNum, uint16_t currFrameNum,
+                            uint32_t maxFrameNum) noexcept
+    {
+        uint32_t fn = (static_cast<uint32_t>(prevRefFrameNum) + 1U) % maxFrameNum;
+        while (fn != currFrameNum)
+        {
+            // §8.2.5.3: sliding window marking before adding the non-existing frame
+            applySlidingWindow();
+
+            // Allocate a DPB slot for the non-existing frame
+            DpbEntry* slot = nullptr;
+            for (auto& e : entries_)
+            {
+                if (!e.occupied)
+                {
+                    slot = &e;
+                    break;
+                }
+            }
+            if (!slot)
+            {
+                // DPB full — evict oldest short-term reference
+                for (auto& e : entries_)
+                {
+                    if (e.occupied && e.isReference && !e.isLongTerm)
+                    {
+                        if (!slot || e.frameNum < slot->frameNum)
+                            slot = &e;
+                    }
+                }
+                if (!slot)
+                    break; // Cannot allocate — should not happen in conforming streams
+            }
+
+            // Mark as non-existing short-term reference
+            slot->occupied = true;
+            slot->frameNum = static_cast<uint16_t>(fn);
+            slot->isReference = true;
+            slot->isLongTerm = false;
+            slot->isOutput = false;
+            // Sample values left as-is (spec says "may be set to any value")
+
+            fn = (fn + 1U) % maxFrameNum;
+        }
+    }
+
     /** Build the initial L0 reference list per §8.2.4.2.1 and optionally
      *  apply reordering commands per §8.2.4.3.
      *
@@ -334,7 +421,7 @@ public:
 
                 if (idc == 0U || idc == 1U)
                 {
-                    // Short-term reordering
+                    // §8.2.4.3.1: Short-term reordering
                     int32_t absDiffPicNum = static_cast<int32_t>(cmds[c].value) + 1;
                     int32_t picNumNoWrap;
                     if (idc == 0U)
@@ -351,27 +438,37 @@ public:
                     }
                     picNumPred = picNumNoWrap;
 
-                    // Find entry with this PicNum and move to position refIdxL0
+                    // Find the DPB entry with this PicNum
                     const DpbEntry* target = nullptr;
-                    size_t targetPos = 0U;
-                    for (size_t i = 0U; i < refListL0_.size(); ++i)
+                    for (const auto& e : entries_)
                     {
-                        if (!refListL0_[i]->isLongTerm &&
-                            static_cast<int32_t>(refListL0_[i]->frameNum) == picNumNoWrap)
+                        if (e.occupied && e.isReference && !e.isLongTerm &&
+                            static_cast<int32_t>(e.frameNum) == picNumNoWrap)
                         {
-                            target = refListL0_[i];
-                            targetPos = i;
+                            target = &e;
                             break;
                         }
                     }
 
-                    if (target && targetPos != refIdxL0)
+                    if (target)
                     {
-                        // Remove from current position
-                        refListL0_.erase(refListL0_.begin() + static_cast<ptrdiff_t>(targetPos));
-                        // Insert at refIdxL0
+                        // §8.2.4.3.1: Place target at refIdxL0, shift others,
+                        // then compact to remove any duplicate of the same entry.
+                        // 1. Insert target at refIdxL0
                         if (refIdxL0 <= refListL0_.size())
                             refListL0_.insert(refListL0_.begin() + static_cast<ptrdiff_t>(refIdxL0), target);
+                        else
+                            refListL0_.push_back(target);
+
+                        // 2. Remove any OTHER occurrence of the same entry
+                        //    (keep only the one we just inserted at refIdxL0)
+                        for (size_t i = refIdxL0 + 1U; i < refListL0_.size(); )
+                        {
+                            if (refListL0_[i] == target)
+                                refListL0_.erase(refListL0_.begin() + static_cast<ptrdiff_t>(i));
+                            else
+                                ++i;
+                        }
                     }
                     ++refIdxL0;
                 }

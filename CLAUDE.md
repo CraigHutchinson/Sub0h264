@@ -175,8 +175,8 @@ decoder->trace().setCallback([&](const TraceEvent& e) {
 ```
 
 ### Reference Decoders for Comparison
+- **JM** — ITU-T official H.264 reference decoder at `docs/reference/jm/`. The authoritative ground truth for CABAC conformance testing. Lock-step bin trace instrumentation preserved in `tools/jm_trace/jm_trace.patch`. Use `sub0h264_trace --level entropy` to generate comparable output. **Always use JM as the reference for bitstream parsing questions — do NOT write custom Python parsers, which introduce their own bugs.**
 - **libavc** — cloned at `docs/reference/libavc/`. Build with MinGW: `cmake -G "MinGW Makefiles" -DCMAKE_C_COMPILER=gcc`. The `avcdec` tool can decode fixtures. Instrumented traces compare per-MB bit offsets and dequant values.
-- **h264bitstream** — at `docs/reference/h264bitstream/`. Header-only bitstream analyzer. The `h264_analyze` tool parses NAL/slice headers.
 - **ffmpeg** — used for reference YUV output: `ffmpeg -i fixture.h264 -vframes 1 -pix_fmt yuv420p ref.yuv`
 
 ### Investigation & Comparison Scripts
