@@ -752,8 +752,9 @@ TEST_CASE("CABAC bin trace: first 200 bins of cabac_4mb_noisy")
     decoder->trace().setCallback([&](const TraceEvent& e) {
         if (e.type == TraceEventType::CabacBin)
         {
-            std::fprintf(binLog, "%u %d %u %u %d\n",
-                e.a, static_cast<int32_t>(e.b), e.c, e.d,
+            std::fprintf(binLog, "%lu %ld %lu %lu %d\n",
+                static_cast<unsigned long>(e.a), static_cast<long>(e.b),
+                static_cast<unsigned long>(e.c), static_cast<unsigned long>(e.d),
                 e.data ? static_cast<int>(e.data[0]) : 0);
             ++binsCaptured;
         }
@@ -1167,8 +1168,7 @@ TEST_CASE("CABAC hack: u100 mb_type and residual trace")
         CabacContextSet ctx0 = ctxSet.snapshot();
 
         // Decode mb_type MANUALLY to trace each bin
-        // bin0: ctx[3+ctxInc]
-        uint32_t ctxInc0 = 0U; // both neighbors unavailable → condTerm=0
+        // bin0: ctx[3+ctxInc], ctxInc=0 (both neighbors unavailable → condTerm=0)
         MESSAGE("ctx[3] before bin0: state=" << (int)ctxSet[3].state()
                 << " mps=" << (int)ctxSet[3].mps());
         uint32_t bin0 = engine.decodeBin(ctxSet[3]);

@@ -38,6 +38,7 @@
 #include "../components/sub0h264/src/decoder.hpp"
 #include "../components/sub0h264/src/annexb.hpp"
 
+#include <cmath>
 #include <memory>
 #include <vector>
 
