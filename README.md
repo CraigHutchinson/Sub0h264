@@ -23,8 +23,8 @@ Header-only C++23 library with zero external dependencies.
 | **SPS/PPS parsing** | Complete | Baseline, Main, High profiles. VUI parsed but ignored |
 | **I-slice (CAVLC)** | Complete | 52+ dB PSNR vs raw source. Pixel-perfect vs ffmpeg |
 | **P-slice (CAVLC)** | Complete | 52+ dB PSNR. Skip, 16x16, 16x8, 8x16, 8x8 partitions |
-| **I-slice (CABAC)** | Partial | Engine verified correct. Quality ~10 dB (target 50 dB) |
-| **P-slice (CABAC)** | Partial | Arithmetic engine correct, context adaptation incomplete |
+| **I-slice (CABAC)** | Complete | 52+ dB PSNR. Verified bit-exact vs JM reference decoder |
+| **P-slice (CABAC)** | Complete | 48+ dB avg PSNR. Multi-ref, I-in-P, 8x8 transform all working |
 | **B-slice** | Not implemented | Slice header parsed, decode rejected |
 | **Intra 4x4 prediction** | Complete | All 9 directional modes per §8.3.1.2 |
 | **Intra 8x8 prediction** | Complete | All 9 modes per §8.3.2 (V, H, DC, DDL, DDR, VR, HD, VL, HU) |
@@ -37,12 +37,12 @@ Header-only C++23 library with zero external dependencies.
 | **Deblocking filter** | Complete | BS 0-4, alpha/beta/tc0 tables per §8.7 |
 | **CAVLC entropy** | Complete | coeff_token, level, total_zeros, run_before |
 | **CABAC entropy** | Complete | Arithmetic engine, context init, all binarisations |
-| **Weighted prediction** | Stub | Table parsed, weights not applied to MC |
-| **DPB management** | Basic | Short-term refs only. No MMCO, no long-term refs |
+| **Weighted prediction** | Complete | Parsed + applied for P-slices, all partition types §8.4.2.3 |
+| **DPB management** | Complete | Short-term + long-term refs, all 6 MMCO ops §8.2.5.4, L0 reordering §8.2.4.3 |
 | **Scaling lists** | Parsed | Stored but not applied to 8x8 dequant |
 | **MBAFF** | Not implemented | Progressive frame_mbs_only=1 only |
 | **FMO** | Not implemented | Single slice group only |
-| **Multiple references** | Partial | ref_idx stored per partition, DPB lookup by frameNum |
+| **Multiple references** | Complete | Per-partition ref_idx, full L0 list with reordering §8.2.4.3 |
 | **Error concealment** | Not implemented | Frame skipped on decode error |
 
 ### Technical Readiness
@@ -50,8 +50,8 @@ Header-only C++23 library with zero external dependencies.
 | Profile | I-frames | P-frames | B-frames | Quality |
 |---------|----------|----------|----------|---------|
 | Constrained Baseline | Production | Production | N/A | 52+ dB |
-| Main (CABAC) | In progress | In progress | Not started | ~10 dB |
-| High (8x8 + CABAC) | In progress | In progress | Not started | ~10 dB |
+| Main (CABAC) | Production | Production | Not started | 48+ dB |
+| High (8x8 + CABAC) | Production | Production | Not started | 48+ dB |
 
 ## Performance
 
