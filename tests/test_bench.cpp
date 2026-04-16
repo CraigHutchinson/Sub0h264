@@ -76,6 +76,11 @@ static void benchStream(const char* name, const char* fixture)
         VERSION_FULL, name, (long)frameCount, medianMs,
         passMs[0], passMs[1], passMs[2], medianFps);
     MESSAGE(buf);
+
+    // Machine-readable JSON to stderr for scripts/gen_bench_report.py
+    std::fprintf(stderr, "BENCH_JSON {\"id\":\"%s\",\"frames\":%ld,"
+        "\"median_ms\":%.1f,\"fps\":%.1f,\"version\":\"%s\"}\n",
+        name, (long)frameCount, medianMs, medianFps, VERSION_FULL);
 }
 
 TEST_CASE("Bench: Baseline CAVLC 640x480 (short)" * doctest::test_suite("bench"))
@@ -99,6 +104,45 @@ TEST_CASE("Bench: CAVLC 320x240 I+P" * doctest::test_suite("bench"))
 TEST_CASE("Bench: CABAC 320x240 I+P" * doctest::test_suite("bench"))
 {
     benchStream("CABAC 320x240 I+P", "scrolling_texture_high.h264");
+}
+
+// ── 640x480 Benchmark Fixtures ──────────────────────────────────────────
+
+TEST_CASE("Bench: Scroll Baseline 640x480" * doctest::test_suite("bench"))
+{
+    benchStream("Scroll Baseline 640x480", "bench_scroll_baseline_640x480.h264");
+}
+
+TEST_CASE("Bench: Scroll High 640x480" * doctest::test_suite("bench"))
+{
+    benchStream("Scroll High 640x480", "bench_scroll_high_640x480.h264");
+}
+
+TEST_CASE("Bench: Ball Baseline 640x480" * doctest::test_suite("bench"))
+{
+    benchStream("Ball Baseline 640x480", "bench_ball_baseline_640x480.h264");
+}
+
+TEST_CASE("Bench: Ball High 640x480" * doctest::test_suite("bench"))
+{
+    benchStream("Ball High 640x480", "bench_ball_high_640x480.h264");
+}
+
+TEST_CASE("Bench: Still Baseline 640x480" * doctest::test_suite("bench"))
+{
+    benchStream("Still Baseline 640x480", "bench_still_baseline_640x480.h264");
+}
+
+TEST_CASE("Bench: Still High 640x480" * doctest::test_suite("bench"))
+{
+    benchStream("Still High 640x480", "bench_still_high_640x480.h264");
+}
+
+TEST_CASE("Bench: Tapo C110 stream2" * doctest::test_suite("bench"))
+{
+    auto data = getFixture("tapo_c110_stream2_baseline.h264");
+    if (data.empty()) { MESSAGE("tapo fixture not available — skipping"); return; }
+    benchStream("Tapo C110 stream2", "tapo_c110_stream2_baseline.h264");
 }
 
 /** Run a profiled decode: measures per-section timing breakdown. */
