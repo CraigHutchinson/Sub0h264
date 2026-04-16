@@ -28,9 +28,10 @@ using namespace sub0h264;
 /// We set the threshold below the noisiest content to catch real decoder regressions.
 static constexpr double cIFrameMinPsnrDb = 27.0;
 
-/// I+P frame minimum PSNR — P-frame inter prediction has known issues.
-/// These thresholds prevent regression while P-frame bugs are investigated.
-static constexpr double cIPFrameMinPsnrDb = 13.0;
+/// I+P frame minimum PSNR — all Baseline CAVLC P-frame issues resolved.
+/// Current quality: 45-56 dB for all CAVLC I+P fixtures.
+/// Threshold set conservatively below the worst-case fixture.
+static constexpr double cIPFrameMinPsnrDb = 38.0;
 
 /// PSNR above which decode quality is considered excellent.
 static constexpr double cExcellentPsnrDb = 38.0;
@@ -244,7 +245,6 @@ TEST_CASE("Quality I-only: gradient pan vs raw source")
 TEST_CASE("Quality I+P: scrolling texture vs raw source")
 {
     // IDR every 10 frames. P-frames exercise motion compensation.
-    // Known issue: P-frame inter prediction has quality bugs.
     double minPsnr = decodeAndMeasurePsnr(
         "scrolling_texture_baseline.h264", "scrolling_texture_baseline_raw.yuv",
         320U, 240U, 30U);
@@ -330,9 +330,10 @@ TEST_CASE("Quality I+P: static scene (zero motion)")
 // KNOWN ISSUE: CABAC decode quality is currently ~8-10 dB (should be ~50 dB).
 // The CABAC residual decode path needs investigation.
 
-/// Minimum PSNR for High/CABAC frames. Currently very low — CABAC decode
-/// has quality issues. Target: same as baseline (~50 dB).
-inline constexpr double cHighFrameMinPsnrDb = 4.5;
+/// Minimum PSNR for High/CABAC frames. CABAC decode verified bit-exact vs JM.
+/// Scrolling texture min ~30 dB (GOP accumulation), gradient pan min ~28 dB.
+/// Threshold set conservatively to catch regressions without being brittle.
+inline constexpr double cHighFrameMinPsnrDb = 25.0;
 
 TEST_CASE("Quality High CABAC: scrolling texture vs raw source")
 {
@@ -362,7 +363,6 @@ TEST_CASE("CABAC IDR: flat gray decodes within 15 dB of raw source")
 {
     // Main profile CABAC encode of flat gray 320x240 (Y≈121).
     // All MBs are I_4x4 or I_16x16. No P-frames, no 8x8 transform.
-    // At ~10 dB currently; target 50 dB when CABAC fully spec-compliant.
     auto h264 = getFixture("cabac_flat_main.h264");
     if (h264.empty())
     {
@@ -372,7 +372,6 @@ TEST_CASE("CABAC IDR: flat gray decodes within 15 dB of raw source")
     double minPsnr = decodeAndMeasurePsnr(
         "cabac_flat_main.h264", "cabac_flat_main_raw.yuv",
         320U, 240U, 1U);
-    // Track regression: currently ~10 dB, will improve as CABAC fixes land
     CHECK(minPsnr >= cHighFrameMinPsnrDb);
 }
 
