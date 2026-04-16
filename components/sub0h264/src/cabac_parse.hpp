@@ -152,7 +152,8 @@ inline uint32_t cabacDecodeMbTypeI(CabacEngine& engine, CabacCtx* ctx,
  *          3=P_8x8, 5-30=Intra (offset by 5)
  */
 inline uint32_t cabacDecodeMbTypeP(CabacEngine& engine, CabacCtx* ctx,
-                                    bool leftIsI4x4, bool topIsI4x4) noexcept
+                                    [[maybe_unused]] bool leftIsI4x4,
+                                    [[maybe_unused]] bool topIsI4x4) noexcept
 {
     // bin[0]: ctxIdx = 14 (Table 9-39, ctxIdxInc=0) [CHECKED §9.3.3.1.2]
     if (engine.decodeBin(ctx[cCtxMbTypeP + 0U]) == 0U)
@@ -172,8 +173,32 @@ inline uint32_t cabacDecodeMbTypeP(CabacEngine& engine, CabacCtx* ctx,
         return bin2 == 0U ? 2U : 1U;
     }
 
-    // Intra MB within P-slice — decode I-slice mb_type suffix §9.3.3.1.2
-    return 5U + cabacDecodeMbTypeI(engine, ctx, leftIsI4x4, topIsI4x4);
+    // Intra MB within P-slice — §9.3.3.1.2, verified against JM reference.
+    // I-in-P uses P-slice contexts at ctxIdx 17-20 (NOT I-slice contexts 3-10).
+    // JM reference: mb_type_contexts[1][7]=I_NxN, [8]=cbpLuma, [9]=cbpChroma, [10]=predMode.
+    {
+        // bin: I_NxN check — JM uses fixed context mb_type_contexts[1][7] = ctxIdx 17
+        if (engine.decodeBin(ctx[17U]) == 0U)
+            return 5U + 0U; // I_4x4 (I_NxN) in P-slice
+
+        // Terminate check for I_PCM
+        if (engine.decodeTerminate() == 1U)
+            return 5U + 25U; // I_PCM in P-slice
+
+        // I_16x16 suffix — JM: mb_type_contexts[1][8,9,10]
+        uint32_t cbpLuma = engine.decodeBin(ctx[18U]);       // AC/no-AC
+
+        uint32_t cbpChroma = 0U;
+        if (engine.decodeBin(ctx[19U]) != 0U)                // cbpChroma > 0
+        {
+            cbpChroma = engine.decodeBin(ctx[19U]) == 0U ? 1U : 2U; // cbpChroma 1 or 2
+        }
+
+        uint32_t predMode = (engine.decodeBin(ctx[20U]) << 1U) |
+                              engine.decodeBin(ctx[20U]);     // 2-bit pred mode
+
+        return 5U + 1U + predMode + cbpChroma * 4U + cbpLuma * 12U;
+    }
 }
 
 // ── coded_block_pattern — §9.3.3.1.1.4 ─────────────────────────────────
