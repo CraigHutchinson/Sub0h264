@@ -63,5 +63,15 @@ test_reports/
 # Debug frame dumps
 debug_*.yuv
 
+# Raw YUV ground-truth files (desktop PSNR comparison, too large for git)
+*_raw.yuv
+
+# Temporary investigation scripts
+scripts/tmp_*
+
+# Benchmark generated reports (regenerated from BENCH_JSON/SHOOTOUT_JSON)
+docs/benchmark_history.csv
+docs/benchmark_report.md
+
 # Reference code (cloned for study, not part of project)
 docs/reference/

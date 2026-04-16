@@ -25,6 +25,12 @@ target_link_libraries(Sub0h264_Tests PRIVATE version::version)
 
 add_test(NAME Sub0h264_Tests COMMAND Sub0h264_Tests)
 
+# Bench-only test: runs only [bench] test suite via doctest filter.
+# Use: ctest --preset bench
+add_test(NAME Sub0h264_Bench_Tests
+    COMMAND Sub0h264_Tests --test-suite=bench)
+set_tests_properties(Sub0h264_Bench_Tests PROPERTIES LABELS "bench")
+
 # Standalone benchmark binary (not run by ctest — invoke manually)
 add_executable(Sub0h264_Bench bench_decode.cpp)
 target_link_libraries(Sub0h264_Bench PRIVATE Sub0h264::Sub0h264)

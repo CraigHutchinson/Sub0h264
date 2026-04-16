@@ -23,8 +23,8 @@ Header-only C++23 library with zero external dependencies.
 | **SPS/PPS parsing** | Complete | Baseline, Main, High profiles. VUI parsed but ignored |
 | **I-slice (CAVLC)** | Complete | 52+ dB PSNR vs raw source. Pixel-perfect vs ffmpeg |
 | **P-slice (CAVLC)** | Complete | 52+ dB PSNR. Skip, 16x16, 16x8, 8x16, 8x8 partitions |
-| **I-slice (CABAC)** | Complete | 52+ dB PSNR. Verified bit-exact vs JM reference decoder |
-| **P-slice (CABAC)** | Complete | 48+ dB avg PSNR. Multi-ref, I-in-P, 8x8 transform all working |
+| **I-slice (CABAC)** | Complete (320x240) | 51+ dB at 320x240. Quality issue at 640x368 (~6 dB) under investigation |
+| **P-slice (CABAC)** | Complete (320x240) | 48+ dB at 320x240. DPB MMCO fix enables multi-GOP streams |
 | **B-slice** | Not implemented | Slice header parsed, decode rejected |
 | **Intra 4x4 prediction** | Complete | All 9 directional modes per §8.3.1.2 |
 | **Intra 8x8 prediction** | Complete | All 9 modes per §8.3.2 (V, H, DC, DDL, DDR, VR, HD, VL, HU) |
@@ -50,8 +50,8 @@ Header-only C++23 library with zero external dependencies.
 | Profile | I-frames | P-frames | B-frames | Quality |
 |---------|----------|----------|----------|---------|
 | Constrained Baseline | Production | Production | N/A | 52+ dB |
-| Main (CABAC) | Production | Production | Not started | 48+ dB |
-| High (8x8 + CABAC) | Production | Production | Not started | 48+ dB |
+| Main (CABAC) | Production (320x240) | Production (320x240) | Not started | 48+ dB |
+| High (8x8 + CABAC) | Production (320x240) | In progress (640x) | Not started | 6-51 dB |
 
 ## Performance
 

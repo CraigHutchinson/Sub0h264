@@ -150,6 +150,13 @@
             "name": "ci-asan",
             "configurePreset": "ci-asan",
             "output": { "outputOnFailure": true }
+        },
+        {
+            "name": "bench",
+            "configurePreset": "default",
+            "configuration": "Release",
+            "output": { "outputOnFailure": true },
+            "filter": { "include": { "label": "bench" } }
         }
     ]
 }

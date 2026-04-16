@@ -89,9 +89,7 @@ static double benchLibavc(const std::vector<uint8_t>& data, int32_t expectedFram
     createIn.s_ivd_create_ip_t.e_output_format = IV_YUV_420P;
     createIn.s_ivd_create_ip_t.pf_aligned_alloc = [](void* ctx, WORD32 align, WORD32 size) -> void* {
         (void)ctx;
-        void* p = _aligned_malloc(static_cast<size_t>(size), static_cast<size_t>(align));
-        std::fprintf(stderr, "libavc alloc: align=%d size=%d -> %p\n", align, size, p);
-        return p;
+        return _aligned_malloc(static_cast<size_t>(size), static_cast<size_t>(align));
     };
     createIn.s_ivd_create_ip_t.pf_aligned_free = [](void*, void* ptr) {
         _aligned_free(ptr);
@@ -102,9 +100,6 @@ static double benchLibavc(const std::vector<uint8_t>& data, int32_t expectedFram
     createOut.s_ivd_create_op_t.u4_size = sizeof(ih264d_create_op_t);
 
     iv_obj_t* codec = nullptr;
-    std::fprintf(stderr, "libavc: sizeof create_ip=%zu decode_ip=%zu decode_op=%zu\n",
-        sizeof(ih264d_create_ip_t), sizeof(ih264d_video_decode_ip_t), sizeof(ih264d_video_decode_op_t));
-
     IV_API_CALL_STATUS_T status = ih264d_api_function(
         nullptr, &createIn, &createOut);
     if (status != IV_SUCCESS)
@@ -166,10 +161,6 @@ static double benchLibavc(const std::vector<uint8_t>& data, int32_t expectedFram
             IV_API_CALL_STATUS_T st = ih264d_api_function(codec, &decIn, &decOut);
 
             auto& op = decOut.s_ivd_video_decode_op_t;
-            if (frames == 0 && offset == 0) // first call debug
-                std::fprintf(stderr, "libavc: first decode: status=%d consumed=%u output=%u error=0x%x\n",
-                    st, op.u4_num_bytes_consumed, op.u4_output_present, op.u4_error_code);
-
             if (op.u4_num_bytes_consumed == 0)
                 break;
             offset += op.u4_num_bytes_consumed;

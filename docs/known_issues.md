@@ -2,7 +2,11 @@
 
 ## Active Quality Issues
 
-None. All supported profiles (Baseline, Main, High) decode at production quality.
+### CABAC quality at 640x368 (Tapo C110 stream)
+- IDR frame diverges at ~MB(15,0): first 15 MBs correct, then ~6 dB PSNR
+- 320x240 CABAC streams decode at 51+ dB — issue is resolution-specific
+- Not caused by DPB or MMCO — the IDR I-slice itself decodes wrong pixels
+- Needs investigation: likely a CABAC context or residual path issue at wider frames
 
 ## Closed / Fixed Issues
 
@@ -30,6 +34,14 @@ All P-frame slices verified bit-exact against JM reference decoder.
 - **I-in-P mb_type contexts** (cabac_parse.hpp): used I-slice ctx 3-10 instead of P-slice 17-20 §9.3.3.1.2
 - **transform_size_8x8_flag neighbor context** (decoder.hpp): fixed ctxInc=0→neighbor-dependent §9.3.3.1.1.10
 - **DRY refactor** (decoder.hpp): extracted decodeCabacTransform8x8Flag helper for I_NxN + P-inter paths
+
+### DPB non-reference slot reuse — FIXED (6 → 119 frames on Tapo stream)
+- **getDecodeTarget evicting active refs** (dpb.hpp): When MMCO op=1 unmarked a
+  reference, the slot stayed `occupied=true` but `isReference=false`. With
+  `max_num_ref_frames=1` (2 DPB slots), getDecodeTarget had no free slots and
+  evicted the only remaining reference. Fix: prefer reusing occupied non-reference
+  slots before evicting active references. Impact: Tapo C110 stream went from 6
+  decoded frames to 119 (matches ffmpeg).
 
 ### CABAC syntax fixes applied (earlier)
 - **rem_intra4x4_pred_mode** (cabac_parse.hpp): Changed from bypass bins to

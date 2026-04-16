@@ -84,7 +84,19 @@ public:
             }
         }
 
-        // DPB full: evict oldest short-term reference (FIFO)
+        // Prefer reusing an occupied-but-not-reference slot (already output,
+        // no longer needed). This avoids evicting an active reference when
+        // MMCO has explicitly unmarked a slot. — §8.2.5
+        for (auto& e : entries_)
+        {
+            if (e.occupied && !e.isReference)
+            {
+                currentEntry_ = &e;
+                return &e.frame;
+            }
+        }
+
+        // DPB full of references: evict oldest short-term reference (FIFO)
         DpbEntry* oldest = nullptr;
         for (auto& e : entries_)
         {
@@ -97,9 +109,8 @@ public:
 
         if (oldest)
         {
-            // §8.2.5: Evict oldest non-reference — mark as non-ref, reuse slot
             oldest->isReference = false;
-            oldest->occupied = true; // Reuse this slot for new frame
+            oldest->occupied = true;
             currentEntry_ = oldest;
             return &oldest->frame;
         }
