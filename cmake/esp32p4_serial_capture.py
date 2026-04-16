@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""Thin serial capture helper for ESP32-P4 CTest integration.
+"""ESP32-P4 serial capture for CTest integration.
 
-Single responsibility: open serial port, stream output to log file + stdout,
-detect stop patterns (doctest pass/fail/crash), exit with appropriate code.
+Opens serial port, resets device via DTR/RTS, streams output to log file +
+stdout, and exits when a terminal condition is detected.
 
-Exit codes:
-  0 = Tests passed ([doctest] Status: SUCCESS!)
-  1 = Tests failed ([doctest] Status: FAILURE!)
-  2 = Timeout (boot or test phase)
-  3 = Device crashed (Guru Meditation, abort, Backtrace)
-  4 = Serial port error (busy, not found)
+Terminal conditions (checked per-line):
+  - Success pattern matched → exit 0
+  - Failure pattern matched → exit 1
+  - Crash detected (Guru Meditation, abort, Backtrace) → exit 3
+  - Device rebooted mid-test (ESP-ROM: seen after boot) → exit 3
+  - Timeout → exit 2
+  - Serial error → exit 4
 
-Called by cmake/esp32p4_flash_and_test.cmake via execute_process().
+Boot detection: any line matching the boot marker (default: "app_main" or
+"Calling app_main") switches from boot phase to test phase. The boot phase
+has a short timeout; the test phase has a longer one. If boot detection
+fails, all output is still captured — the test timeout applies from the
+start of capture.
 
 SPDX-License-Identifier: MIT
 """
@@ -27,17 +32,22 @@ def main():
     parser.add_argument("--port", required=True, help="Serial port (e.g. COM5)")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--boot-timeout", type=int, default=15,
-                        help="Seconds to wait for boot marker")
+                        help="Seconds to wait for boot (soft — capture continues)")
     parser.add_argument("--test-timeout", type=int, default=120,
-                        help="Seconds to wait for test completion")
+                        help="Total seconds from start to success/failure")
     parser.add_argument("--log-file", required=True, help="Output log file path")
-    parser.add_argument("--boot-marker", default="Sub0h264 unit tests starting...",
-                        help="String that indicates device has booted")
-    parser.add_argument("--success-pattern", default="[doctest] Status: SUCCESS!")
-    parser.add_argument("--failure-pattern", default="[doctest] Status: FAILURE!")
+    parser.add_argument("--boot-marker", default="Calling app_main",
+                        help="Substring in any line that indicates boot complete")
+    parser.add_argument("--success-pattern", default="[doctest] Status: SUCCESS!",
+                        help="Line substring indicating test success")
+    parser.add_argument("--failure-pattern", default="[doctest] Status: FAILURE!",
+                        help="Line substring indicating test failure")
     parser.add_argument("--crash-patterns", nargs="*",
                         default=["Guru Meditation Error", "abort() was called",
-                                 "Backtrace:"])
+                                 "Backtrace:", "panic'ed"])
+    parser.add_argument("--reset", action="store_true", default=True,
+                        help="Reset device via DTR/RTS before capture")
+    parser.add_argument("--no-reset", action="store_false", dest="reset")
     args = parser.parse_args()
 
     try:
@@ -47,23 +57,33 @@ def main():
               file=sys.stderr)
         sys.exit(4)
 
-    # ── Open serial with DTR/RTS set BEFORE open ────────────────────────
+    # ── Open serial port ───────────────────────────────────────────────
     try:
         ser = serial.Serial()
         ser.port = args.port
         ser.baudrate = args.baud
-        ser.timeout = 0.1  # 100ms read timeout for polling
+        ser.timeout = 0.5  # 500ms read timeout for line-based reading
         ser.dtr = False
         ser.rts = False
         ser.open()
-        ser.reset_input_buffer()  # Flush stale data
+        ser.reset_input_buffer()
     except serial.SerialException as e:
         print(f"ERROR: Cannot open {args.port}: {e}", file=sys.stderr)
         sys.exit(4)
 
+    # ── Reset device ───────────────────────────────────────────────────
+    if args.reset:
+        ser.dtr = False
+        ser.rts = True
+        time.sleep(0.1)
+        ser.rts = False
+        time.sleep(0.1)
+        ser.dtr = True
+        time.sleep(0.05)
+        ser.reset_input_buffer()
+
     ansi_re = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-    accumulated = ""
-    result = None  # None=pending, 0=pass, 1=fail, 3=crash
+    reboot_re = re.compile(r"ESP-ROM:|rst:0x[0-9a-f]")
 
     try:
         log_fh = open(args.log_file, "w", encoding="utf-8", errors="replace")
@@ -73,93 +93,119 @@ def main():
         ser.close()
         sys.exit(4)
 
-    def read_and_log():
-        nonlocal accumulated
-        try:
-            raw = ser.read(4096)
-        except serial.SerialException:
-            return False
-        if not raw:
-            return True
-        text = raw.decode("utf-8", errors="replace")
-        clean = ansi_re.sub("", text)
-        log_fh.write(clean)
-        log_fh.flush()
-        sys.stdout.write(clean)
-        sys.stdout.flush()
-        accumulated += clean
-        return True
-
-    # ── Phase 1: Wait for boot marker ───────────────────────────────────
-    print(f"[serial_capture] Waiting for boot marker (timeout {args.boot_timeout}s)...",
-          flush=True)
-    boot_deadline = time.monotonic() + args.boot_timeout
+    # ── Capture loop (line-based) ──────────────────────────────────────
     booted = False
+    boot_seen_at = None
+    result = None  # None=pending, 0=pass, 1=fail, 2=timeout, 3=crash
+    start_time = time.monotonic()
+    absolute_deadline = start_time + args.test_timeout
+    lines_after_boot = 0
 
-    while time.monotonic() < boot_deadline:
-        if not read_and_log():
-            break
-        if args.boot_marker in accumulated:
-            booted = True
-            print("[serial_capture] Boot marker detected.", flush=True)
-            break
-
-    if not booted:
-        print(f"[serial_capture] TIMEOUT: boot marker not seen in {args.boot_timeout}s",
-              file=sys.stderr, flush=True)
-        log_fh.close()
-        ser.close()
-        sys.exit(2)
-
-    # ── Phase 2: Capture test output ────────────────────────────────────
-    print(f"[serial_capture] Capturing test output (timeout {args.test_timeout}s)...",
+    print(f"[serial_capture] Capturing on {args.port} "
+          f"(boot={args.boot_timeout}s, test={args.test_timeout}s)...",
           flush=True)
-    test_deadline = time.monotonic() + args.test_timeout
-    terminal_found = False
 
-    while time.monotonic() < test_deadline:
-        if not read_and_log():
-            break
+    try:
+        while time.monotonic() < absolute_deadline:
+            try:
+                raw = ser.readline()
+            except serial.SerialException:
+                result = 4
+                break
 
-        # Check for crash patterns (highest priority)
-        for cp in args.crash_patterns:
-            if cp in accumulated:
+            if not raw:
+                # No data within timeout — check boot deadline
+                if not booted and (time.monotonic() - start_time) > args.boot_timeout:
+                    print(f"[serial_capture] WARNING: boot marker not seen in "
+                          f"{args.boot_timeout}s (continuing capture)",
+                          file=sys.stderr, flush=True)
+                    booted = True  # Proceed anyway — don't abort
+                    boot_seen_at = time.monotonic()
+                continue
+
+            # Decode and clean
+            try:
+                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            except Exception:
+                continue
+
+            clean = ansi_re.sub("", line)
+
+            # Skip boot noise
+            if "invalid header" in clean:
+                continue
+
+            # Log and print
+            log_fh.write(clean + "\n")
+            log_fh.flush()
+            print(clean, flush=True)
+
+            # ── Boot detection ─────────────────────────────────────
+            if not booted and args.boot_marker in clean:
+                booted = True
+                boot_seen_at = time.monotonic()
+                print("[serial_capture] Boot detected.", flush=True)
+
+            if booted:
+                lines_after_boot += 1
+
+            # ── Reboot detection (crash/watchdog mid-test) ─────────
+            if booted and lines_after_boot > 5 and reboot_re.search(clean):
+                print("[serial_capture] Device rebooted mid-test!",
+                      file=sys.stderr, flush=True)
                 result = 3
+                break
 
-        # Check for doctest results (last-match-wins: crash overrides)
-        if args.failure_pattern in accumulated and result != 3:
-            result = 1
-            terminal_found = True
-        if args.success_pattern in accumulated and result != 3:
-            result = 0
-            terminal_found = True
+            # ── Crash detection ────────────────────────────────────
+            for cp in args.crash_patterns:
+                if cp in clean:
+                    print(f"[serial_capture] Crash detected: {cp}",
+                          file=sys.stderr, flush=True)
+                    result = 3
+                    # Read a few more lines for backtrace context
+                    flush_end = time.monotonic() + 2.0
+                    while time.monotonic() < flush_end:
+                        try:
+                            extra = ser.readline()
+                        except serial.SerialException:
+                            break
+                        if extra:
+                            eline = extra.decode("utf-8", errors="replace").rstrip()
+                            eline = ansi_re.sub("", eline)
+                            log_fh.write(eline + "\n")
+                            print(eline, flush=True)
+                    break
 
-        # If we found a terminal pattern, do a 2s post-flush to catch late crashes
-        if terminal_found:
-            flush_deadline = time.monotonic() + 2.0
-            while time.monotonic() < flush_deadline:
-                read_and_log()
-                # Re-check crash patterns during flush
-                for cp in args.crash_patterns:
-                    if cp in accumulated:
-                        result = 3
-            break
-    else:
-        # Loop exhausted = timeout
-        if result is None:
-            print(f"[serial_capture] TIMEOUT: tests did not complete in {args.test_timeout}s",
-                  file=sys.stderr, flush=True)
-            result = 2
+            if result is not None:
+                break
 
-    # ── Cleanup ─────────────────────────────────────────────────────────
+            # ── Success/failure detection ──────────────────────────
+            if args.success_pattern in clean:
+                result = 0
+                break
+            if args.failure_pattern in clean:
+                result = 1
+                break
+
+    except KeyboardInterrupt:
+        print("\n[serial_capture] Interrupted.", flush=True)
+        result = 2
+
+    # ── Timeout ────────────────────────────────────────────────────────
+    if result is None:
+        result = 2
+        elapsed = time.monotonic() - start_time
+        print(f"[serial_capture] TIMEOUT after {elapsed:.0f}s",
+              file=sys.stderr, flush=True)
+
+    # ── Cleanup ────────────────────────────────────────────────────────
     ser.close()
     log_fh.close()
 
-    exit_code = result if result is not None else 2
-    labels = {0: "PASSED", 1: "FAILED", 2: "TIMEOUT", 3: "CRASHED"}
-    print(f"[serial_capture] Result: {labels.get(exit_code, 'UNKNOWN')} (exit {exit_code})",
+    labels = {0: "PASSED", 1: "FAILED", 2: "TIMEOUT", 3: "CRASHED", 4: "SERIAL_ERROR"}
+    print(f"[serial_capture] Result: {labels.get(result, 'UNKNOWN')} (exit {result})",
           flush=True)
-    sys.exit(exit_code)
+    sys.exit(result)
 
 
 if __name__ == "__main__":
