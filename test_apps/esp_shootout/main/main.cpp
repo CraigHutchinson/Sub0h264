@@ -26,6 +26,9 @@ extern "C" {
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char* TAG = "shootout";
 
@@ -271,16 +274,61 @@ cleanup:
 
 // ── Main ────────────────────────────────────────────────────────────────
 
+/** Read a fixture filter from serial during a startup window.
+ *  Host sends a line within the window; if empty or timeout, run all.
+ *  Uses UART0 directly since getchar() may not work reliably on ESP-IDF. */
+/** Read a fixture filter from serial during a startup window.
+ *  Host sends the filter before/during boot — it sits in the VFS stdin
+ *  buffer. We read with getchar() using a polling loop. */
+static void readSerialFilter(char* buf, size_t bufSize, uint32_t windowMs)
+{
+    buf[0] = '\0';
+    printf("READY_FOR_FILTER\n");
+    fflush(stdout);
+
+    int64_t deadline = esp_timer_get_time() + static_cast<int64_t>(windowMs) * 1000;
+    size_t pos = 0;
+    while (esp_timer_get_time() < deadline)
+    {
+        int c = getchar();
+        if (c == EOF)
+        {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        if (c == '\n' || c == '\r')
+        {
+            if (pos > 0) break;
+            continue;
+        }
+        if (c >= 0x20 && pos < bufSize - 1)
+            buf[pos++] = static_cast<char>(c);
+    }
+    buf[pos] = '\0';
+
+    if (pos > 0)
+        ESP_LOGI(TAG, "Filter: '%s'", buf);
+    else
+        ESP_LOGI(TAG, "No filter - running all fixtures");
+}
+
 extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "Sub0h264 vs libavc Shootout on ESP32-P4");
     ESP_LOGI(TAG, "Free PSRAM: %lu bytes", (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
+    // Wait for optional filter from host (5-second window)
+    char filter[64] = "";
+    readSerialFilter(filter, sizeof(filter), 5000);
 
     printf("\n%-20s %8s %10s %10s %8s\n", "Stream", "Frames", "sub0h264", "libavc", "Ratio");
     printf("%s\n", "--------------------------------------------------------------");
 
     for (const auto& fix : cFixtures)
     {
+        // Apply filter: skip fixtures whose ID doesn't contain the filter string
+        if (filter[0] != '\0' && strstr(fix.id, filter) == nullptr)
+            continue;
         uint32_t size = static_cast<uint32_t>(fix.end - fix.start);
         if (size == 0)
         {

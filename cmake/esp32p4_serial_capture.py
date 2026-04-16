@@ -48,6 +48,8 @@ def main():
     parser.add_argument("--reset", action="store_true", default=True,
                         help="Reset device via DTR/RTS before capture")
     parser.add_argument("--no-reset", action="store_false", dest="reset")
+    parser.add_argument("--send-filter", default=None,
+                        help="Filter string to send when READY_FOR_FILTER is seen")
     args = parser.parse_args()
 
     try:
@@ -58,29 +60,28 @@ def main():
         sys.exit(4)
 
     # ── Open serial port ───────────────────────────────────────────────
+    # Open in one call — Windows toggles DTR on open, which is expected.
     try:
-        ser = serial.Serial()
-        ser.port = args.port
-        ser.baudrate = args.baud
-        ser.timeout = 0.5  # 500ms read timeout for line-based reading
-        ser.dtr = False
-        ser.rts = False
-        ser.open()
-        ser.reset_input_buffer()
+        ser = serial.Serial(args.port, args.baud, timeout=1)
     except serial.SerialException as e:
         print(f"ERROR: Cannot open {args.port}: {e}", file=sys.stderr)
         sys.exit(4)
 
-    # ── Reset device ───────────────────────────────────────────────────
+    # ── Reset device via DTR/RTS toggle ──────────────────────────────
     if args.reset:
+        print("[serial_capture] Resetting device...", flush=True)
         ser.dtr = False
-        ser.rts = True
+        ser.rts = True      # EN -> LOW (hold in reset)
         time.sleep(0.1)
-        ser.rts = False
+        ser.rts = False      # EN -> HIGH (release)
         time.sleep(0.1)
         ser.dtr = True
-        time.sleep(0.05)
-        ser.reset_input_buffer()
+        # Send filter immediately — sits in UART RX buffer until device reads
+        if args.send_filter:
+            ser.write((args.send_filter + "\n").encode("utf-8"))
+            ser.flush()
+            print(f"[serial_capture] Sent filter: {args.send_filter}",
+                  flush=True)
 
     ansi_re = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
     reboot_re = re.compile(r"ESP-ROM:|rst:0x[0-9a-f]")
@@ -96,6 +97,7 @@ def main():
     # ── Capture loop (line-based) ──────────────────────────────────────
     booted = False
     boot_seen_at = None
+    filter_sent = False
     result = None  # None=pending, 0=pass, 1=fail, 2=timeout, 3=crash
     start_time = time.monotonic()
     absolute_deadline = start_time + args.test_timeout
@@ -148,6 +150,10 @@ def main():
 
             if booted:
                 lines_after_boot += 1
+
+            # ── Note filter receipt (for logging only) ────────────
+            if not filter_sent and "READY_FOR_FILTER" in clean:
+                filter_sent = True
 
             # ── Reboot detection (crash/watchdog mid-test) ─────────
             if booted and lines_after_boot > 5 and reboot_re.search(clean):
