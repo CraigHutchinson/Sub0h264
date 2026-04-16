@@ -46,8 +46,7 @@ DECLARE_FIXTURE(bench_ball_baseline_640x480)
 DECLARE_FIXTURE(bench_ball_high_640x480)
 DECLARE_FIXTURE(bench_still_baseline_640x480)
 DECLARE_FIXTURE(bench_still_high_640x480)
-DECLARE_FIXTURE(flat_black_baseline_640x480)
-DECLARE_FIXTURE(baseline_640x480_short)
+DECLARE_FIXTURE(bench_flat_baseline_640x480)
 DECLARE_FIXTURE(scrolling_texture_baseline)
 DECLARE_FIXTURE(scrolling_texture_high)
 DECLARE_FIXTURE(tapo_c110_stream2_high)
@@ -70,8 +69,7 @@ static const Fixture cFixtures[] = {
     FIX("Ball-High-640",    bench_ball_high_640x480),
     FIX("Still-Base-640",   bench_still_baseline_640x480),
     FIX("Still-High-640",   bench_still_high_640x480),
-    FIX("Flat-Base-640",    flat_black_baseline_640x480),
-    FIX("CAVLC-Base-640",   baseline_640x480_short),
+    FIX("Flat-Base-640",    bench_flat_baseline_640x480),
     FIX("CAVLC-320",        scrolling_texture_baseline),
     FIX("CABAC-320",        scrolling_texture_high),
     FIX("Tapo-C110",        tapo_c110_stream2_high),
@@ -79,7 +77,7 @@ static const Fixture cFixtures[] = {
 
 // ── Sub0h264 benchmark ─────────────────────────────────────────────────
 
-static constexpr uint32_t cPasses = 3U;
+static constexpr uint32_t cPasses = 2U;
 
 static double benchSub0h264(const uint8_t* data, uint32_t size, int32_t& outFrames)
 {

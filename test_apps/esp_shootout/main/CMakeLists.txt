@@ -24,8 +24,7 @@ set(_bench_fixtures
     bench_ball_high_640x480.h264
     bench_still_baseline_640x480.h264
     bench_still_high_640x480.h264
-    flat_black_baseline_640x480.h264
-    baseline_640x480_short.h264
+    bench_flat_baseline_640x480.h264
     scrolling_texture_baseline.h264
     scrolling_texture_high.h264
     tapo_c110_stream2_high.h264
