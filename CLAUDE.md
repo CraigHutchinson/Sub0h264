@@ -262,9 +262,8 @@ For CABAC bugs, use `CabacEngine::enableBinTrace(FILE*)` to log every decodeBin 
 - **Reference list reordering** — §8.2.4.3 (L0 list construction + reordering commands)
 - **DPB MMCO** — §8.2.5.4 (all 6 operations: unmark short/long, assign LT, mark all unused)
 - **8x8 inter transform** — §7.3.5 (CABAC P-slices: flag decoded, 8x8 residual + IDCT applied)
-
-### Implemented but quality issues
-- **CABAC residual decode** — §9.3.3.1.3: Coefficient decode matches independent Python reference, but output pixels wrong. Likely root cause: `cCabacTable[128][4]` (packed rangeTabLPS) may differ from spec Table 9-45. Active investigation — see `project_cabac_investigation.md` in memory.
+- **CABAC residual decode** — §9.3.3.1.3 (verified bit-exact vs JM for all slices; 11 bugs fixed including MVD EG3, I-in-P contexts, ref_idx unary, transform flag neighbors)
+- **Multi-reference P-frames** — §7.3.5.1/§8.2.4.3 (ref_idx decode, immediate storage, L0 list reordering, per-partition reference lookup — 48+ dB PSNR)
 
 ### Not yet implemented
 - **B-slices** — §7.3.4, §8.4.1.1 (slice header parsed, decode returns error)
