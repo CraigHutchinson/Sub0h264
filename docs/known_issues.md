@@ -2,11 +2,38 @@
 
 ## Active Quality Issues
 
-### CABAC quality at 640x368 (Tapo C110 stream)
-- IDR frame diverges at ~MB(15,0): first 15 MBs correct, then ~6 dB PSNR
-- 320x240 CABAC streams decode at 51+ dB — issue is resolution-specific
-- Not caused by DPB or MMCO — the IDR I-slice itself decodes wrong pixels
-- Needs investigation: likely a CABAC context or residual path issue at wider frames
+### CABAC I_8x8 residual path bug (Tapo C110 + width-stress fixtures)
+**Status: PARTIALLY FIXED (2026-04-17)**. Bug isolated to CABAC I_8x8 path.
+
+**Investigation progress:**
+- Deblocking ruled out (identical PSNR with SUB0H264_SKIP_DEBLOCK)
+- Bisect via 10 new `wstress_*` synthetic fixtures:
+  - CAVLC at all widths: 99 dB PASS
+  - CABAC I_16x16 only at 640x368: 99 dB PASS
+  - CABAC I_4x4 only at 640x368: 99 dB PASS
+  - **CABAC I_8x8 only at 640x368: 15 dB FAIL** (fixed partial → 20 dB)
+
+**Fix #1 (partial) — Block-3 top-right availability (intra_pred.hpp):**
+Per §6.4.10.4 Table 6-3, for I_8x8 block 3 (bottom-right of MB), top-right
+samples come from MB(X+1, Y) which hasn't been decoded yet in raster order.
+Code was reading undecoded pixels from the next MB. Fix: mark top-right
+unavailable for block 3, replicate top[7]. Improved complex_flat 18→30 dB.
+
+**Remaining bug (under investigation):**
+First pixel diff at MB(0,0) block(0,0) — a block with NO neighbors
+(absX=absY=0, hasTop=false, hasLeft=false). Prediction is DC=128 for all
+64 samples. Residual compensates. Diff of 1 appears at column 6, growing
+through IDCT butterfly to affect all downstream MBs.
+
+Likely locations (need JM lock-step bin comparison):
+- `cabacDecodeResidual8x8` coefficient decode
+- 8x8 zigzag scan ordering (`cZigzag8x8`)
+- `inverseQuantize8x8` scaling
+- `inverseDct8x8AddPred` 8-point butterfly arithmetic
+
+**New regression fixtures added:** `tests/fixtures/wstress_*.h264` (10 files)
+permanently cover the width/height/intra-mode gap that allowed this bug to
+slip through.
 
 ## Closed / Fixed Issues
 

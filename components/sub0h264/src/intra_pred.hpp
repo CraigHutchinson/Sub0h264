@@ -545,6 +545,18 @@ inline void intraPred8x8Luma(Intra4x4Mode mode, const Frame& frame,
     bool hasLeft = (absX > 0U);
     bool hasTL   = hasTop && hasLeft;
 
+    // §6.4.10.4 / Table 6-3: Top-right availability for I_8x8 blocks in raster
+    // scan order within an MB depends on block position (blockX, blockY) in
+    // {0, 8} × {0, 8}:
+    //   block 0 (TL, 0,0): top-right from MB(X, Y-1) or MB(X+1, Y-1) — decoded
+    //   block 1 (TR, 8,0): top-right from MB(X+1, Y-1) — decoded
+    //   block 2 (BL, 0,8): top-right is block 1 of current MB — decoded
+    //   block 3 (BR, 8,8): top-right would be MB(X+1, Y), NOT YET DECODED
+    // Per spec, block 3 top-right is unavailable; replicate top[7] (p[7,-1]).
+    const uint32_t blockX = absX & 0x08U;
+    const uint32_t blockY = absY & 0x08U;
+    const bool topRightAvailable = !(blockX != 0U && blockY != 0U);
+
     uint8_t top[16] = {};   // p[0..15, -1] (8 top + 8 top-right)
     uint8_t left[8] = {};   // p[-1, 0..7]
     uint8_t tl = cDefaultPredValue; // p[-1, -1]
@@ -554,9 +566,12 @@ inline void intraPred8x8Luma(Intra4x4Mode mode, const Frame& frame,
         const uint8_t* row = frame.yRow(absY - 1U);
         for (uint32_t c = 0U; c < 8U; ++c)
             top[c] = row[absX + c];
-        // Top-right: p[8..15, -1]. If at right edge, replicate top[7].
+        // Top-right: p[8..15, -1]. Unavailable for block 3 (BR of MB) since
+        // MB to the right hasn't been decoded yet. Also replicate at right
+        // frame edge.
         for (uint32_t c = 8U; c < 16U; ++c)
-            top[c] = (absX + c < frame.width()) ? row[absX + c] : top[7];
+            top[c] = (topRightAvailable && absX + c < frame.width())
+                        ? row[absX + c] : top[7];
     }
     if (hasLeft)
         for (uint32_t r = 0U; r < 8U; ++r)
