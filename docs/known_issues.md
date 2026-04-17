@@ -94,6 +94,43 @@ prior session's note that deblock is not the cause of the I_8x8 PSNR gap
 correctness improvement (matches JM/ffmpeg output for 8x8-mode MBs) and a
 performance win (chroma BS recomputation eliminated).
 
+**Session 6 (2026-04-17) — 8x8 dequant scale table ROOT CAUSE FIX:**
+Lock-step CABAC trace vs JM (JM rebuilt with TRACE=1) showed OUR decoder
+produces IDENTICAL scan coefficients to JM for MB(0,0) block 0 in
+wstress_gradient (pre-dequant level=-358 at (0,0), -1 at (0,1)) — so CABAC
+and the zigzag are correct. Pixel output diverges: ours=16 uniform, JM=16,
+16, 16, 16, 16, 16, 17, 17 at row 0.
+
+Root cause located in `cDequantScale8x8` table in transform.hpp. JM's
+`dequant_coef8[0]` row 0 = {20, 19, 25, 19, 20, 19, 25, 19}, ours was
+{20, 18, 18, 16, 15, 13} — COMPLETELY WRONG VALUES (6 position classes
+off by varying amounts). Class derivation was also wrong: class 1 and 2
+were split artificially, class 3/4 mixed odd/even wrong.
+
+**Fix:** Rewrote `cDequantScale8x8` and `cDequantPosClass8x8` to match
+JM/spec Table 8-16:
+  - class 0 (both %4==0):  20, 22, 26, 28, 32, 36
+  - class 1 (one divby4, one %4==2): 25, 28, 33, 35, 40, 46
+  - class 2 (both %4==2):  32, 35, 42, 45, 51, 58
+  - class 3 (one divby4, one odd):   19, 21, 24, 26, 30, 34
+  - class 4 (one %4==2, one odd):    24, 26, 31, 33, 38, 43
+  - class 5 (both odd):    18, 19, 23, 25, 28, 32
+
+**Results:**
+| Fixture                          | Before fix | After scale fix |
+|---------------------------------|-----------|-----------------|
+| wstress_tapo_gradient (I_8x8)   | 25 dB     | **99 dB**        |
+| wstress_tapo_i8x8 (I_8x8)       | 25 dB     | **99 dB**        |
+| wstress_tapo_baseline (I_4x4)   | 99 dB     | 99 dB (unchanged) |
+| wstress_tapo_complex_flat       | 35 dB     | TBD              |
+| Tapo C110 (real, I_4x4 dominant) | 6.59 dB  | 6.58 dB (unchanged) |
+
+**Tapo C110 remains open** — first divergence at MB(22, 0) which is I_4x4
+with cbp=8, qp_delta=3. The I_4x4 path is separate from the I_8x8 dequant.
+Bug scope now confirmed: **Tapo is an I_4x4 / CAVLC-residual / dequant-4x4
+or intra4x4-prediction issue**, not I_8x8. Next session: compare our MB 22
+I_4x4 decode against JM trace values.
+
 **Diff pattern for wstress gradient frame 0 (all I_8x8):**
 - MB(0,0): max diff = 2, mean = 0.69
 - Diff grows monotonically left-to-right and top-to-bottom (worst = 25)

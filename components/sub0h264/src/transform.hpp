@@ -331,64 +331,76 @@ inline constexpr std::array<uint8_t, 64> cDefaultScalingList8x8Inter = {
     30, 30, 32, 32, 32, 33, 33, 35,
 };
 
-/// Dequantization scale factors for 8x8 blocks — ITU-T H.264 §8.5.12.1.
-/// v[qp%6][j] where j is the position class derived from (row%4, col%4).
-/// 8x8 blocks have 6 position classes, corresponding to the normAdjust8x8
-/// matrix entries. Reference: Table 8-16 (normAdjust8x8).
+/// Dequantization scale factors for 8x8 blocks — ITU-T H.264 Table 8-16.
+/// normAdjust8x8(m, i, j) depends on (i%4, j%4) parity; 6 position classes.
 ///
 /// Position classes (row%4, col%4):
-///   class 0: (0,0)           → both divisible by 4
-///   class 1: (0,even!=0)     → row div-by-4, col even but not div-by-4
-///   class 2: (even!=0,0)     → col div-by-4, row even but not div-by-4
-///   class 3: (even,even)     → both even, neither div-by-4
-///   class 4: (odd,even)/(even,odd) → one odd, one even
-///   class 5: (odd,odd)       → both odd
+///   class 0: both %4==0         (e.g. (0,0))
+///   class 1: one %4==0, one %4==2 (e.g. (0,2), (2,0))
+///   class 2: both %4==2         (e.g. (2,2))
+///   class 3: one %4==0, one odd (e.g. (0,1), (1,0))
+///   class 4: one %4==2, one odd (e.g. (1,2), (2,1))
+///   class 5: both odd           (e.g. (1,1))
+///
+/// Cross-checked against JM 19.0 `dequant_coef8` (quant.h) and libavc
+/// `ih264_iquant_itrans_recon_8x8` for bit-exact correctness.
 inline constexpr std::array<std::array<int32_t, 6>, 6> cDequantScale8x8 = {{
-    {{ 20, 18, 18, 16, 15, 13 }},  // qp%6 = 0
-    {{ 22, 20, 20, 18, 17, 14 }},  // qp%6 = 1
-    {{ 26, 23, 23, 20, 19, 16 }},  // qp%6 = 2
-    {{ 28, 25, 25, 22, 21, 18 }},  // qp%6 = 3
-    {{ 32, 28, 28, 25, 24, 20 }},  // qp%6 = 4
-    {{ 36, 32, 32, 28, 27, 23 }},  // qp%6 = 5
+    {{ 20, 25, 32, 19, 24, 18 }},  // qp%6 = 0
+    {{ 22, 28, 35, 21, 26, 19 }},  // qp%6 = 1
+    {{ 26, 33, 42, 24, 31, 23 }},  // qp%6 = 2
+    {{ 28, 35, 45, 26, 33, 25 }},  // qp%6 = 3
+    {{ 32, 40, 51, 30, 38, 28 }},  // qp%6 = 4
+    {{ 36, 46, 58, 34, 43, 32 }},  // qp%6 = 5
 }};
 
 /// Position class for each raster position in an 8x8 block — §8.5.12.1.
-/// Derived from (row%4, col%4) parity following the normAdjust8x8 table.
+/// Derived from (row%4, col%4) parity per Table 8-16.
 inline constexpr std::array<uint8_t, 64> cDequantPosClass8x8 = []() constexpr
 {
     std::array<uint8_t, 64> t{};
     for (uint32_t i = 0U; i < 64U; ++i)
     {
-        uint32_t row = i / 8U;
-        uint32_t col = i % 8U;
-        uint32_t rowMod4 = row % 4U;
-        uint32_t colMod4 = col % 4U;
+        uint32_t rowMod4 = (i / 8U) % 4U;
+        uint32_t colMod4 = (i % 8U) % 4U;
+        bool rowDivBy4 = (rowMod4 == 0U);
+        bool colDivBy4 = (colMod4 == 0U);
+        bool rowEven2  = (rowMod4 == 2U);
+        bool colEven2  = (colMod4 == 2U);
+        bool rowOdd    = ((rowMod4 & 1U) != 0U);
+        bool colOdd    = ((colMod4 & 1U) != 0U);
 
-        if (rowMod4 == 0U && colMod4 == 0U)
-            t[i] = 0U; // Both divisible by 4
-        else if (rowMod4 == 0U && (colMod4 % 2U == 0U))
-            t[i] = 1U; // Row div-by-4, col even
-        else if ((rowMod4 % 2U == 0U) && colMod4 == 0U)
-            t[i] = 2U; // Col div-by-4, row even
-        else if ((rowMod4 % 2U == 0U) && (colMod4 % 2U == 0U))
-            t[i] = 3U; // Both even, neither div-by-4
-        else if ((rowMod4 % 2U == 1U) && (colMod4 % 2U == 1U))
-            t[i] = 5U; // Both odd
+        if (rowDivBy4 && colDivBy4)
+            t[i] = 0U; // both %4==0
+        else if ((rowDivBy4 && colEven2) || (rowEven2 && colDivBy4))
+            t[i] = 1U; // one %4==0, one %4==2
+        else if (rowEven2 && colEven2)
+            t[i] = 2U; // both %4==2
+        else if ((rowDivBy4 && colOdd) || (rowOdd && colDivBy4))
+            t[i] = 3U; // one %4==0, one odd
+        else if ((rowEven2 && colOdd) || (rowOdd && colEven2))
+            t[i] = 4U; // one %4==2, one odd
         else
-            t[i] = 4U; // One odd, one even
+            t[i] = 5U; // both odd
     }
     return t;
 }();
 
-// Compile-time spot-checks — ITU-T H.264 §8.5.12.1.
-static_assert(cDequantPosClass8x8[0]  == 0U, "pos(0,0) → class 0 (both div-by-4)");
-static_assert(cDequantPosClass8x8[2]  == 1U, "pos(0,2) → class 1 (row div-by-4, col even)");
-static_assert(cDequantPosClass8x8[16] == 2U, "pos(2,0) → class 2 (col div-by-4, row even)");
-static_assert(cDequantPosClass8x8[18] == 3U, "pos(2,2) → class 3 (both even)");
-static_assert(cDequantPosClass8x8[1]  == 4U, "pos(0,1) → class 4 (mixed parity)");
-static_assert(cDequantPosClass8x8[9]  == 5U, "pos(1,1) → class 5 (both odd)");
-static_assert(cDequantScale8x8[0][0] == 20, "qp%6=0, class0 = 20 per Table 8-16");
-static_assert(cDequantScale8x8[0][5] == 13, "qp%6=0, class5 = 13 per Table 8-16");
+// Spot-checks against JM dequant_coef8[0] row 0 (20, 19, 25, 19, 20, 19, 25, 19).
+static_assert(cDequantPosClass8x8[0]  == 0U, "pos(0,0) class 0"); // JM 20
+static_assert(cDequantPosClass8x8[1]  == 3U, "pos(0,1) class 3"); // JM 19
+static_assert(cDequantPosClass8x8[2]  == 1U, "pos(0,2) class 1"); // JM 25
+static_assert(cDequantPosClass8x8[3]  == 3U, "pos(0,3) class 3"); // JM 19
+static_assert(cDequantPosClass8x8[8]  == 3U, "pos(1,0) class 3"); // JM 19
+static_assert(cDequantPosClass8x8[9]  == 5U, "pos(1,1) class 5"); // JM 18
+static_assert(cDequantPosClass8x8[10] == 4U, "pos(1,2) class 4"); // JM 24
+static_assert(cDequantPosClass8x8[16] == 1U, "pos(2,0) class 1"); // JM 25
+static_assert(cDequantPosClass8x8[18] == 2U, "pos(2,2) class 2"); // JM 32
+static_assert(cDequantScale8x8[0][0] == 20, "qp%6=0 class0 20");
+static_assert(cDequantScale8x8[0][1] == 25, "qp%6=0 class1 25");
+static_assert(cDequantScale8x8[0][2] == 32, "qp%6=0 class2 32");
+static_assert(cDequantScale8x8[0][3] == 19, "qp%6=0 class3 19");
+static_assert(cDequantScale8x8[0][4] == 24, "qp%6=0 class4 24");
+static_assert(cDequantScale8x8[0][5] == 18, "qp%6=0 class5 18");
 
 // ── 8x8 Inverse Quantization — ITU-T H.264 §8.5.12.1 ─────────────────
 
