@@ -65,6 +65,14 @@ both horizontal and vertical passes.
 **Next investigation:** Compare MB(15, 0) block 1 decoded coefficients
 against JM reference bin-by-bin — this block is where Tapo diverges.
 
+**Confirmed scope of remaining bug:** Only triggered by CABAC I_8x8
+blocks. Verified 2026-04-17 that wstress_wide24_gradient PASSES at 55 dB
+because x264's encoder doesn't pick I_8x8 for that content; wide40 with
+same content at higher width triggers I_8x8 mode selection and fails at
+25 dB. The remaining bug is isolated to the I_8x8 path with specific
+coefficient patterns — likely another subtle IDCT arithmetic or
+intra prediction issue that only manifests with real-content coefficients.
+
 **New regression fixtures:** `tests/fixtures/wstress_*.h264` (10 files)
 permanently cover the width/height/intra-mode gap.
 
