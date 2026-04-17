@@ -20,7 +20,7 @@
 
 // #define SUB0H264_TRACE_I4X4_BLOCKS
 // #define SUB0H264_EXP_FORCE_MODE1_SCAN5
-// #define SUB0H264_P0_I8X8_DIAG 1  // Enable for I_8x8/I_4x4/I_16x16 MB diag
+// #define SUB0H264_P0_I8X8_DIAG 1  // Enable for mode + DC coefficient diag
 #include "decode_timing.hpp"
 #include "decode_trace.hpp"
 #include "dpb.hpp"
@@ -3044,6 +3044,17 @@ private:
         uint8_t lumaPred[256];
         intraPred16x16(static_cast<Intra16x16Mode>(predMode), *activeFrame_, mbX, mbY, lumaPred);
 
+#ifdef SUB0H264_P0_I8X8_DIAG
+        if (mbX == 15U && mbY == 0U)
+        {
+            std::fprintf(stderr, "  pred[16x16] row 0 cols 0-15: ");
+            for (int c = 0; c < 16; ++c) std::fprintf(stderr, " %3u", lumaPred[c]);
+            std::fprintf(stderr, "\n  pred[16x16] col 0 rows 0-15: ");
+            for (int r = 0; r < 16; ++r) std::fprintf(stderr, " %3u", lumaPred[r*16]);
+            std::fprintf(stderr, "\n");
+        }
+#endif
+
         // Decode DC block via CABAC (category 0 = Luma DC)
         // §9.3.3.1.1.9: coded_block_flag for luma DC (ctxBlockCat=0).
         // transBlockN = luma DC of neighbor IF neighbor is I_16x16.
@@ -3061,10 +3072,34 @@ private:
         for (uint32_t i = 0U; i < 16U; ++i)
             dcCoeffs[cZigzag4x4[i]] = dcScan[i];
 
+#ifdef SUB0H264_P0_I8X8_DIAG
+        if (mbX == 15U && mbY == 0U)
+        {
+            std::fprintf(stderr, "\n=== P0 I_16x16 DIAG: MB(15,0) mbType=%u predMode=%u cbpLuma=%u ===\n",
+                         mbTypeRaw, predMode, cbpLuma);
+            std::fprintf(stderr, "  DC scan coeffs (pre-zigzag): ");
+            for (int i = 0; i < 16; ++i) std::fprintf(stderr, " %3d", dcScan[i]);
+            std::fprintf(stderr, "\n");
+            std::fprintf(stderr, "  DC raster coeffs (post-zigzag): ");
+            for (int i = 0; i < 16; ++i) std::fprintf(stderr, " %3d", dcCoeffs[i]);
+            std::fprintf(stderr, "\n  dcCbfCtxInc=%u dcNonZero=%u qp=%d\n",
+                         dcCbfCtxInc, dcNonZero, qp);
+        }
+#endif
+
         inverseHadamard4x4(dcCoeffs);
 
         // §8.5.12.1: Intra16x16 luma DC dequant after Hadamard. [UNCHECKED §8.5.12.1]
         dequantLumaDcValues(dcCoeffs, qp);
+
+#ifdef SUB0H264_P0_I8X8_DIAG
+        if (mbX == 15U && mbY == 0U)
+        {
+            std::fprintf(stderr, "  DC after Hadamard+dequant: ");
+            for (int i = 0; i < 16; ++i) std::fprintf(stderr, " %5d", dcCoeffs[i]);
+            std::fprintf(stderr, "\n");
+        }
+#endif
 
         // Decode AC blocks (spec scan order §6.4.3)
         uint8_t* mbLuma = activeFrame_->yMb(mbX, mbY);
