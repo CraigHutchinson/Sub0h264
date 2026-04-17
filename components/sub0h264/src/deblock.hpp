@@ -268,6 +268,14 @@ inline void filterChromaStrong(uint8_t& p0, const uint8_t& p1,
  *  Internal edges use this MB's QP. Boundary edges use
  *  (qpP + qpQ + 1) >> 1 — ITU-T H.264 §8.7.2.2.
  *
+ *  When the q-side or p-side MB uses the 8x8 transform (§7.3.5
+ *  transform_size_8x8_flag = 1), the corresponding internal 4x4 edges
+ *  (vertical edges 1 and 3, horizontal edges 1 and 3) are skipped per
+ *  §8.7.2 — those edges do not exist as transform-block boundaries and
+ *  filtering them would smear genuine 4-pixel detail. Chroma is unaffected
+ *  (chroma always uses 4x4 transforms; chroma deblock already only filters
+ *  the 8-pel boundary at edge=0 and edge=2).
+ *
  *  @param frame              Frame to filter in-place
  *  @param mbX,mbY            Macroblock position
  *  @param isIntra            True if this MB is intra-coded
@@ -276,6 +284,7 @@ inline void filterChromaStrong(uint8_t& p0, const uint8_t& p1,
  *  @param nnzLuma            NNZ array for luma [totalMbs * 16]
  *  @param mbMotion           MV info per MB
  *  @param mbQps              Per-MB luma QP [totalMbs] — §7.4.5
+ *  @param mbTransform8x8     Per-MB transform_size_8x8_flag [totalMbs] — §7.3.5
  *  @param chromaQpIndexOffset PPS chroma_qp_index_offset
  *  @param widthInMbs         Frame width in MBs
  *  @param heightInMbs        Frame height in MBs
@@ -285,11 +294,13 @@ inline void deblockMb(Frame& frame, uint32_t mbX, uint32_t mbY,
                        const uint8_t* nnzLuma,
                        const MbMotionInfo* mbMotion,
                        const int32_t* mbQps,
+                       const uint8_t* mbTransform8x8,
                        int32_t chromaQpIndexOffset,
                        uint16_t widthInMbs, uint16_t heightInMbs) noexcept
 {
     uint32_t mbIdx = mbY * widthInMbs + mbX;
     (void)heightInMbs;
+    bool qUses8x8 = (mbTransform8x8[mbIdx] != 0U);
 
     // This MB's luma and chroma QP — used for internal edges.
     int32_t qp = mbQps[mbIdx];
@@ -319,6 +330,10 @@ inline void deblockMb(Frame& frame, uint32_t mbX, uint32_t mbY,
     {
         uint32_t edgeX = pixX + edge * 4U;
         if (edge == 0U && mbX == 0U) continue; // No left neighbor
+
+        // §8.7.2: when this MB uses 8x8 transform, internal 4x4 edges at
+        // x=4 (edge==1) and x=12 (edge==3) are not transform boundaries.
+        if (qUses8x8 && (edge == 1U || edge == 3U)) continue;
 
         // For boundary edges, average QP of both MBs — §8.7.2.2.
         int32_t edgeAlpha = alpha, edgeBeta = beta, edgeIndexA = indexA;
@@ -389,7 +404,10 @@ inline void deblockMb(Frame& frame, uint32_t mbX, uint32_t mbY,
 
         // Chroma vertical edges — ITU-T H.264 §8.7.2.
         // Chroma edges at MB boundary (edge=0) and 8-pixel internal (edge=2).
-        // BS is derived from the corresponding luma edge per §8.7.2.1.
+        // BS is derived from the corresponding luma edge per §8.7.2.1: each
+        // chroma row cRow maps to luma rows 2*cRow and 2*cRow+1, both in luma
+        // block-row (cRow>>1). The luma BS was already computed per blkRow in
+        // edgeBs[] above, so we reuse it directly.
         if (edge == 0U || edge == 2U)
         {
             uint32_t cEdgeX = pixX / 2U + (edge / 2U) * 4U;
@@ -398,33 +416,7 @@ inline void deblockMb(Frame& frame, uint32_t mbX, uint32_t mbY,
             for (uint32_t cRow = 0U; cRow < 8U; ++cRow)
             {
                 uint32_t cY = pixY / 2U + cRow;
-
-                // Chroma BS = max of the two corresponding luma rows' BS.
-                // Each chroma row maps to 2 luma rows: cRow*2 and cRow*2+1.
-                // Luma BS was computed per-row above using computeBs().
-                // Recompute for the two luma rows.
-                uint8_t maxBs = 0U;
-                for (uint32_t lr = 0U; lr < 2U; ++lr)
-                {
-                    uint32_t lumaRow = cRow * 2U + lr;
-                    uint32_t blkQ = edge + (lumaRow / 4U) * 4U;
-                    uint32_t blkP = (edge == 0U) ? 3U + (lumaRow / 4U) * 4U : blkQ - 1U;
-                    uint32_t mbIdxP = (edge == 0U) ? (mbY * widthInMbs + mbX - 1U) : mbIdx;
-
-                    bool isIntraP = (edge == 0U)
-                        ? (mbMotion[mbIdxP * 16U + blkP].refIdx == -1)
-                        : isIntra;
-                    bool hasCoeffP = (nnzLuma[mbIdxP * 16U + blkP] > 0U);
-                    bool hasCoeffQ = (nnzLuma[mbIdx * 16U + blkQ] > 0U);
-
-                    uint8_t bs = computeBs(isIntraP, isIntra, edge == 0U,
-                                            hasCoeffP, hasCoeffQ,
-                                            mbMotion[mbIdxP * 16U + blkP].mv.x, mbMotion[mbIdxP * 16U + blkP].mv.y,
-                                            mbMotion[mbIdx * 16U + blkQ].mv.x, mbMotion[mbIdx * 16U + blkQ].mv.y,
-                                            mbMotion[mbIdxP * 16U + blkP].refIdx, mbMotion[mbIdx * 16U + blkQ].refIdx);
-                    if (bs > maxBs) maxBs = bs;
-                }
-
+                uint8_t maxBs = edgeBs[cRow >> 1U];
                 if (maxBs == 0U) continue;
 
                 for (int plane = 0; plane < 2; ++plane)
@@ -451,6 +443,10 @@ inline void deblockMb(Frame& frame, uint32_t mbX, uint32_t mbY,
     {
         uint32_t edgeY = pixY + edge * 4U;
         if (edge == 0U && mbY == 0U) continue;
+
+        // §8.7.2: when this MB uses 8x8 transform, internal 4x4 edges at
+        // y=4 (edge==1) and y=12 (edge==3) are not transform boundaries.
+        if (qUses8x8 && (edge == 1U || edge == 3U)) continue;
 
         // For boundary edges, average QP of both MBs — §8.7.2.2.
         int32_t edgeAlpha = alpha, edgeBeta = beta, edgeIndexA = indexA;
@@ -524,7 +520,9 @@ inline void deblockMb(Frame& frame, uint32_t mbX, uint32_t mbY,
         }
 
         // Chroma horizontal edges — ITU-T H.264 §8.7.2.
-        // BS from corresponding luma edge per §8.7.2.1.
+        // BS from corresponding luma edge per §8.7.2.1: chroma column cCol
+        // maps to luma columns 2*cCol and 2*cCol+1, both in luma block-col
+        // (cCol>>1). Reuse hEdgeBs[] computed above.
         if (edge == 0U || edge == 2U)
         {
             uint32_t cEdgeY = pixY / 2U + (edge / 2U) * 4U;
@@ -533,30 +531,7 @@ inline void deblockMb(Frame& frame, uint32_t mbX, uint32_t mbY,
             for (uint32_t cCol = 0U; cCol < 8U; ++cCol)
             {
                 uint32_t cX = pixX / 2U + cCol;
-
-                // Chroma BS = max of the two corresponding luma columns' BS.
-                uint8_t maxBs = 0U;
-                for (uint32_t lc = 0U; lc < 2U; ++lc)
-                {
-                    uint32_t lumaCol = cCol * 2U + lc;
-                    uint32_t blkQ = (lumaCol / 4U) + edge * 4U;
-                    uint32_t blkP = (edge == 0U) ? (lumaCol / 4U) + 12U : blkQ - 4U;
-                    uint32_t mbIdxP = (edge == 0U)
-                        ? ((mbY - 1U) * widthInMbs + mbX) : mbIdx;
-
-                    bool isIntraP = (edge == 0U)
-                        ? (mbMotion[mbIdxP * 16U + blkP].refIdx == -1) : isIntra;
-                    bool hasCoeffP = (nnzLuma[mbIdxP * 16U + blkP] > 0U);
-                    bool hasCoeffQ = (nnzLuma[mbIdx * 16U + blkQ] > 0U);
-
-                    uint8_t bs = computeBs(isIntraP, isIntra, edge == 0U,
-                                            hasCoeffP, hasCoeffQ,
-                                            mbMotion[mbIdxP * 16U + blkP].mv.x, mbMotion[mbIdxP * 16U + blkP].mv.y,
-                                            mbMotion[mbIdx * 16U + blkQ].mv.x, mbMotion[mbIdx * 16U + blkQ].mv.y,
-                                            mbMotion[mbIdxP * 16U + blkP].refIdx, mbMotion[mbIdx * 16U + blkQ].refIdx);
-                    if (bs > maxBs) maxBs = bs;
-                }
-
+                uint8_t maxBs = hEdgeBs[cCol >> 1U];
                 if (maxBs == 0U) continue;
 
                 for (int plane = 0; plane < 2; ++plane)

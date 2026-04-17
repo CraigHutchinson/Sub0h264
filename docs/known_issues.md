@@ -76,19 +76,34 @@ output for same input** — per manual trace of MB(0,0) block 0 with
 input coeffs (-7160, -15, 0, ..., 0): all compute residual -112 at
 every column → output 16 uniform.
 
-The remaining 1-pixel diff at ref pixel (col 6, row 0) = 17 must come
-from **deblocking**, not IDCT. Our deblock filters ALL 4x4 edges within
-an MB. For 8x8-transform MBs, spec §8.7.2 says **edges inside 8x8
-blocks (cols 4, 12 and rows 4, 12 within MB) should be SKIPPED** — the
-8x8 transform already smooths those boundaries. Our code doesn't have
-this skip logic, which means:
-1. We filter internal 4x4 edges that ffmpeg doesn't
-2. Our BS/filter output for 8x8-mode MBs differs from spec
-3. The pixel diffs at col 6-7 are consistent with deblock at the col 8
-   (block 0/1 edge) being computed differently due to this mismatch
+**Session 5 (2026-04-17) — deblock 8x8-mode awareness applied + DRY refactors:**
+- transform.hpp: extracted `dct8Butterfly()` helper — single source of truth
+  for the 1-D 8-point butterfly (was duplicated across H/V passes; the h(7)
+  bug had to be fixed twice before this DRY). Behaviour bit-identical to
+  prior code (all tests pass).
+- deblock.hpp / decoder.hpp: added per-MB `mbTransform8x8_[]` tracking and
+  pass to `deblockMb`. Per §8.7.2, when q-side MB uses 8x8 transform, the
+  internal 4x4 edges (vertical x=4,12 / horizontal y=4,12) are skipped.
+- deblock.hpp: chroma BS now reuses precomputed luma `edgeBs[]/hEdgeBs[]`
+  via `bs = edgeBs[cRow >> 1]` — eliminates ~8x recomputation per MB
+  (was calling `computeBs()` 16 times per chroma edge; now 0).
 
-**Next investigation target (Session 5):** Add 8x8-transform awareness
-to deblock.hpp — skip internal 4x4 edges when MB uses 8x8 transform.
+**Result:** Tapo C110 still 6.59 dB; wstress gradient still 25 dB. Confirms
+prior session's note that deblock is not the cause of the I_8x8 PSNR gap
+(SUB0H264_SKIP_DEBLOCK gives identical PSNR). The deblock fix is a spec
+correctness improvement (matches JM/ffmpeg output for 8x8-mode MBs) and a
+performance win (chroma BS recomputation eliminated).
+
+**Diff pattern for wstress gradient frame 0 (all I_8x8):**
+- MB(0,0): max diff = 2, mean = 0.69
+- Diff grows monotonically left-to-right and top-to-bottom (worst = 25)
+- This is classic prediction-propagation: ~2-pixel error at MB(0,0)
+  cascades through intra-prediction neighbors
+
+**Remaining hypothesis (Session 6):** Bug is in CABAC residual decode or
+dequant for 8x8 blocks (`cabacDecodeResidual8x8` / `inverseQuantize8x8`).
+Verified mathematically equivalent to spec for flat scaling, but worth
+trace-comparing actual decoded coefficients against JM for MB(0,0).
 
 Block-level analysis of Tapo MB 15 still confirms LEFT half matches
 perfectly; RIGHT half diffs cascade via deblock from MB 16 (I_8x8).

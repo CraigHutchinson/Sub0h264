@@ -485,6 +485,41 @@ inline void inverseQuantize8x8Scaled(int16_t* coeffs, int32_t qp,
  *  @param out        Output: 8x8 reconstructed block (stride = outStride)
  *  @param outStride  Stride of output buffer
  */
+/** 1-D 8-point inverse butterfly — ITU-T H.264 §8.5.12.2 Equations 8-325..8-333.
+ *  Outputs are the unscaled sum/difference of even (e0..e3) and odd (o0..o3)
+ *  half-transforms. Combine as `out[k] = e_k + o_{3-k}` for k=0..3 and
+ *  `out[7-k] = e_k - o_{3-k}` for k=0..3, with the special pos 1/6 sign:
+ *  `out[1] = e1 - o2`, `out[6] = e1 + o2` (matches libavc sign convention).
+ *
+ *  Used by both horizontal and vertical passes of inverseDct8x8AddPred.
+ *  Single source of truth for the butterfly avoids drift between the two passes
+ *  (h(7) bug had to be fixed in two places before this was DRY'd).
+ */
+struct Butterfly8 { int32_t e0, e1, e2, e3, o0, o1, o2, o3; };
+
+inline Butterfly8 dct8Butterfly(int32_t s0, int32_t s1, int32_t s2, int32_t s3,
+                                 int32_t s4, int32_t s5, int32_t s6, int32_t s7) noexcept
+{
+    // Even part — §8.5.12.2 Eq 8-325..8-328
+    int32_t a0 = s0 + s4;
+    int32_t a2 = s0 - s4;
+    int32_t a4 = (s2 >> 1) - s6;
+    int32_t a6 = s2 + (s6 >> 1);
+
+    // Odd part — §8.5.12.2 Eq 8-332. h(7) uses (m(1)>>1), NOT (m(7)>>1).
+    // Verified against libavc ih264_iquant_itrans_recon_8x8 (y7) and JM
+    // inverse8x8() in transform.c (2026-04-17 audit).
+    int32_t b0 = -s3 + s5 - s7 - (s7 >> 1);
+    int32_t b1 =  s1 + s7 - s3 - (s3 >> 1);
+    int32_t b2 = -s1 + s7 + s5 + (s5 >> 1);
+    int32_t b3 =  s3 + s5 + s1 + (s1 >> 1);
+
+    return {
+        a0 + a6, a2 + a4, a2 - a4, a0 - a6,
+        b0 + (b3 >> 2), b1 + (b2 >> 2), b2 - (b1 >> 2), b3 - (b0 >> 2)
+    };
+}
+
 inline void inverseDct8x8AddPred(const int16_t* coeffs,
                                   const uint8_t* pred, uint32_t predStride,
                                   uint8_t* out, uint32_t outStride) noexcept
@@ -492,129 +527,44 @@ inline void inverseDct8x8AddPred(const int16_t* coeffs,
     int32_t tmp[64];
 
     // Horizontal 1-D 8-point inverse transform (for each row).
-    // ITU-T H.264 §8.5.12.2: the 8-point butterfly uses coefficients
-    // a=8, b=10, c=9, d=6, e=3 (after normalization).
-    // Factored butterfly per spec:
-    //   e0=s0+s4, e1=s0-s4, e2=(s2>>1)-s6, e3=s2+(s6>>1)
-    //   f0=s1-s7-s3-(s3>>1), f1=s1+s7-s5-(s5>>1)
-    //   f2=s3-s7+s5+(s5>>1), f3=s1+s7+s3+(s3>>1)
-    // Then odd-half scaling:
-    //   g0=f0, g1=f1, g2=f2, g3=f3
-    //   h0=(g3>>2)+g0, h1=(g2>>2)+g1, h2=g1-(g2>>2 [correction]), h3=g0-(g3>>2 [correction])
-    // (Exact implementation per spec equations 8-325 through 8-333.)
     for (uint32_t i = 0U; i < 8U; ++i)
     {
         const int16_t* row = coeffs + i * 8;
-        int32_t s0 = row[0];
-        int32_t s1 = row[1];
-        int32_t s2 = row[2];
-        int32_t s3 = row[3];
-        int32_t s4 = row[4];
-        int32_t s5 = row[5];
-        int32_t s6 = row[6];
-        int32_t s7 = row[7];
-
-        // Even part — §8.5.12.2 Equations 8-325..8-328
-        int32_t a0 = s0 + s4;
-        int32_t a2 = s0 - s4;
-        int32_t a4 = (s2 >> 1) - s6;
-        int32_t a6 = s2 + (s6 >> 1);
-
-        int32_t e0 = a0 + a6;
-        int32_t e1 = a2 + a4;
-        int32_t e2 = a2 - a4;
-        int32_t e3 = a0 - a6;
-
-        // Odd part — §8.5.12.2 Equations 8-332:
-        //   h(1) = -m(3) + m(5) - m(7) - (m(7)>>1)
-        //   h(3) =  m(1) + m(7) - m(3) - (m(3)>>1)
-        //   h(5) = -m(1) + m(7) + m(5) + (m(5)>>1)
-        //   h(7) =  m(3) + m(5) + m(1) + (m(1)>>1)   ← was (m(7)>>1), FIXED
-        // Verified against libavc ih264_iquant_itrans_recon_8x8 (y7).
-        int32_t b0 = -s3 + s5 - s7 - (s7 >> 1);
-        int32_t b1 =  s1 + s7 - s3 - (s3 >> 1);
-        int32_t b2 = -s1 + s7 + s5 + (s5 >> 1);
-        int32_t b3 =  s3 + s5 + s1 + (s1 >> 1);
-
-        int32_t o0 = b0 + (b3 >> 2);
-        int32_t o1 = b1 + (b2 >> 2);
-        int32_t o2 = b2 - (b1 >> 2);
-        int32_t o3 = b3 - (b0 >> 2);
-
-        // Combine even + odd → output row. Matches libavc and spec §8.5.12.2
-        // via o2 being -g(5) in our sign convention (tmp[1] = e2(f) - g(5) =
-        // e1 + (-o2), but since o2 ≡ g(5), we use e1 - o2 at position 1 and
-        // e1 + o2 at position 6). Verified against libavc pi2_tmp[1]=z2+z5
-        // which produces monotonic IDCT output for single-AC inputs.
-        tmp[i * 8 + 0] = e0 + o3;
-        tmp[i * 8 + 1] = e1 - o2;
-        tmp[i * 8 + 2] = e2 + o1;
-        tmp[i * 8 + 3] = e3 + o0;
-        tmp[i * 8 + 4] = e3 - o0;
-        tmp[i * 8 + 5] = e2 - o1;
-        tmp[i * 8 + 6] = e1 + o2;
-        tmp[i * 8 + 7] = e0 - o3;
+        Butterfly8 b = dct8Butterfly(row[0], row[1], row[2], row[3],
+                                      row[4], row[5], row[6], row[7]);
+        // Combine even + odd → output row. Position 1/6 use the o2 sign-swap
+        // per libavc sign convention (tmp[1] = e1 - o2, tmp[6] = e1 + o2).
+        tmp[i * 8 + 0] = b.e0 + b.o3;
+        tmp[i * 8 + 1] = b.e1 - b.o2;
+        tmp[i * 8 + 2] = b.e2 + b.o1;
+        tmp[i * 8 + 3] = b.e3 + b.o0;
+        tmp[i * 8 + 4] = b.e3 - b.o0;
+        tmp[i * 8 + 5] = b.e2 - b.o1;
+        tmp[i * 8 + 6] = b.e1 + b.o2;
+        tmp[i * 8 + 7] = b.e0 - b.o3;
     }
 
     // Vertical 1-D 8-point inverse transform (for each column) + pred + clip.
-    /// Rounding bias for >>12 normalization (6-bit transform + 6-bit dequant).
+    // Rounding bias for >>6 final shift (dequant already includes the other 6 bits).
     static constexpr int32_t cRoundBias8x8 = 32;
     for (uint32_t j = 0U; j < 8U; ++j)
     {
-        int32_t s0 = tmp[0 * 8 + j];
-        int32_t s1 = tmp[1 * 8 + j];
-        int32_t s2 = tmp[2 * 8 + j];
-        int32_t s3 = tmp[3 * 8 + j];
-        int32_t s4 = tmp[4 * 8 + j];
-        int32_t s5 = tmp[5 * 8 + j];
-        int32_t s6 = tmp[6 * 8 + j];
-        int32_t s7 = tmp[7 * 8 + j];
-
-        // Even part
-        int32_t a0 = s0 + s4;
-        int32_t a2 = s0 - s4;
-        int32_t a4 = (s2 >> 1) - s6;
-        int32_t a6 = s2 + (s6 >> 1);
-
-        int32_t e0 = a0 + a6;
-        int32_t e1 = a2 + a4;
-        int32_t e2 = a2 - a4;
-        int32_t e3 = a0 - a6;
-
-        // Odd part
-        // Odd part — §8.5.12.2 Eq 8-332 (same as horizontal pass).
-        // h(7) uses (m(1)>>1), NOT (m(7)>>1). Verified against libavc.
-        int32_t b0 = -s3 + s5 - s7 - (s7 >> 1);
-        int32_t b1 =  s1 + s7 - s3 - (s3 >> 1);
-        int32_t b2 = -s1 + s7 + s5 + (s5 >> 1);
-        int32_t b3 =  s3 + s5 + s1 + (s1 >> 1);
-
-        int32_t o0 = b0 + (b3 >> 2);
-        int32_t o1 = b1 + (b2 >> 2);
-        int32_t o2 = b2 - (b1 >> 2);
-        int32_t o3 = b3 - (b0 >> 2);
-
-        // Combine, scale down by 64 (>>6), and add prediction.
-        // The total normalization is >>12 (6 bits from horizontal, 6 from vertical)
-        // but our dequant already includes the proper scaling, so only >>6 here.
-        // Matches libavc pi2_tmp outputs: r1/r6 sign flipped from naive symmetry.
-        int32_t r0 = (e0 + o3 + cRoundBias8x8) >> 6;
-        int32_t r1 = (e1 - o2 + cRoundBias8x8) >> 6;
-        int32_t r2 = (e2 + o1 + cRoundBias8x8) >> 6;
-        int32_t r3 = (e3 + o0 + cRoundBias8x8) >> 6;
-        int32_t r4 = (e3 - o0 + cRoundBias8x8) >> 6;
-        int32_t r5 = (e2 - o1 + cRoundBias8x8) >> 6;
-        int32_t r6 = (e1 + o2 + cRoundBias8x8) >> 6;
-        int32_t r7 = (e0 - o3 + cRoundBias8x8) >> 6;
-
-        out[0 * outStride + j] = static_cast<uint8_t>(clipU8(pred[0 * predStride + j] + r0));
-        out[1 * outStride + j] = static_cast<uint8_t>(clipU8(pred[1 * predStride + j] + r1));
-        out[2 * outStride + j] = static_cast<uint8_t>(clipU8(pred[2 * predStride + j] + r2));
-        out[3 * outStride + j] = static_cast<uint8_t>(clipU8(pred[3 * predStride + j] + r3));
-        out[4 * outStride + j] = static_cast<uint8_t>(clipU8(pred[4 * predStride + j] + r4));
-        out[5 * outStride + j] = static_cast<uint8_t>(clipU8(pred[5 * predStride + j] + r5));
-        out[6 * outStride + j] = static_cast<uint8_t>(clipU8(pred[6 * predStride + j] + r6));
-        out[7 * outStride + j] = static_cast<uint8_t>(clipU8(pred[7 * predStride + j] + r7));
+        Butterfly8 b = dct8Butterfly(tmp[0 * 8 + j], tmp[1 * 8 + j],
+                                      tmp[2 * 8 + j], tmp[3 * 8 + j],
+                                      tmp[4 * 8 + j], tmp[5 * 8 + j],
+                                      tmp[6 * 8 + j], tmp[7 * 8 + j]);
+        int32_t r[8] = {
+            (b.e0 + b.o3 + cRoundBias8x8) >> 6,
+            (b.e1 - b.o2 + cRoundBias8x8) >> 6,
+            (b.e2 + b.o1 + cRoundBias8x8) >> 6,
+            (b.e3 + b.o0 + cRoundBias8x8) >> 6,
+            (b.e3 - b.o0 + cRoundBias8x8) >> 6,
+            (b.e2 - b.o1 + cRoundBias8x8) >> 6,
+            (b.e1 + b.o2 + cRoundBias8x8) >> 6,
+            (b.e0 - b.o3 + cRoundBias8x8) >> 6,
+        };
+        for (uint32_t k = 0U; k < 8U; ++k)
+            out[k * outStride + j] = static_cast<uint8_t>(clipU8(pred[k * predStride + j] + r[k]));
     }
 }
 

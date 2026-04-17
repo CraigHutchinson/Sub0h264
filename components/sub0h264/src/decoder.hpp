@@ -197,6 +197,11 @@ private:
     // Used by deblocking filter: boundary edges require QP averaging (§8.7.2.2).
     std::vector<int32_t> mbQps_;      // [mbIdx]
 
+    // Per-MB transform_size_8x8_flag — ITU-T H.264 §7.3.5.
+    // Used by deblocking (§8.7.2): MBs using 8x8 transform skip filtering of
+    // internal 4x4 edges (vertical edges 1,3 and horizontal edges 1,3).
+    std::vector<uint8_t> mbTransform8x8_; // [mbIdx], 0 or 1
+
     // Per-frame MV context for inter prediction
     std::vector<MbMotionInfo> mbMotion_;  // [mbIdx]
 
@@ -593,6 +598,7 @@ private:
         nnzCb_.resize(totalMbs * 4U, 0U);
         nnzCr_.resize(totalMbs * 4U, 0U);
         mbQps_.resize(totalMbs, 0);
+        mbTransform8x8_.resize(totalMbs, 0U);
         mbMotion_.resize(totalMbs * 16U); // 16 MVs per MB (per-4x4-block)
         mbIntra4x4Modes_.resize(totalMbs * 16U, 2U); // Default DC(2)
 
@@ -611,6 +617,7 @@ private:
         std::fill(nnzCb_.begin(), nnzCb_.end(), static_cast<uint8_t>(0U));
         std::fill(nnzCr_.begin(), nnzCr_.end(), static_cast<uint8_t>(0U));
         std::fill(mbQps_.begin(), mbQps_.end(), 0);
+        std::fill(mbTransform8x8_.begin(), mbTransform8x8_.end(), static_cast<uint8_t>(0U));
         std::fill(mbMotion_.begin(), mbMotion_.end(), MbMotionInfo{});
         std::fill(mbIntra4x4Modes_.begin(), mbIntra4x4Modes_.end(), static_cast<uint8_t>(2U));
 
@@ -950,7 +957,8 @@ private:
                     deblockMb(dbFrame, mx, my,
                               mbIsIntra, alphaOff, betaOff,
                               nnzLuma_.data(), mbMotion_.data(),
-                              mbQps_.data(), pps->chromaQpIndexOffset_,
+                              mbQps_.data(), mbTransform8x8_.data(),
+                              pps->chromaQpIndexOffset_,
                               widthInMbs_, heightInMbs_);
                 }
             }
@@ -2628,6 +2636,7 @@ private:
         bool use8x8Transform = false;
         if (pps.transform8x8Mode_ != 0U)
             use8x8Transform = decodeCabacTransform8x8Flag(mbX, mbY, mbIdx);
+        mbTransform8x8_[mbIdx] = use8x8Transform ? 1U : 0U;
 
         uint8_t predModes[16] = {};
         uint32_t numModeBlocks = use8x8Transform ? 4U : 16U;
@@ -3509,6 +3518,7 @@ private:
         bool use8x8Inter = false;
         if (cbpLuma != 0U && pps.transform8x8Mode_ != 0U && noSubMbPartSizeLessThan8x8Flag)
             use8x8Inter = decodeCabacTransform8x8Flag(mbX, mbY, mbIdx);
+        mbTransform8x8_[mbIdx] = use8x8Inter ? 1U : 0U;
 
         // §7.3.5: mb_qp_delta ae(v) — only if cbp > 0 for P-inter. [CHECKED §7.3.5]
         int32_t qp = mbQp;
