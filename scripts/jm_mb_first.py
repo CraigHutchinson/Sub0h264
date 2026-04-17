@@ -11,10 +11,14 @@ mbs = [int(x) for x in sys.argv[2].split(',')]
 n_tok = int(sys.argv[3]) if len(sys.argv) > 3 else 8
 
 text = open(path, encoding='utf-8', errors='replace').read()
-poc0 = text[text.find('POC: 0'):]
-nxt = poc0.find('POC: 1', 100)
-if nxt > 0:
-    poc0 = poc0[:nxt]
+import os
+poc = int(os.environ.get('POC', '0'))
+poc_marker = f"POC: {poc} "
+poc0 = text[text.find(poc_marker):]
+# Find next POC marker (any number)
+m = re.search(r'POC: \d+ ', poc0[200:])
+if m:
+    poc0 = poc0[:200 + m.start()]
 
 for mb in mbs:
     needle = f"POC: 0 (I/P) MB: {mb} Slice: 0"
