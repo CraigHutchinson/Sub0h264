@@ -101,12 +101,33 @@ which height-alignment condition triggers the bug.
 
 **Recommended P0 investigation order:**
 1. **Generate the wide-row synthetics** — fast to produce with ffmpeg, adds
-   regression coverage permanently
+   regression coverage permanently ✓ DONE
 2. **Test hypothesis 10 first** (disable deblock) — 30-second experiment, rules
-   out the entire deblocking path
+   out the entire deblocking path ✓ DONE — ruled out
 3. **Bisect by intra mode** — which of I_4x4 / I_8x8 / I_16x16 fails at width 40?
+   ✓ DONE — isolated 3 I_8x8 bugs + 1 I_16x16 DC-only bug
 4. **Once mode isolated, lock-step JM compare** at MB(15,0) of the minimal
-   failing fixture
+   failing fixture — ⏳ NEXT SESSION
+
+### P0 Investigation state (2026-04-17, end of session 2)
+
+**3 bugs fixed:**
+1. I_8x8 block-3 top-right availability (§6.4.10.4)
+2. 8x8 IDCT h(7) butterfly wrong input (§8.5.12.2 Eq 8-332)
+3. 8x8 IDCT output sign at positions 1 and 6 (§8.5.12.2 Eq 8-338)
+
+**Remaining bugs (separate and independent):**
+- **Tapo C110 at 6.59 dB** — Per-MB mode trace revealed MB 15 uses
+  **I_16x16 mbType=3** (DC-only), NOT I_8x8 as initially assumed.
+  Next step: lock-step JM comparison of MB 15 DC coefficient decode.
+- **wstress gradient fixtures at 25 dB** — separate I_8x8 bug. wstress
+  uses `-x264opts analyse=i8x8` to force I_8x8, exposing a subtle IDCT
+  rounding or intra prediction issue in real-content coefficient patterns.
+  Wstress_wide24 passes at 55 dB because x264 chose I_16x16/I_4x4 for
+  that content.
+
+**Diagnostic available** via `SUB0H264_P0_I8X8_DIAG` (misnamed — covers
+all intra modes' MB entry logging on row 0).
 
 ### P0 Investigation Results (2026-04-17)
 
