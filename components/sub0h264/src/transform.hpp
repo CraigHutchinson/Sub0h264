@@ -541,14 +541,18 @@ inline void inverseDct8x8AddPred(const int16_t* coeffs,
         int32_t o2 = b2 - (b1 >> 2);
         int32_t o3 = b3 - (b0 >> 2);
 
-        // Combine even + odd → output row
+        // Combine even + odd → output row. Matches libavc and spec §8.5.12.2
+        // via o2 being -g(5) in our sign convention (tmp[1] = e2(f) - g(5) =
+        // e1 + (-o2), but since o2 ≡ g(5), we use e1 - o2 at position 1 and
+        // e1 + o2 at position 6). Verified against libavc pi2_tmp[1]=z2+z5
+        // which produces monotonic IDCT output for single-AC inputs.
         tmp[i * 8 + 0] = e0 + o3;
-        tmp[i * 8 + 1] = e1 + o2;
+        tmp[i * 8 + 1] = e1 - o2;
         tmp[i * 8 + 2] = e2 + o1;
         tmp[i * 8 + 3] = e3 + o0;
         tmp[i * 8 + 4] = e3 - o0;
         tmp[i * 8 + 5] = e2 - o1;
-        tmp[i * 8 + 6] = e1 - o2;
+        tmp[i * 8 + 6] = e1 + o2;
         tmp[i * 8 + 7] = e0 - o3;
     }
 
@@ -591,13 +595,14 @@ inline void inverseDct8x8AddPred(const int16_t* coeffs,
         // Combine, scale down by 64 (>>6), and add prediction.
         // The total normalization is >>12 (6 bits from horizontal, 6 from vertical)
         // but our dequant already includes the proper scaling, so only >>6 here.
+        // Matches libavc pi2_tmp outputs: r1/r6 sign flipped from naive symmetry.
         int32_t r0 = (e0 + o3 + cRoundBias8x8) >> 6;
-        int32_t r1 = (e1 + o2 + cRoundBias8x8) >> 6;
+        int32_t r1 = (e1 - o2 + cRoundBias8x8) >> 6;
         int32_t r2 = (e2 + o1 + cRoundBias8x8) >> 6;
         int32_t r3 = (e3 + o0 + cRoundBias8x8) >> 6;
         int32_t r4 = (e3 - o0 + cRoundBias8x8) >> 6;
         int32_t r5 = (e2 - o1 + cRoundBias8x8) >> 6;
-        int32_t r6 = (e1 - o2 + cRoundBias8x8) >> 6;
+        int32_t r6 = (e1 + o2 + cRoundBias8x8) >> 6;
         int32_t r7 = (e0 - o3 + cRoundBias8x8) >> 6;
 
         out[0 * outStride + j] = static_cast<uint8_t>(clipU8(pred[0 * predStride + j] + r0));
