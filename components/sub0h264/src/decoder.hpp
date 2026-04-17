@@ -695,9 +695,10 @@ private:
 
                 if (useCabac)
                 {
-                    // Stop decoding if bitstream exhausted — prevents CABAC overrun
-                    if (br.isExhausted())
-                        break;
+                    // Note: do NOT gate on br.isExhausted() — CABAC's 16-bit
+                    // lookahead means the engine still holds valid bins after
+                    // the underlying BitReader appears exhausted. Termination
+                    // is via end_of_slice_flag (§7.3.4) below.
 #ifdef SUB0H264_TRACE_I4X4_BLOCKS
                     std::fprintf(stderr, "MB_START(%u,%u): R=%u O=%u bp=%u qp=%d\n",
                         mbX, mbY, cabacEngine_.range(), cabacEngine_.offset(),
@@ -758,9 +759,12 @@ private:
                     uint32_t mbX = mbAddr % widthInMbs_;
                     uint32_t mbY = mbAddr / widthInMbs_;
 
-                    // Stop decoding if bitstream exhausted
-                    if (br.isExhausted())
-                        break;
+                    // CABAC has 16-bit lookahead beyond the underlying BitReader's
+                    // current bitOffset, so isExhausted() returns true while the
+                    // engine still holds valid bins. Don't gate the loop on it;
+                    // the end_of_slice_flag (decoded after each MB) is the proper
+                    // termination per §7.3.4. Removing this fixed P-frame decode
+                    // truncating ~3 MBs early on Tapo C110 (last MB(36,22) → MB(39,22)).
 
                     // Emit CABAC MB-start trace (a=200, b=bitPosition).
                     // Allows tests to verify the CABAC bit-position at the start of each MB.

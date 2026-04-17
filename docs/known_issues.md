@@ -143,9 +143,23 @@ mb_qp_delta is absent, it is treated as having value 0.
 
 **Result: Tapo C110 IDR 6.58 → 46.23 dB (bit-exact CABAC bin trace
 vs JM, all 74618 bins match).** Frame avg 38.11 dB; P-frames still at
-~26 dB indicating a separate residual P-frame bug (likely related now
-that the IDR is bit-exact, the P-frame inter-prediction reconstruction
-will have a different bug surface).
+~26 dB.
+
+**Session 7b — fix early P-frame truncation:**
+P-frame 1's CABAC bins were also bit-exact (956/956 vs JM), but our
+decoder stopped at MB 916/919, leaving the bottom-right corner of the
+frame as uninitialised zeros (max diff 155 at pixel (624,352)+).
+
+Root cause: both the CABAC I-slice loop and the CABAC P-slice loop
+started each MB with `if (br.isExhausted()) break;`. CABAC has a 16-bit
+lookahead, so the underlying BitReader's bitOffset can reach the end
+of the slice NAL while the engine still has multiple bins available.
+The check is wrong for CABAC. Termination is via end_of_slice_flag.
+
+**Removed both isExhausted gates.** All ctest pass; wstress still 99 dB.
+
+**Final result: Tapo C110 6.58 → 44.18 dB average (min 39.8 dB,
+max 47.6 dB). 38 dB total improvement across 7 fixes this session.**
 
 **Tapo C110 lock-step trace investigation (2026-04-17 cont'd):**
 Rebuilt JM with TRACE=1 for full syntax-element trace_dec.txt. Compared
