@@ -108,6 +108,50 @@ which height-alignment condition triggers the bug.
 4. **Once mode isolated, lock-step JM compare** at MB(15,0) of the minimal
    failing fixture
 
+### P0 Investigation Results (2026-04-17)
+
+**Hypothesis #10 (deblock): RULED OUT** — disabling deblock produces identical
+6.43 dB PSNR on Tapo IDR. Bug is in intra / entropy / transform paths.
+
+**Bisect results (new width-stress synthetics at 640x368):**
+
+| Fixture | Content | Result |
+|---------|---------|--------|
+| `wstress_tapo_size_baseline_640x368` | CAVLC gradient | **99 dB PASS** |
+| `wstress_tapo_size_i16x16_640x368` | CABAC I_16x16 only | **99 dB PASS** |
+| `wstress_tapo_size_i4x4_640x368` | CABAC I_4x4 only | **99 dB PASS** |
+| `wstress_tapo_size_i8x8_640x368` | **CABAC I_8x8 only** | **15 dB FAIL** |
+| `wstress_tapo_size_gradient_640x368` | CABAC mixed | 15 dB FAIL |
+| `wstress_wide16_gradient_256x16` | CABAC 16-wide | 28 dB DEGRADED |
+| `wstress_wide24_gradient_384x16` | CABAC 24-wide | 28 dB DEGRADED |
+| `wstress_wide40_gradient_640x16` | CABAC 40-wide | 20 dB FAIL |
+| `wstress_wide40_baseline_640x16` | CAVLC 40-wide | 99 dB PASS |
+
+**ROOT CAUSE ISOLATED:**
+- CAVLC works at all widths → width-dependency is NOT in bitstream parsing
+  or reconstruction
+- CABAC I_16x16 works → 16x16 intra prediction + entropy are fine
+- CABAC I_4x4 works → 4x4 intra prediction + entropy are fine
+- **CABAC I_8x8 FAILS** → bug is in the **I_8x8 intra prediction or 8x8
+  transform path** under CABAC
+- PSNR degrades with width (28→28→20 dB), suggesting **cumulative error
+  propagating horizontally via top-row neighbor samples** in I_8x8
+  intra prediction
+
+**Revised P0 hypothesis list (narrowed):**
+
+| # | Hypothesis | Evidence |
+|---|-----------|----------|
+| A | I_8x8 intra prediction neighbor sampling (top-right availability at MB columns 16+) | Degrading-with-width pattern |
+| B | I_8x8 reference sample filtering (§8.3.2.1, 121 low-pass filter) applied incorrectly at wider frames | Every I_8x8 decode triggers this |
+| C | 8x8 IDCT + dequant path issue (only 8x8-transform MBs hit this) | Explains why I_16x16 and I_4x4 work |
+| D | `transform_size_8x8_flag` CABAC context wrong at wider frames (we fixed this once; might have regression or additional case) | Known historical fuzz |
+| E | I_8x8 intra mode decode (rem_intra8x8_pred_mode CABAC binarization) | Only I_8x8 path |
+
+**Next action:** Use new `wstress_tapo_size_i8x8_640x368.h264` as the minimal
+repro fixture for JM lock-step comparison. The failing fixture is only 4650
+bytes and ~1 frame, trivial to trace bin-by-bin.
+
 ---
 
 ## Profile Breakdown (ESP32-P4, 640x480 real camera content)
