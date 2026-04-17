@@ -197,6 +197,27 @@ intra8x8_pred.c PredArray mappings. Found four distinct bugs:
 **Tapo C110: 44.18 → 56.23 dB average (min 40.93 dB, max 57.94 dB).**
 12 dB further improvement on top of session 7. All ctest pass.
 
+**Session 9 — skip-MB prevHadDelta reset:**
+Lock-step trace of P-frame 9 (slice 10 in JM, 1340 bins vs 920 normal —
+likely a refresh frame) located divergence at bin 751 — same family of
+bug as session 7. JM `read_skip_flag_CABAC_p_slice` (cabac.c L604)
+ALSO resets `last_dquant = 0` when the MB is skipped, which we missed.
+
+Fix: set `prevMbHadNonZeroQpDelta_ = false` in the CABAC P-slice skip
+branch. After fix, ALL 1340 P-frame 9 CABAC bins match JM bit-exact.
+
+Tapo final: **56.33 dB avg, 41.03 dB min** (Tapo IDR is now 99 dB
+bit-exact vs JM; remaining gap is in P-frame motion-compensation /
+MV-prediction reconstruction — a non-CABAC bug).
+
+**Next session targets** (P-frame reconstruction):
+- Frame 9 first diverging MB is (13, 0) — top row, max diff 234 in
+  cols 8-15 (right-half pattern). Suggests P_L0_8x16 partition 1 MV
+  prediction differs for MBs with no top neighbor (`b`/`c` unavailable).
+- Diff cascades through inter-frame MC until next intra-refresh frame.
+- All wstress fixtures bit-exact, so MC bug is specific to Tapo's
+  rolling-intra-refresh / mid-frame slice pattern.
+
 **Tapo C110 lock-step trace investigation (2026-04-17 cont'd):**
 Rebuilt JM with TRACE=1 for full syntax-element trace_dec.txt. Compared
 mb_type per-MB ours vs JM. First divergence at **MB 8** (first I_16x16
