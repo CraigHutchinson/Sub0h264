@@ -125,11 +125,40 @@ JM/spec Table 8-16:
 | wstress_tapo_complex_flat       | 35 dB     | TBD              |
 | Tapo C110 (real, I_4x4 dominant) | 6.59 dB  | 6.58 dB (unchanged) |
 
-**Tapo C110 remains open** — first divergence at MB(22, 0) which is I_4x4
-with cbp=8, qp_delta=3. The I_4x4 path is separate from the I_8x8 dequant.
-Bug scope now confirmed: **Tapo is an I_4x4 / CAVLC-residual / dequant-4x4
-or intra4x4-prediction issue**, not I_8x8. Next session: compare our MB 22
-I_4x4 decode against JM trace values.
+**Tapo C110 lock-step trace investigation (2026-04-17 cont'd):**
+Rebuilt JM with TRACE=1 for full syntax-element trace_dec.txt. Compared
+mb_type per-MB ours vs JM. First divergence at **MB 8** (first I_16x16
+MB in Tapo IDR slice 0). JM mb_type=15 (predMode=DC, cbpLuma=15,
+cbpChroma=0); ours mb_type=23 (same predMode/cbpLuma but cbpChroma=2).
+We read 2 EXTRA chroma bins.
+
+JM `readMB_typeInfo_CABAC_i_slice` (cabac.c L711-730) uses act_ctx
+4,5,6,7,8 added to `ctxIdxOffset=3` → absolute ctx 7,8,9,10,11.
+Our code uses ctx 6,7,8,9,10. Off-by-one would seem to be the bug, BUT
+applying the JM values regresses wstress_gradient from 99 dB to 5.4 dB.
+This suggests the JM mb_type_contexts[] base in JM is offset by 1 from
+the spec ctxIdxOffset, OR the original ctx[6..10] is correct per spec
+and JM's act_ctx values are an internal artifact.
+
+**Trial fix preserved under `SUB0H264_MBTYPEI_JM_CTX`** preprocessor
+guard (cabac_parse.hpp). Default-off; can be combined with future fixes
+to test interactions.
+
+**Real Tapo bug is elsewhere** — at MB 8 the I_NxN MBs 0-7 cbp values
+match JM exactly (31, 15, 15, 31, 15, 31, 15, 23). So through mb_type
+of MBs 0-7 our decoder agrees with JM. Engine state must diverge during
+some MB 0-7 residual decode, but the cbp parse stays correct by chance.
+The compounding bins eventually cause MB 8 chroma cbp to read wrong.
+
+Last working MB in Tapo: **MB 256** (final nonzero MB; MB 257-919 are
+all-zero output). decodeTerminate at end of MB 256 returns 1 (eos)
+when JM correctly returns 0, due to accumulated CABAC engine drift.
+
+**Next session targets:**
+- Compare per-bin CABAC bin values for MB 0-7 (use the existing
+  bin-trace patch in tools/jm_trace) to find the FIRST diverging bin.
+- Likely candidate: a residual coefficient bin (level/run/sign) in
+  one of the I_4x4 luma 4x4 blocks or the chroma DC.
 
 **Diff pattern for wstress gradient frame 0 (all I_8x8):**
 - MB(0,0): max diff = 2, mean = 0.69

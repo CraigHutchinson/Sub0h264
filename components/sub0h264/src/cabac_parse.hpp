@@ -106,36 +106,30 @@ inline uint32_t cabacDecodeMbTypeI(CabacEngine& engine, CabacCtx* ctx,
     if (engine.decodeTerminate() == 1U)
         return 25U; // I_PCM
 
-    // I_16x16 binarization — ffmpeg decode_cabac_intra_mb_type:
-    //   After bin0 and terminate, state pointer advances by 2 for I-slices.
-    //   state = &cabac_state[3+2] = &cabac_state[5].
-    //   bin: state[1]=ctx[6] cbpLuma, state[2]=ctx[7] cbpChroma,
-    //        state[3]=ctx[8] cbpChroma2, state[4]=ctx[9] predMode0,
-    //        state[5]=ctx[10] predMode1.
-    //   ORDER: cbpLuma FIRST, then cbpChroma, then predMode.
-    // I_16x16 suffix — verified against spec-only agent trace and ffmpeg:
-    // After bin0 + terminate, for I-slices: state base advances by 2.
-    // state = &cabac_state[cCtxMbTypeI + 2] (for I-slice, ctxInc was 0-2 for bin0)
-    // Suffix bins from that base:
-    //   state[1] = ctx[6]:  cbpLuma (12*bin for mb_type formula)
-    //   state[2] = ctx[7]:  cbpChroma > 0
-    //   state[3] = ctx[8]:  cbpChroma == 2 (if bin above was 1)
-    //   state[4] = ctx[9]:  predMode bit 1
-    //   state[5] = ctx[10]: predMode bit 0
-    // Agent confirmed: ctx6=cbpLuma, ctx7=cbpChroma, ctx9=pred0, ctx10=pred1
-    constexpr uint32_t base = cCtxMbTypeI + 3U; // = 6
-    uint32_t cbpLuma = engine.decodeBin(ctx[base]);       // ctx[6]
+    // I_16x16 binarization — current implementation uses ctx[6..10].
+    // Verified WORKING for wstress_gradient (99 dB bit-exact vs JM).
+    //
+    // SUB0H264_MBTYPEI_JM_CTX (experimental, 2026-04-17): JM 19.0
+    // readMB_typeInfo_CABAC_i_slice (cabac.c L711-730) reads
+    // ctx[7..11] (act_ctx 4..8 added to ctxIdxOffset=3). Tested but
+    // REGRESSES wstress_gradient from 99 dB to 5 dB. Likely the JM
+    // mb_type_contexts[] base is offset by 1 from our ctx[]. Kept under
+    // guard so we can revisit when investigating Tapo C110 (which
+    // diverges at first I_16x16 MB with mb_type_chroma off by 8).
+#ifdef SUB0H264_MBTYPEI_JM_CTX
+    constexpr uint32_t base = cCtxMbTypeI + 4U; // = 7 (JM convention)
+#else
+    constexpr uint32_t base = cCtxMbTypeI + 3U; // = 6 (current)
+#endif
+    uint32_t cbpLuma = engine.decodeBin(ctx[base]);
 
-    uint32_t cbpChromaFlag = engine.decodeBin(ctx[base + 1U]); // ctx[7]
+    uint32_t cbpChromaFlag = engine.decodeBin(ctx[base + 1U]);
     uint32_t cbpChroma = 0U;
     if (cbpChromaFlag != 0U)
-        cbpChroma = engine.decodeBin(ctx[base + 2U]) == 0U ? 1U : 2U; // ctx[8]
+        cbpChroma = engine.decodeBin(ctx[base + 2U]) == 0U ? 1U : 2U;
 
-    // §9.3.2.5: predMode uses FL binarization (2 bins) at ctx[9,10]
-    // Context indices: ctxIdxOffset(3) + ctxIdxInc(6) = 9, +7 = 10
-    // Confirmed by x264 encoder which passes ctx[3+6]=9, ctx[3+7]=10
-    uint32_t predMode = (engine.decodeBin(ctx[base + 3U]) << 1U) | // ctx[9]
-                          engine.decodeBin(ctx[base + 4U]);          // ctx[10]
+    uint32_t predMode = (engine.decodeBin(ctx[base + 3U]) << 1U) |
+                          engine.decodeBin(ctx[base + 4U]);
 
     // mb_type = 1 + predMode + cbpChroma*4 + cbpLuma*12
     return 1U + predMode + cbpChroma * 4U + cbpLuma * 12U;
