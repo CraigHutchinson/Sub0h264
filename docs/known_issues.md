@@ -65,8 +65,19 @@ both horizontal and vertical passes.
 **Next investigation:** Compare MB(15, 0) decoded coefficients against
 JM reference bin-by-bin.
 
-**Scope update (2026-04-17):** After per-MB mode tracing, discovered that
-the Tapo bug is NOT in I_8x8 but in **CABAC I_16x16 DC mode** (mbType=3).
+**Major insight update (2026-04-17, session 3):** Block-level analysis of
+MB 15 reveals the LEFT half (blocks 0 and 2, cols 240-247) matches ffmpeg
+PERFECTLY. Only the RIGHT half (blocks 1 and 3, cols 248-255) has tiny
+1-pixel diffs at the MB 15/16 boundary. MB 16 uses CABAC I_8x8 (same
+path as the 25 dB wstress gradient bug). Hypothesis: the Tapo divergence
+at MB 15 is actually **MB 16's I_8x8 error propagating back via
+deblocking** into MB 15's right edge. I_16x16 DC decode at MB 15 is
+verified correct — fixing the remaining I_8x8 bug should eliminate
+Tapo divergence as a side effect.
+
+**Scope update (2026-04-17, session 2):** Per-MB mode tracing showed that
+Tapo MB 15 uses **CABAC I_16x16 DC mode** (mbType=3, predMode=DC,
+cbpLuma=0) while MB 16 is CABAC I_8x8.
 Tapo MB 15 uses I_16x16 with mbType=3 (predMode=DC, cbpLuma=0, cbpChroma=0)
 — a "DC-only" path that decodes only the 4x4 Hadamard DC coefficients,
 with no AC residual. The 1-pixel diffs at MB(15, 0) block 1 come from
