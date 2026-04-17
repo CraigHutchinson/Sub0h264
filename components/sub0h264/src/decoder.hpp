@@ -2738,6 +2738,10 @@ private:
         cabacNeighbor_[mbIdx].cbp = cbp;
 
         // §7.3.5: mb_qp_delta ae(v) — only if cbp > 0 for I_NxN (NOT always like I_16x16).
+        // §9.3.3.1.1.5: when mb_qp_delta is NOT decoded (i.e. cbp==0), the
+        // syntax element is treated as having value 0 → reset prevHadDelta to
+        // false. Verified bit-exact against JM read_dQuant_CABAC + the
+        // `if (!cbp) last_dquant = 0;` reset in cabac.c L1298-1301.
         // [CHECKED §7.3.5] (FM-3: cbp encodes both luma and chroma; cbp>0 correctly covers both.)
         if (cbp > 0U)
         {
@@ -2746,6 +2750,10 @@ private:
             prevMbHadNonZeroQpDelta_ = (qpDelta != 0);
             qp += qpDelta;
             qp = ((qp % 52) + 52) % 52; // §7.4.5: proper modular wrapping
+        }
+        else
+        {
+            prevMbHadNonZeroQpDelta_ = false;
         }
 
 #ifdef SUB0H264_TRACE_I4X4_BLOCKS
@@ -3483,6 +3491,9 @@ private:
         mbTransform8x8_[mbIdx] = use8x8Inter ? 1U : 0U;
 
         // §7.3.5: mb_qp_delta ae(v) — only if cbp > 0 for P-inter. [CHECKED §7.3.5]
+        // §9.3.3.1.1.5 / JM cabac.c L1298-1301: when cbp==0 the syntax element
+        // is absent (treated as 0) → reset prevHadDelta to false so the next
+        // MB's mb_qp_delta bin0 uses ctxInc=0.
         int32_t qp = mbQp;
         if (cbp > 0U)
         {
@@ -3491,6 +3502,10 @@ private:
             prevMbHadNonZeroQpDelta_ = (qpDelta != 0);
             qp += qpDelta;
             qp = ((qp % 52) + 52) % 52; // §7.4.5: proper modular wrapping
+        }
+        else
+        {
+            prevMbHadNonZeroQpDelta_ = false;
         }
         mbQp = qp; // Propagate accumulated QP
 

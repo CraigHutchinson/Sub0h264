@@ -125,6 +125,28 @@ JM/spec Table 8-16:
 | wstress_tapo_complex_flat       | 35 dB     | TBD              |
 | Tapo C110 (real, I_4x4 dominant) | 6.59 dB  | 6.58 dB (unchanged) |
 
+**Tapo C110 ROOT CAUSE FIX (2026-04-17 session 7):**
+Per-bin lock-step against JM (`scripts/lockstep_compare.py`) located the
+first diverging bin at index 12588 in the IDR slice — MB 62 (an I_16x16
+DC MB). Both decoders read bit=0 there, but the post-engine state diverged.
+Tracing back to MB 60 (I_NxN with cbp=11, qp_delta=-1) and MB 61 (I_NxN
+with cbp=0, mb_qp_delta absent), JM's `read_dQuant_CABAC` (cabac.c L1300)
+resets `last_dquant = 0` whenever cbp==0 even though mb_qp_delta isn't
+actually decoded. We were skipping the reset, leaving prevMbHadQpDelta
+"sticky" at TRUE → wrong ctxInc=1 (ctx 61) for MB 62's mb_qp_delta bin0
+where JM uses ctxInc=0 (ctx 60).
+
+**Fix:** add `else { prevMbHadNonZeroQpDelta_ = false; }` in both the
+CABAC I_NxN path (line ~2742) and CABAC P-inter path (line ~3495) where
+we skip mb_qp_delta because cbp==0. Per spec §9.3.3.1.1.5: when
+mb_qp_delta is absent, it is treated as having value 0.
+
+**Result: Tapo C110 IDR 6.58 → 46.23 dB (bit-exact CABAC bin trace
+vs JM, all 74618 bins match).** Frame avg 38.11 dB; P-frames still at
+~26 dB indicating a separate residual P-frame bug (likely related now
+that the IDR is bit-exact, the P-frame inter-prediction reconstruction
+will have a different bug surface).
+
 **Tapo C110 lock-step trace investigation (2026-04-17 cont'd):**
 Rebuilt JM with TRACE=1 for full syntax-element trace_dec.txt. Compared
 mb_type per-MB ours vs JM. First divergence at **MB 8** (first I_16x16
