@@ -2783,10 +2783,10 @@ private:
                 }
 
 #ifdef SUB0H264_P0_I8X8_DIAG
-                if (mbX == 16U && mbY == 0U)
+                if (mbX == 0U && mbY == 0U && blk8 == 0U)
                 {
-                    std::fprintf(stderr, "\n=== P0 DIAG: MB(16,0) block %u (I_8x8) mode=%u qp=%d ===\n",
-                                 blk8, static_cast<unsigned>(mode8x8), qp);
+                    std::fprintf(stderr, "\n=== P0 DIAG: MB(0,0) block 0 (I_8x8) mode=%u qp=%d ===\n",
+                                 static_cast<unsigned>(mode8x8), qp);
                     std::fprintf(stderr, "  mode8x8=%u  hasResidual=%d  qp=%d\n",
                                  static_cast<unsigned>(mode8x8),
                                  static_cast<int>(hasResidual), qp);
@@ -2819,7 +2819,7 @@ private:
                 inverseDct8x8AddPred(coeffs, pred8x8, 8U, outPtr, yStride);
 
 #ifdef SUB0H264_P0_I8X8_DIAG
-                if (mbX == 16U && mbY == 0U)
+                if (mbX == 0U && mbY == 0U && blk8 == 0U)
                 {
                     std::fprintf(stderr, "  output[] (8x8, after IDCT+pred+clip):\n");
                     for (int r = 0; r < 8; ++r) {

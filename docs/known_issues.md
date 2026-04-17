@@ -65,15 +65,33 @@ both horizontal and vertical passes.
 **Next investigation:** Compare MB(15, 0) decoded coefficients against
 JM reference bin-by-bin.
 
-**Major insight update (2026-04-17, session 3):** Block-level analysis of
-MB 15 reveals the LEFT half (blocks 0 and 2, cols 240-247) matches ffmpeg
-PERFECTLY. Only the RIGHT half (blocks 1 and 3, cols 248-255) has tiny
-1-pixel diffs at the MB 15/16 boundary. MB 16 uses CABAC I_8x8 (same
-path as the 25 dB wstress gradient bug). Hypothesis: the Tapo divergence
-at MB 15 is actually **MB 16's I_8x8 error propagating back via
-deblocking** into MB 15's right edge. I_16x16 DC decode at MB 15 is
-verified correct — fixing the remaining I_8x8 bug should eliminate
-Tapo divergence as a side effect.
+**Major insight update (2026-04-17, session 4):** JM reference decoder
+source audited — our 8x8 IDCT arithmetic (transform.hpp inverse8x8)
+matches JM's `inverse8x8()` in transform.c line-for-line (including all
+3 fixes applied). ffmpeg's `ff_h264_idct8_add` uses different variable
+names but equivalent arithmetic (b5 = -JM's b5, compensated at output).
+
+**All three reference decoders (ours, JM, ffmpeg) produce identical
+output for same input** — per manual trace of MB(0,0) block 0 with
+input coeffs (-7160, -15, 0, ..., 0): all compute residual -112 at
+every column → output 16 uniform.
+
+The remaining 1-pixel diff at ref pixel (col 6, row 0) = 17 must come
+from **deblocking**, not IDCT. Our deblock filters ALL 4x4 edges within
+an MB. For 8x8-transform MBs, spec §8.7.2 says **edges inside 8x8
+blocks (cols 4, 12 and rows 4, 12 within MB) should be SKIPPED** — the
+8x8 transform already smooths those boundaries. Our code doesn't have
+this skip logic, which means:
+1. We filter internal 4x4 edges that ffmpeg doesn't
+2. Our BS/filter output for 8x8-mode MBs differs from spec
+3. The pixel diffs at col 6-7 are consistent with deblock at the col 8
+   (block 0/1 edge) being computed differently due to this mismatch
+
+**Next investigation target (Session 5):** Add 8x8-transform awareness
+to deblock.hpp — skip internal 4x4 edges when MB uses 8x8 transform.
+
+Block-level analysis of Tapo MB 15 still confirms LEFT half matches
+perfectly; RIGHT half diffs cascade via deblock from MB 16 (I_8x8).
 
 **Scope update (2026-04-17, session 2):** Per-MB mode tracing showed that
 Tapo MB 15 uses **CABAC I_16x16 DC mode** (mbType=3, predMode=DC,
