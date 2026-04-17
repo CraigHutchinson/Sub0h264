@@ -787,6 +787,9 @@ private:
                         // (§9.3.3.1.1.4) sees the skip MB as "not coded".
                         cabacNeighbor_[mbAddr].cbp = 0U;
                         cabacNeighbor_[mbAddr].dcCbf = 0U;
+                        // §9.3.3.1.1.5 / JM cabac.c L604: skip MBs reset
+                        // prevHadDelta to false (mb_qp_delta is absent).
+                        prevMbHadNonZeroQpDelta_ = false;
                         int64_t skipT0 = profile_ ? sub0h264TimerUs() : 0;
                         decodePSkipMb(*decodeTarget, *refFrame, mbX, mbY, sh);
                         if (profile_) profile_->interPredUs += sub0h264TimerUs() - skipT0;
