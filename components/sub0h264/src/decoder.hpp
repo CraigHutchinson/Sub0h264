@@ -20,6 +20,7 @@
 
 // #define SUB0H264_TRACE_I4X4_BLOCKS
 // #define SUB0H264_EXP_FORCE_MODE1_SCAN5
+// #define SUB0H264_P0_I8X8_DIAG 1  // Enable to trace I_8x8 MB(0,0) block 0
 #include "decode_timing.hpp"
 #include "decode_trace.hpp"
 #include "dpb.hpp"
@@ -2780,6 +2781,30 @@ private:
                         coeffs[cZigzag8x8[k]] = scanCoeffs[k];
                     inverseQuantize8x8(coeffs, qp);
                 }
+
+#ifdef SUB0H264_P0_I8X8_DIAG
+                if (mbX == 0U && mbY == 0U && blk8 == 0U)
+                {
+                    std::fprintf(stderr, "\n=== P0 DIAG: MB(0,0) block 0 (I_8x8) ===\n");
+                    std::fprintf(stderr, "  mode8x8=%u  hasResidual=%d  qp=%d\n",
+                                 static_cast<unsigned>(mode8x8),
+                                 static_cast<int>(hasResidual), qp);
+                    std::fprintf(stderr, "  pred[] (8x8, row-major):\n");
+                    for (int r = 0; r < 8; ++r) {
+                        std::fprintf(stderr, "   ");
+                        for (int c = 0; c < 8; ++c)
+                            std::fprintf(stderr, " %3u", pred8x8[r * 8 + c]);
+                        std::fprintf(stderr, "\n");
+                    }
+                    std::fprintf(stderr, "  coeffs[] (dequantized, raster order):\n");
+                    for (int r = 0; r < 8; ++r) {
+                        std::fprintf(stderr, "   ");
+                        for (int c = 0; c < 8; ++c)
+                            std::fprintf(stderr, " %6d", coeffs[r * 8 + c]);
+                        std::fprintf(stderr, "\n");
+                    }
+                }
+#endif
             
                 // §6.4.3: 8x8→4x4 raster index mapping. blk8 is in raster scan order:
                 // blk8=0→(0,0), blk8=1→(1,0), blk8=2→(0,1), blk8=3→(1,1)
@@ -2791,6 +2816,20 @@ private:
 
                 uint8_t* outPtr = mbLuma + blkY * yStride + blkX;
                 inverseDct8x8AddPred(coeffs, pred8x8, 8U, outPtr, yStride);
+
+#ifdef SUB0H264_P0_I8X8_DIAG
+                if (mbX == 0U && mbY == 0U && blk8 == 0U)
+                {
+                    std::fprintf(stderr, "  output[] (8x8, after IDCT+pred+clip):\n");
+                    for (int r = 0; r < 8; ++r) {
+                        std::fprintf(stderr, "   ");
+                        for (int c = 0; c < 8; ++c)
+                            std::fprintf(stderr, " %3u", outPtr[r * yStride + c]);
+                        std::fprintf(stderr, "\n");
+                    }
+                    std::fprintf(stderr, "=== END P0 DIAG ===\n\n");
+                }
+#endif
             }
         }
         else

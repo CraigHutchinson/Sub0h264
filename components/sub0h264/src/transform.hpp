@@ -525,11 +525,16 @@ inline void inverseDct8x8AddPred(const int16_t* coeffs,
         int32_t e2 = a2 - a4;
         int32_t e3 = a0 - a6;
 
-        // Odd part — §8.5.12.2 Equations 8-329..8-333
+        // Odd part — §8.5.12.2 Equations 8-332:
+        //   h(1) = -m(3) + m(5) - m(7) - (m(7)>>1)
+        //   h(3) =  m(1) + m(7) - m(3) - (m(3)>>1)
+        //   h(5) = -m(1) + m(7) + m(5) + (m(5)>>1)
+        //   h(7) =  m(3) + m(5) + m(1) + (m(1)>>1)   ← was (m(7)>>1), FIXED
+        // Verified against libavc ih264_iquant_itrans_recon_8x8 (y7).
         int32_t b0 = -s3 + s5 - s7 - (s7 >> 1);
         int32_t b1 =  s1 + s7 - s3 - (s3 >> 1);
         int32_t b2 = -s1 + s7 + s5 + (s5 >> 1);
-        int32_t b3 =  s1 + s3 + s5 + (s7 >> 1);
+        int32_t b3 =  s3 + s5 + s1 + (s1 >> 1);
 
         int32_t o0 = b0 + (b3 >> 2);
         int32_t o1 = b1 + (b2 >> 2);
