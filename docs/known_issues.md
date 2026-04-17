@@ -23,38 +23,50 @@ cleanly rather than producing silent corruption or hard crashes.
 
 ## Active Quality Issues
 
-### CABAC I_8x8 residual path bug (Tapo C110 + width-stress fixtures)
-**Status: PARTIALLY FIXED (2026-04-17)**. Bug isolated to CABAC I_8x8 path.
+### CABAC I_8x8 decode bugs (Tapo C110 + width-stress fixtures)
+**Status: MULTIPLE FIXES APPLIED, investigation continuing (2026-04-17)**.
 
 **Investigation progress:**
 - Deblocking ruled out (identical PSNR with SUB0H264_SKIP_DEBLOCK)
-- Bisect via 10 new `wstress_*` synthetic fixtures:
-  - CAVLC at all widths: 99 dB PASS
-  - CABAC I_16x16 only at 640x368: 99 dB PASS
-  - CABAC I_4x4 only at 640x368: 99 dB PASS
-  - **CABAC I_8x8 only at 640x368: 15 dB FAIL** (fixed partial → 20 dB)
+- Bisect via 10 new `wstress_*` synthetic fixtures isolated bug to CABAC
+  I_8x8 path (CAVLC, I_4x4, I_16x16 all pass at 640x368)
 
-**Fix #1 (partial) — Block-3 top-right availability (intra_pred.hpp):**
-Per §6.4.10.4 Table 6-3, for I_8x8 block 3 (bottom-right of MB), top-right
-samples come from MB(X+1, Y) which hasn't been decoded yet in raster order.
-Code was reading undecoded pixels from the next MB. Fix: mark top-right
-unavailable for block 3, replicate top[7]. Improved complex_flat 18→30 dB.
+**Fix #1 — Block-3 top-right availability** (intra_pred.hpp, §6.4.10.4):
+Block 3 (bottom-right 8x8) was reading undecoded samples from MB(X+1, Y).
+Fixed to mark unavailable, replicate top[7].
 
-**Remaining bug (under investigation):**
-First pixel diff at MB(0,0) block(0,0) — a block with NO neighbors
-(absX=absY=0, hasTop=false, hasLeft=false). Prediction is DC=128 for all
-64 samples. Residual compensates. Diff of 1 appears at column 6, growing
-through IDCT butterfly to affect all downstream MBs.
+**Fix #2 — 8x8 IDCT h(7) wrong input** (transform.hpp, §8.5.12.2 Eq 8-332):
+Odd butterfly used `(s7 >> 1)` instead of `(s1 >> 1)`. Verified against
+libavc reference.
 
-Likely locations (need JM lock-step bin comparison):
-- `cabacDecodeResidual8x8` coefficient decode
-- 8x8 zigzag scan ordering (`cZigzag8x8`)
-- `inverseQuantize8x8` scaling
-- `inverseDct8x8AddPred` 8-point butterfly arithmetic
+**Fix #3 — 8x8 IDCT sign error at output positions 1 and 6** (transform.hpp):
+Verified via single-coefficient test: input s1=16 should produce monotonic
+output (24, 20, 12, 6, -6, -12, -20, -24) but we produced sign flips
+(24, -20, 12, 6, -6, -12, 20, -24). Swapped +/- on positions 1 and 6 in
+both horizontal and vertical passes.
 
-**New regression fixtures added:** `tests/fixtures/wstress_*.h264` (10 files)
-permanently cover the width/height/intra-mode gap that allowed this bug to
-slip through.
+**Current fixture status after fixes:**
+| Fixture | Before | After fix 1 | After fix 2 | After fix 3 |
+|---------|--------|-------------|-------------|-------------|
+| wstress_wide24_gradient | FAIL 29 | FAIL 29 | PASS 48 | PASS 55 |
+| wstress_tapo_size_complex_flat | FAIL 19 | 31 | 31 | 35 |
+| wstress_tapo_size_gradient | FAIL 15 | FAIL 20 | 25 | 25 |
+| wstress_tapo_size_i8x8 | FAIL 15 | FAIL 20 | 25 | 25 |
+| Tapo C110 (real) | FAIL 6.43 | 6.59 | 6.59 | 6.59 |
+
+**Remaining bug(s)** — investigation continuing:
+- Tapo C110 still at 6.59 dB (unchanged by IDCT fixes)
+- New diff analysis shows Tapo first diff at MB(15, 0) block(1, 0) with
+  rows 0-3 of MB(0,0) block 0 now matching perfectly. Bug has moved
+  right and down in the frame as IDCT/prediction gets more correct.
+- Gradient wstress fixtures still at 25 dB — likely additional subtle
+  IDCT/dequant issue
+
+**Next investigation:** Compare MB(15, 0) block 1 decoded coefficients
+against JM reference bin-by-bin — this block is where Tapo diverges.
+
+**New regression fixtures:** `tests/fixtures/wstress_*.h264` (10 files)
+permanently cover the width/height/intra-mode gap.
 
 ## Closed / Fixed Issues
 
