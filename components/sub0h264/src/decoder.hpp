@@ -20,7 +20,7 @@
 
 // #define SUB0H264_TRACE_I4X4_BLOCKS
 // #define SUB0H264_EXP_FORCE_MODE1_SCAN5
-// #define SUB0H264_P0_I8X8_DIAG 1  // Enable for mode + DC coefficient diag
+// #define SUB0H264_P0_I8X8_DIAG 1  // Enable for I_8x8/I_4x4/I_16x16 MB diag
 #include "decode_timing.hpp"
 #include "decode_trace.hpp"
 #include "dpb.hpp"
@@ -2783,12 +2783,10 @@ private:
                 }
 
 #ifdef SUB0H264_P0_I8X8_DIAG
-                if (mbY == 0U && mbX <= 16U)
-                    std::fprintf(stderr, "[I_8x8] MB(%u,0) blk8=%u mode=%u\n",
-                                 mbX, blk8, static_cast<unsigned>(mode8x8));
-                if (mbX == 15U && mbY == 0U && blk8 == 1U)
+                if (mbX == 16U && mbY == 0U)
                 {
-                    std::fprintf(stderr, "\n=== P0 DIAG: MB(15,0) block 1 (I_8x8) ===\n");
+                    std::fprintf(stderr, "\n=== P0 DIAG: MB(16,0) block %u (I_8x8) mode=%u qp=%d ===\n",
+                                 blk8, static_cast<unsigned>(mode8x8), qp);
                     std::fprintf(stderr, "  mode8x8=%u  hasResidual=%d  qp=%d\n",
                                  static_cast<unsigned>(mode8x8),
                                  static_cast<int>(hasResidual), qp);
@@ -2821,7 +2819,7 @@ private:
                 inverseDct8x8AddPred(coeffs, pred8x8, 8U, outPtr, yStride);
 
 #ifdef SUB0H264_P0_I8X8_DIAG
-                if (mbX == 15U && mbY == 0U && blk8 == 1U)
+                if (mbX == 16U && mbY == 0U)
                 {
                     std::fprintf(stderr, "  output[] (8x8, after IDCT+pred+clip):\n");
                     for (int r = 0; r < 8; ++r) {

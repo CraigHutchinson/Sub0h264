@@ -582,10 +582,12 @@ inline void inverseDct8x8AddPred(const int16_t* coeffs,
         int32_t e3 = a0 - a6;
 
         // Odd part
+        // Odd part — §8.5.12.2 Eq 8-332 (same as horizontal pass).
+        // h(7) uses (m(1)>>1), NOT (m(7)>>1). Verified against libavc.
         int32_t b0 = -s3 + s5 - s7 - (s7 >> 1);
         int32_t b1 =  s1 + s7 - s3 - (s3 >> 1);
         int32_t b2 = -s1 + s7 + s5 + (s5 >> 1);
-        int32_t b3 =  s1 + s3 + s5 + (s7 >> 1);
+        int32_t b3 =  s3 + s5 + s1 + (s1 >> 1);
 
         int32_t o0 = b0 + (b3 >> 2);
         int32_t o1 = b1 + (b2 >> 2);
