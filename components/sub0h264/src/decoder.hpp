@@ -20,7 +20,7 @@
 
 // #define SUB0H264_TRACE_I4X4_BLOCKS
 // #define SUB0H264_EXP_FORCE_MODE1_SCAN5
-// #define SUB0H264_P0_I8X8_DIAG 1  // Enable to trace I_8x8 MB(0,0) block 0
+// #define SUB0H264_P0_I8X8_DIAG 1  // Enable for I_8x8/I_4x4/I_16x16 MB diag
 #include "decode_timing.hpp"
 #include "decode_trace.hpp"
 #include "dpb.hpp"
@@ -2783,9 +2783,12 @@ private:
                 }
 
 #ifdef SUB0H264_P0_I8X8_DIAG
-                if (mbX == 0U && mbY == 0U && blk8 == 0U)
+                if (mbY == 0U && mbX <= 16U)
+                    std::fprintf(stderr, "[I_8x8] MB(%u,0) blk8=%u mode=%u\n",
+                                 mbX, blk8, static_cast<unsigned>(mode8x8));
+                if (mbX == 15U && mbY == 0U && blk8 == 1U)
                 {
-                    std::fprintf(stderr, "\n=== P0 DIAG: MB(0,0) block 0 (I_8x8) ===\n");
+                    std::fprintf(stderr, "\n=== P0 DIAG: MB(15,0) block 1 (I_8x8) ===\n");
                     std::fprintf(stderr, "  mode8x8=%u  hasResidual=%d  qp=%d\n",
                                  static_cast<unsigned>(mode8x8),
                                  static_cast<int>(hasResidual), qp);
@@ -2818,7 +2821,7 @@ private:
                 inverseDct8x8AddPred(coeffs, pred8x8, 8U, outPtr, yStride);
 
 #ifdef SUB0H264_P0_I8X8_DIAG
-                if (mbX == 0U && mbY == 0U && blk8 == 0U)
+                if (mbX == 15U && mbY == 0U && blk8 == 1U)
                 {
                     std::fprintf(stderr, "  output[] (8x8, after IDCT+pred+clip):\n");
                     for (int r = 0; r < 8; ++r) {
@@ -2835,6 +2838,11 @@ private:
         else
         {
             // I_4x4: 16 × 4x4 residual blocks (spec scan order §6.4.3)
+#ifdef SUB0H264_P0_I8X8_DIAG
+            if (mbY == 0U && mbX <= 16U)
+                std::fprintf(stderr, "[I_4x4] MB(%u,0) enter (cbpLuma=0x%x)\n",
+                             mbX, static_cast<unsigned>(cbpLuma));
+#endif
             for (uint32_t blkIdx = 0U; blkIdx < 16U; ++blkIdx)
             {
                 //TODO: consider precomputing absolute positions for each block in a separate table for clarity and/or performance (currently computed on the fly using cLuma4x4BlkX/Y and mbX/Y, but could be simplified with a direct lookup)
@@ -2996,6 +3004,11 @@ private:
                               uint32_t mbTypeRaw, int32_t& qp,
                               uint32_t mbX, uint32_t mbY) noexcept
     {
+#ifdef SUB0H264_P0_I8X8_DIAG
+        if (mbY == 0U && mbX <= 16U)
+            std::fprintf(stderr, "[I_16x16] MB(%u,0) mbType=%u\n",
+                         mbX, mbTypeRaw);
+#endif
         // §7.3.5 macroblock_layer() sequencing for Intra_16x16 (CABAC): [CHECKED §7.3.5]
         //   Step 1 — mb_type: decoded in caller (encodes predMode, cbpLuma, cbpChroma).
         //   Step 2 — mb_pred: intra_chroma_pred_mode ae(v). [CHECKED §7.3.5.1]

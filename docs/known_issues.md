@@ -62,16 +62,30 @@ both horizontal and vertical passes.
 - Gradient wstress fixtures still at 25 dB — likely additional subtle
   IDCT/dequant issue
 
-**Next investigation:** Compare MB(15, 0) block 1 decoded coefficients
-against JM reference bin-by-bin — this block is where Tapo diverges.
+**Next investigation:** Compare MB(15, 0) decoded coefficients against
+JM reference bin-by-bin.
 
-**Confirmed scope of remaining bug:** Only triggered by CABAC I_8x8
-blocks. Verified 2026-04-17 that wstress_wide24_gradient PASSES at 55 dB
-because x264's encoder doesn't pick I_8x8 for that content; wide40 with
-same content at higher width triggers I_8x8 mode selection and fails at
-25 dB. The remaining bug is isolated to the I_8x8 path with specific
-coefficient patterns — likely another subtle IDCT arithmetic or
-intra prediction issue that only manifests with real-content coefficients.
+**Scope update (2026-04-17):** After per-MB mode tracing, discovered that
+the Tapo bug is NOT in I_8x8 but in **CABAC I_16x16 DC mode** (mbType=3).
+Tapo MB 15 uses I_16x16 with mbType=3 (predMode=DC, cbpLuma=0, cbpChroma=0)
+— a "DC-only" path that decodes only the 4x4 Hadamard DC coefficients,
+with no AC residual. The 1-pixel diffs at MB(15, 0) block 1 come from
+this DC-only decode path.
+
+Mode distribution in Tapo IDR row 0 (from diagnostic):
+- MB 0-7: I_4x4 CABAC (decode correctly)
+- MB 8-10: I_16x16 (mbType 15, 19, 19)
+- MB 11-13: I_4x4
+- MB 14-15: **I_16x16 mbType=19, mbType=3** ← MB 15 = DC-only I_16x16
+- MB 16+: I_8x8
+
+The diff first appears at MB 15 because that's the first I_16x16 with
+mbType=3 (DC-only). Earlier I_16x16 MBs with mbType=19 (different CBP)
+work correctly — suggests the bug is specific to the cbpLuma=0 DC-only path
+OR to the specific predMode=DC combined with specific neighbor state.
+
+Additionally, wstress gradient fixtures still at 25 dB reveal a separate
+I_8x8 IDCT rounding bug (tracked separately).
 
 **New regression fixtures:** `tests/fixtures/wstress_*.h264` (10 files)
 permanently cover the width/height/intra-mode gap.
