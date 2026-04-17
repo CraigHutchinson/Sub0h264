@@ -676,27 +676,35 @@ inline void intraPred8x8Luma(Intra4x4Mode mode, const Frame& frame,
 
     case Intra4x4Mode::VerticalRight: // §8.3.2.2.7
     {
-        // Build extended reference: p[-1..7] = {ftl, ft[0..6]}
-        // and left reference: fl[0..7]
+        // extTop[i] = p[i-1, -1]: extTop[0]=ftl, extTop[1]=ft[0], ..., extTop[8]=ft[7]
         uint8_t extTop[9] = {ftl, ft[0], ft[1], ft[2], ft[3], ft[4], ft[5], ft[6], ft[7]};
         for (uint32_t r = 0U; r < 8U; ++r)
             for (uint32_t c = 0U; c < 8U; ++c)
             {
                 int32_t zVR = 2 * static_cast<int32_t>(c) - static_cast<int32_t>(r);
+                uint32_t k = c - (r >> 1U); // index into extTop for centre sample
                 if (zVR >= 0 && (zVR & 1) == 0)
-                    pred[r * 8U + c] = filt11(extTop[c - (r >> 1)], extTop[c - (r >> 1) + 1U]);
+                    // Eq 8-115: pred = (p[x-(y>>1)-1,-1] + p[x-(y>>1),-1] + 1) >> 1
+                    pred[r * 8U + c] = filt11(extTop[k], extTop[k + 1U]);
                 else if (zVR >= 0)
-                    pred[r * 8U + c] = filt121(extTop[c - (r >> 1) - 1U + 1U],
-                                                extTop[c - (r >> 1) + 1U - 1U],
-                                                extTop[c - (r >> 1) + 1U]);
+                    // Eq 8-117: pred = (p[x-(y>>1)-2,-1] + 2*p[x-(y>>1)-1,-1] + p[x-(y>>1),-1] + 2) >> 2
+                    pred[r * 8U + c] = filt121(extTop[k - 1U], extTop[k], extTop[k + 1U]);
                 else if (zVR == -1)
-                    pred[r * 8U + c] = filt121(fl[r - 1U], ftl, ft[0]);
+                    // Eq 8-116: pred = (p[-1,0] + 2*p[-1,-1] + p[0,-1] + 2) >> 2.
+                    // Constant value for ALL zVR==-1 positions: (0,1), (1,3), (2,5), (3,7).
+                    pred[r * 8U + c] = filt121(fl[0], ftl, ft[0]);
                 else
                 {
-                    uint32_t ri = static_cast<uint32_t>(-1 - zVR) >> 1;
-                    uint8_t b = (ri >= 1U) ? fl[ri - 1U] : ftl;
-                    uint8_t cv = (ri >= 2U) ? fl[ri - 2U] : ftl;
-                    pred[r * 8U + c] = filt121(fl[ri < 7U ? ri : 7U], b, cv);
+                    // Eq 8-118 (zVR ∈ {-2,-3,-4,-5,-6,-7}):
+                    //   pred = (p[-1, i] + 2*p[-1, i-1] + p[-1, i-2] + 2) >> 2
+                    //   where i = y - 2x - 1, so samples are taken from the
+                    //   left column. Verified against JM intra8x8_pred.c L999-1014
+                    //   PredArray[0..2] / [11..13] mapping.
+                    int32_t i = static_cast<int32_t>(r) - 2 * static_cast<int32_t>(c) - 1;
+                    uint8_t a  = (i >= 0) ? fl[i] : ftl;
+                    uint8_t b  = (i >= 1) ? fl[i - 1] : ftl;
+                    uint8_t cv = (i >= 2) ? fl[i - 2] : ftl;
+                    pred[r * 8U + c] = filt121(a, b, cv);
                 }
             }
         break;
@@ -704,25 +712,30 @@ inline void intraPred8x8Luma(Intra4x4Mode mode, const Frame& frame,
 
     case Intra4x4Mode::HorizontalDown: // §8.3.2.2.8
     {
-        // Mirror of VerticalRight with r/c swapped
+        // Mirror of VerticalRight with r/c swapped.
         uint8_t extLeft[9] = {ftl, fl[0], fl[1], fl[2], fl[3], fl[4], fl[5], fl[6], fl[7]};
         for (uint32_t r = 0U; r < 8U; ++r)
             for (uint32_t c = 0U; c < 8U; ++c)
             {
                 int32_t zHD = 2 * static_cast<int32_t>(r) - static_cast<int32_t>(c);
+                uint32_t k = r - (c >> 1U);
                 if (zHD >= 0 && (zHD & 1) == 0)
-                    pred[r * 8U + c] = filt11(extLeft[r - (c >> 1)], extLeft[r - (c >> 1) + 1U]);
+                    pred[r * 8U + c] = filt11(extLeft[k], extLeft[k + 1U]);
                 else if (zHD >= 0)
-                    pred[r * 8U + c] = filt121(extLeft[r - (c >> 1) - 1U + 1U],
-                                                extLeft[r - (c >> 1) + 1U - 1U],
-                                                extLeft[r - (c >> 1) + 1U]);
+                    pred[r * 8U + c] = filt121(extLeft[k - 1U], extLeft[k], extLeft[k + 1U]);
                 else if (zHD == -1)
-                    pred[r * 8U + c] = filt121(ft[c - 1U], ftl, fl[0]);
+                    // Mirror of VR Eq 8-116: constant for all zHD==-1 positions
+                    // (1,0), (3,1), (5,2), (7,3).
+                    pred[r * 8U + c] = filt121(ft[0], ftl, fl[0]);
                 else
                 {
-                    uint32_t ci = static_cast<uint32_t>(-1 - zHD) >> 1;
-                    pred[r * 8U + c] = filt121(ft[ci], ci > 0 ? ft[ci - 1U] : ftl,
-                                                ci > 1 ? ft[ci - 2U] : ftl);
+                    // zHD ∈ {-2..-7}: mirror of VR negative branch — use top
+                    // row indexed by i = x - 2y - 1.
+                    int32_t i = static_cast<int32_t>(c) - 2 * static_cast<int32_t>(r) - 1;
+                    uint8_t a  = (i >= 0) ? ft[i] : ftl;
+                    uint8_t b  = (i >= 1) ? ft[i - 1] : ftl;
+                    uint8_t cv = (i >= 2) ? ft[i - 2] : ftl;
+                    pred[r * 8U + c] = filt121(a, b, cv);
                 }
             }
         break;
@@ -741,17 +754,23 @@ inline void intraPred8x8Luma(Intra4x4Mode mode, const Frame& frame,
         break;
 
     case Intra4x4Mode::HorizontalUp: // §8.3.2.2.10
+        // Spec convention: zHU = x + 2*y where x=col, y=row.
+        // - zHU even, < 13: filt11(p[-1, y+(x>>1)], p[-1, y+(x>>1)+1])
+        // - zHU odd,  < 13: filt121(p[-1, y+(x>>1)], p[-1, y+(x>>1)+1], p[-1, y+(x>>1)+2])
+        // - zHU == 13:      filt121(p[-1, 6], p[-1, 7], p[-1, 7])
+        // - zHU >  13:      p[-1, 7]
+        // Verified vs JM intra8x8_hor_up_pred PredArray[0..21] mapping
+        // (intra8x8_pred.c L1306-1336).
         for (uint32_t r = 0U; r < 8U; ++r)
             for (uint32_t c = 0U; c < 8U; ++c)
             {
-                uint32_t zHU = r + 2U * c;
-                uint32_t zi = zHU >> 1U;
-                if (zHU < 14U && (zHU & 1U) == 0U)
-                    pred[r * 8U + c] = filt11(fl[zi], fl[zi < 7U ? zi + 1U : 7U]);
-                else if (zHU < 14U) // odd
-                    pred[r * 8U + c] = filt121(fl[zi], fl[zi < 7U ? zi + 1U : 7U],
-                                                fl[zi < 6U ? zi + 2U : 7U]);
-                else if (zHU == 14U)
+                uint32_t zHU = c + 2U * r;
+                uint32_t zi = r + (c >> 1U); // = (zHU >> 1) with x>>1 semantics
+                if (zHU < 13U && (zHU & 1U) == 0U)
+                    pred[r * 8U + c] = filt11(fl[zi], fl[zi + 1U]);
+                else if (zHU < 13U) // odd
+                    pred[r * 8U + c] = filt121(fl[zi], fl[zi + 1U], fl[zi + 2U]);
+                else if (zHU == 13U)
                     pred[r * 8U + c] = filt121(fl[6], fl[7], fl[7]);
                 else
                     pred[r * 8U + c] = fl[7];

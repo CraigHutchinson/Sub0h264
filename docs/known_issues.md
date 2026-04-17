@@ -161,6 +161,42 @@ The check is wrong for CABAC. Termination is via end_of_slice_flag.
 **Final result: Tapo C110 6.58 → 44.18 dB average (min 39.8 dB,
 max 47.6 dB). 38 dB total improvement across 7 fixes this session.**
 
+**Session 8 — I_8x8 intra prediction bugs (modes 4, 5, 7):**
+Lock-step IDR pixel comparison vs JM showed first MB with diff > 0 was
+the first MB using I_8x8 prediction. Audited mode 4 (VR), mode 5 (HD),
+mode 6 (VL), mode 7 (HU) against spec §8.3.2.2.7-10 and JM
+intra8x8_pred.c PredArray mappings. Found four distinct bugs:
+
+1. **VR/HD filt121 first arg duplicated middle sample** (Eq 8-117):
+   our `extTop[c-(r>>1)-1U+1U]` cancels to `extTop[c-(r>>1)]` — same as
+   second arg. Should be `extTop[c-(r>>1)-1]`.
+
+2. **VR/HD negative-zVR formula completely wrong** (Eq 8-118):
+   our `ri = (-1-zVR) >> 1` lost half the index. Spec uses linear
+   index `i = y - 2x - 1` (or mirror) into the left/top column.
+
+3. **VR/HD zVR=-1 case used wrong index**: spec eq 8-116 gives a
+   *constant* value (left[0]+2*Z+top[0]+2)>>2 for ALL zVR=-1 positions
+   (which include (0,1), (1,3), (2,5), (3,7)). We used `fl[r-1]` which
+   only happened to be right for r=1.
+
+4. **HU `zHU` formula transposed**: spec is `zHU = x + 2y` (col + 2*row);
+   we had `r + 2c`. Also our boundary case fired at `zHU == 14` instead
+   of spec's `zHU == 13`.
+
+**All wstress synthetic fixtures now bit-exact:**
+| Fixture | Before | After |
+|---|---|---|
+| wstress_tapo_baseline (I_4x4)  | 99 dB | **99 dB** |
+| wstress_tapo_i4x4              | 99 dB | **99 dB** |
+| wstress_tapo_i8x8              | 99 dB | **99 dB** |
+| wstress_tapo_i16x16            | 99 dB | **99 dB** |
+| wstress_tapo_complex_flat      | 47.88 dB | **99 dB** |
+| wstress_tapo_gradient          | 99 dB | **99 dB** |
+
+**Tapo C110: 44.18 → 56.23 dB average (min 40.93 dB, max 57.94 dB).**
+12 dB further improvement on top of session 7. All ctest pass.
+
 **Tapo C110 lock-step trace investigation (2026-04-17 cont'd):**
 Rebuilt JM with TRACE=1 for full syntax-element trace_dec.txt. Compared
 mb_type per-MB ours vs JM. First divergence at **MB 8** (first I_16x16
