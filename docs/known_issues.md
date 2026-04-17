@@ -1,5 +1,26 @@
 # Known Issues
 
+## Unsupported features (graceful error)
+
+Per fix_theme_analysis.md (2026-04-17), the following features trigger a
+debug-build assert and a `DecodeStatus::Error` / `return false` in release
+via `SUB0H264_UNSUPPORTED(msg)`. Streams using these features are rejected
+cleanly rather than producing silent corruption or hard crashes.
+
+| Feature | Location | Spec | Impl plan |
+|---------|----------|------|-----------|
+| B-slices, SI/SP slices | `decoder.hpp` | §7.3.4 | Phase B (large effort) |
+| disable_deblocking_filter_idc == 2 | `decoder.hpp` | §8.7 | Phase B (per-MB slice tracking) |
+| CABAC I_PCM | `decoder.hpp` (4 sites) | §9.3.3.1.1 | Phase B (byte-align + 320-byte raw copy) |
+| CAVLC I_PCM | `decoder.hpp` | §7.3.5 | Phase B |
+| P_8x8 sub_mb_type ∈ {8x4,4x8,4x4} | `decoder.hpp` | §7.3.5.2 | Phase B (per-sub-partition MV storage) |
+| CAVLC I_NxN + transform_8x8_mode=1 | `decoder.hpp` | §7.3.5 | Phase B (rare combo) |
+| CAVLC P-inter + transform_8x8_mode=1 + cbpLuma>0 | `decoder.hpp` | §7.3.5 | Phase B |
+| Custom scaling lists (SPS/PPS) | `decoder.hpp` | §8.5.12.1 | **Backlog** — verified 2026-04-17: zero fixtures (incl. Tapo C110 High) use custom scaling lists. All current High-profile streams use flat weightScale=16. Implement only when a real stream requiring it appears. |
+| FMO (slice groups) | `pps.hpp` | §7.3.2.3 | Out of scope (rare) |
+| MBAFF (interlaced) | `sps.hpp` | §7.3.3 | Out of scope |
+| MVC (multi-view) | `slice.hpp` | | Out of scope |
+
 ## Active Quality Issues
 
 ### CABAC I_8x8 residual path bug (Tapo C110 + width-stress fixtures)

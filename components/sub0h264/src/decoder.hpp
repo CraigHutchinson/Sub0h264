@@ -336,7 +336,8 @@ private:
     /** Derive chroma QP from luma QP and PPS offset.
      *  §8.5.12.1 / §7.4.2.2: QPc = cChromaQpTable[Clip3(0,51, QP + offset)].
      *  NOTE (FM-10): Always use this helper — never apply luma QP directly to chroma.
-     *  [UNCHECKED §7.4.2.2]
+     *  [CHECKED §7.4.2.2] — clampQpIdx implements Clip3(0,51,·) and cChromaQpTable
+     *  matches spec Table 8-15.
      */
     static int32_t computeChromaQp(int32_t qp, int32_t offset) noexcept
     {
@@ -496,7 +497,10 @@ private:
             const uint8_t* row = activeFrame_->yRow(absY - 1U);
             for (uint32_t i = 0U; i < 4U; ++i) topBuf[i] = row[absX + i];
             top = topBuf;
-            // Top-right availability — §6.4.11. [UNCHECKED §6.4.11]
+            // Top-right availability — §6.4.11. [CHECKED §6.4.11]
+            // cTopRightUnavailScan derived at compile time from §6.4.3 scan
+            // order (see tables.hpp). Covers: same-MB scan ordering + right-
+            // edge. Caller checks absX+4 for frame boundary.
             bool topRightAvail = (absX + 4U < activeFrame_->width())
                                  && !cTopRightUnavailScan[blkIdx];
             if (topRightAvail)
