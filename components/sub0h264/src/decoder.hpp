@@ -48,8 +48,25 @@ enum class DecodeStatus : int32_t
 {
     FrameDecoded =  1,   ///< A complete frame was decoded
     NeedMoreData =  0,   ///< NAL consumed, no frame yet (SPS/PPS/partial)
-    Error        = -1,   ///< Decode error
+    Error        = -1,   ///< Decode error (corrupted bitstream or unsupported feature)
 };
+
+/** Graceful handling for unsupported spec features.
+ *
+ *  In debug builds, triggers an immediate assert so developers see the
+ *  unsupported-feature condition during testing. In release builds, the
+ *  assert compiles out and execution continues to the caller-provided
+ *  return statement (e.g. `return DecodeStatus::Error` or `return false`).
+ *
+ *  Usage:
+ *      SUB0H264_UNSUPPORTED("B-slices not implemented — §7.3.4");
+ *      return DecodeStatus::Error;
+ *
+ *  This pattern preserves the existing assert-on-debug discipline while
+ *  ensuring release builds degrade gracefully on conforming-but-unsupported
+ *  bitstreams rather than hard-crashing.
+ */
+#define SUB0H264_UNSUPPORTED(msg) assert(false && (msg))
 
 /** Simplified H.264 decoder.
  *
@@ -519,6 +536,19 @@ private:
         const Sps* sps = paramSets_.getSps(pps->spsId_);
         if (!sps) return DecodeStatus::Error;
 
+        // §8.5.12.1: Custom scaling matrices not yet applied to dequant.
+        // If the stream signals non-flat scaling lists (at either SPS or PPS
+        // level), our flat-16 dequant produces silently wrong output.
+        // Reject rather than produce incorrect pixels.
+        if (sps->seqScalingMatrixPresent_ || pps->picScalingMatrixPresent_)
+        {
+            SUB0H264_UNSUPPORTED(
+                "Scaling lists present in SPS/PPS but not applied to "
+                "dequant (§8.5.12.1) — decode would produce silently "
+                "wrong pixels. Not implemented.");
+            return DecodeStatus::Error;
+        }
+
         // Parse slice header
         SliceHeader sh;
         if (parseSliceHeader(br, *sps, *pps, isIdr, nal.refIdc, sh) != Result::Ok)
@@ -767,7 +797,19 @@ private:
                             if (intraMbType == 0U)
                                 ok = decodeCabacI4x4Mb(*sps, *pps, mbQp, mbX, mbY);
                             else if (intraMbType == 25U)
-                                ok = true; // I_PCM — TODO: implement CABAC I_PCM
+                            {
+                                // I_PCM (§9.3.3.1.1): raw 256 Y + 64 Cb + 64 Cr
+                                // bytes follow the mb_type, byte-aligned. NOT
+                                // YET IMPLEMENTED — decode produces undefined
+                                // pixels for I_PCM macroblocks. Stream decode
+                                // cannot continue correctly because subsequent
+                                // bits are misaligned.
+                                SUB0H264_UNSUPPORTED(
+                                    "CABAC I_PCM (§9.3.3.1.1) not implemented — "
+                                    "subsequent bitstream is misaligned; decoder "
+                                    "cannot continue safely.");
+                                ok = false;
+                            }
                             else
                                 ok = decodeCabacI16x16Mb(*sps, *pps, intraMbType, mbQp, mbX, mbY);
                             if (!ok)
@@ -858,9 +900,9 @@ private:
         else
         {
             // B-slices, SI/SP slices not implemented
-            assert(false &&
-                   "Only I-slices and P-slices are implemented. "
-                   "B-slices (§7.3.4), SI-slices, SP-slices are not supported.");
+            SUB0H264_UNSUPPORTED(
+                "Only I-slices and P-slices are implemented. "
+                "B-slices (§7.3.4), SI-slices, SP-slices are not supported.");
             return DecodeStatus::Error;
         }
 
@@ -869,10 +911,15 @@ private:
         // Per-MB QP is used; boundary edges use (qpP + qpQ + 1) >> 1 per §8.7.2.2.
         // §7.3.3: disable_deblocking_filter_idc == 2 means filter within slice
         // but NOT across slice boundaries. We don't implement cross-slice skip
-        // (single-slice streams only). Assert if idc==2 is encountered.
-        assert(sh.disableDeblockingFilter_ != 2U &&
-               "disable_deblocking_filter_idc==2 (no cross-slice filtering) not implemented — "
-               "would require per-MB slice membership tracking §8.7");
+        // (single-slice streams only). Gracefully error if idc==2 is encountered.
+        if (sh.disableDeblockingFilter_ == 2U)
+        {
+            SUB0H264_UNSUPPORTED(
+                "disable_deblocking_filter_idc==2 (no cross-slice filtering) "
+                "not implemented — would require per-MB slice membership "
+                "tracking §8.7");
+            return DecodeStatus::Error;
+        }
 #ifndef SUB0H264_SKIP_DEBLOCK
         if (pps->deblockingFilterControlPresent_ == 0U ||
             sh.disableDeblockingFilter_ != 1U)
@@ -986,8 +1033,14 @@ private:
 
         if (mbTypeRaw == 25U)
         {
-            // I_PCM: raw samples, skip for now
-            return true;
+            // CAVLC I_PCM (§7.3.5 / §7.3.5.3): raw 256 Y + 64 Cb + 64 Cr
+            // bytes follow mb_type after pcm_alignment_zero_bit padding to
+            // byte boundary. NOT IMPLEMENTED — subsequent bits misaligned
+            // and decoder cannot continue safely.
+            SUB0H264_UNSUPPORTED(
+                "CAVLC I_PCM (§7.3.5) not implemented — subsequent "
+                "bitstream is misaligned; decoder cannot continue safely.");
+            return false;
         }
 
         if (isI16x16(static_cast<uint8_t>(mbTypeRaw)))
@@ -1232,9 +1285,14 @@ private:
         // §7.3.5 FM-3: transform_size_8x8_flag u(1) not decoded for CAVLC I_NxN.
         // If pps.transform8x8Mode_!=0, the bitstream contains a flag we don't read —
         // all subsequent bits shift by 1 and the entire MB decode is corrupted.
-        assert(pps.transform8x8Mode_ == 0U &&
-               "CAVLC I_NxN: §7.3.5 requires transform_size_8x8_flag u(1) before "
-               "mb_pred when pps.transform8x8Mode_=1; not implemented (FM-3)");
+        if (pps.transform8x8Mode_ != 0U)
+        {
+            SUB0H264_UNSUPPORTED(
+                "CAVLC I_NxN: §7.3.5 requires transform_size_8x8_flag u(1) "
+                "before mb_pred when pps.transform8x8Mode_=1; not "
+                "implemented (FM-3)");
+            return false;
+        }
 
         uint8_t mpmPerBlock[16] = {}; // saved for trace
         uint8_t predModes[16] = {};
@@ -1936,9 +1994,14 @@ private:
             // requires per-sub-partition MV storage not yet implemented.
             for (uint32_t s = 0U; s < 4U; ++s)
             {
-                assert(subMbType[s] == 0U &&
-                       "P_8x8 sub_mb_type != 0 (8x4/4x8/4x4) not implemented — "
-                       "sub-partition MC requires per-sub-partition MV storage §7.3.5.2");
+                if (subMbType[s] != 0U)
+                {
+                    SUB0H264_UNSUPPORTED(
+                        "P_8x8 sub_mb_type != 0 (8x4/4x8/4x4) not "
+                        "implemented — sub-partition MC requires per-"
+                        "sub-partition MV storage §7.3.5.2");
+                    return;  // Graceful release degradation: skip MB decode
+                }
 
                 uint32_t numSubParts = 1U;
                 if (subMbType[s] == 1U || subMbType[s] == 2U) numSubParts = 2U;
@@ -2306,9 +2369,14 @@ private:
         //   && mb_type!=I_NxN && noSubMbPartSizeLessThan8x8Flag.
         // For P_L0_16x16/16x8/8x16, noSubMbPartSizeLessThan8x8Flag=1 always, so the
         // flag would be present when cbpLuma>0 and 8x8 mode enabled — but we don't read it.
-        assert((pps.transform8x8Mode_ == 0U || cbpLuma == 0U) &&
-               "CAVLC P-inter: §7.3.5 requires transform_size_8x8_flag u(1) after CBP "
-               "when pps.transform8x8Mode_=1 and cbpLuma>0; not implemented (FM-3)");
+        if (pps.transform8x8Mode_ != 0U && cbpLuma != 0U)
+        {
+            SUB0H264_UNSUPPORTED(
+                "CAVLC P-inter: §7.3.5 requires transform_size_8x8_flag u(1) "
+                "after CBP when pps.transform8x8Mode_=1 and cbpLuma>0; not "
+                "implemented (FM-3)");
+            return;  // Graceful release degradation: skip MB decode
+        }
         // Trace CBP: use BlockResidual with blkIdx=99 as CBP marker
         trace_.onBlockResidual(mbX, mbY, 99U, cbpCode, cbpLuma | (cbpChroma << 4U),
                                static_cast<uint32_t>(br.bitOffset()));
@@ -2455,7 +2523,16 @@ private:
         setMbMotion(mbIdx, {0, 0}, -1);
 
         //TODO: Should we track I_NxN here for future neighbor context derivation? It's not needed for intra decode since no CABAC, but it would be needed if we later switch to CABAC for intra in P-slices.
-        if (mbTypeRaw == 25U) return true; // I_PCM
+        if (mbTypeRaw == 25U)
+        {
+            // Intra-in-P I_PCM (§7.3.5) — same alignment hazard as other
+            // I_PCM paths. NOT IMPLEMENTED — subsequent bitstream is
+            // misaligned after the raw PCM samples.
+            SUB0H264_UNSUPPORTED(
+                "Intra-in-P I_PCM (§7.3.5) not implemented — "
+                "subsequent bitstream is misaligned.");
+            return false;
+        }
 
         // With activeFrame_ pointing to the DPB target, intra decoders write
         // directly into the correct frame. No neighbourhood copy needed since
@@ -2502,7 +2579,15 @@ private:
 
         // Track I_NxN (I_4x4) for future neighbor context derivation
         cabacNeighbor_[mbIdx].setI4x4(mbTypeRaw == 0U);
-        if (mbTypeRaw == 25U) return true; // I_PCM
+        if (mbTypeRaw == 25U)
+        {
+            // CABAC I-slice I_PCM (§9.3.3.1.1) — raw samples follow.
+            // NOT IMPLEMENTED — subsequent bitstream misaligned.
+            SUB0H264_UNSUPPORTED(
+                "CABAC I-slice I_PCM (§9.3.3.1.1) not implemented — "
+                "subsequent bitstream is misaligned.");
+            return false;
+        }
         if (mbTypeRaw == 0U)
         {
             // I_4x4: decode pred modes + residual via CABAC

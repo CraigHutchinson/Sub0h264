@@ -12,6 +12,17 @@
             }
         },
         {
+            "name": "clangd",
+            "displayName": "clangd (Ninja, compile_commands.json)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build-clangd",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "SUB0H264_BUILD_TESTING": "ON"
+            }
+        },
+        {
             "name": "debug",
             "displayName": "Debug",
             "binaryDir": "${sourceDir}/build-debug",
