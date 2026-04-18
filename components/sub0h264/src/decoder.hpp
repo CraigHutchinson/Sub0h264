@@ -3578,7 +3578,12 @@ private:
                         topNnz = nnzLuma_[(mbIdx - widthInMbs_) * 16U + rasterIdx + 12U];
                     uint32_t cbfCtxInc = (leftNnz != 0U ? 1U : 0U) + (topNnz != 0U ? 2U : 0U);
 
-                    uint32_t numNonZero = cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(), coeffs, 16U, 2U, cbfCtxInc);
+                    int16_t scanCoeffs[16] = {};
+                    uint32_t numNonZero = cabacDecodeResidual4x4(cabacEngine_, cabacCtx_.data(),
+                                                                  scanCoeffs, 16U, 2U, cbfCtxInc);
+                    // §6.4.3 unscan zigzag → raster order BEFORE dequant/IDCT.
+                    for (uint32_t k = 0U; k < 16U; ++k)
+                        coeffs[cZigzag4x4[k]] = scanCoeffs[k];
                     nnzLuma_[mbIdx * 16U + rasterIdx] = (numNonZero > 0U) ? 1U : 0U;
                     inverseQuantize4x4(coeffs, qp);
                 }
