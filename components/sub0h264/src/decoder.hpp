@@ -3173,29 +3173,35 @@ private:
         uint32_t numRefIdxL0Active = sh.numRefIdxActiveL0_;
         uint8_t refIdxL0[4] = {};
         int16_t mvdX[4] = {}, mvdY[4] = {};
+        // Per-sub-partition MVDs for P_8x8 — sub_mb_type != 0 uses 2 or 4 slots.
+        int16_t subMvdX[4][4] = {};
+        int16_t subMvdY[4][4] = {};
         uint32_t subMbType[4] = {};
+
+        // Sub-partition layout per sub_mb_type (offsets + size in 4x4 units
+        // relative to the 8x8 block TL). -1 marks unused slot. §7.3.5.2 /
+        // Table 7-13. Shared by MVD decode and MC dispatch.
+        static constexpr int8_t cSubPartLayout[4][4][4] = {
+            {{0, 0, 2, 2}, {-1, -1, -1, -1}, {-1, -1, -1, -1}, {-1, -1, -1, -1}},
+            {{0, 0, 2, 1}, { 0,  1,  2,  1}, {-1, -1, -1, -1}, {-1, -1, -1, -1}},
+            {{0, 0, 1, 2}, { 1,  0,  1,  2}, {-1, -1, -1, -1}, {-1, -1, -1, -1}},
+            {{0, 0, 1, 1}, { 1,  0,  1,  1}, { 0,  1,  1,  1}, { 1,  1,  1,  1}},
+        };
         const int32_t mb4x = static_cast<int32_t>(mbX) * 4;
         const int32_t mb4y = static_cast<int32_t>(mbY) * 4;
 
         // §9.3.3.1.1.7 — MVD context: absMvdNeighbor = |mvdA[comp]| + |mvdB[comp]|
         // where A=left-neighbor partition, B=top-neighbor partition of the partition top-left.
-        // Within-MB neighbors (partitions decoded earlier in this MB) use local mvdX[]/mvdY[];
-        // cross-MB neighbors read the stored mvd from mbMotion_ via getMotionAt4x4().
+        // Unified path: every MVD (both cross-MB and within-MB, including P_8x8
+        // sub-partitions) has been stored to mbMotion_[].mvd by the time we
+        // read a later neighbour. The .available flag is intentionally NOT
+        // checked here — within-MB partitions store .mvd before MC dispatch
+        // sets .available; out-of-frame coords return zero-init mvd via
+        // getMotionAt4x4 (correct per spec). For intra/skip neighbours the
+        // entry's mvd is 0, matching spec treatment.
         auto getMvdComp = [&](int32_t blk4x, int32_t blk4y, bool xComp) -> int32_t {
-            if (blk4x < mb4x || blk4y < mb4y) {
-                // External: previous MB or row above
-                MbMotionInfo info = getMotionAt4x4(blk4x, blk4y);
-                if (!info.available) return 0;
-                return xComp ? info.mvd.x : info.mvd.y;
-            }
-            // Internal: within current MB — derive sub-partition index
-            uint32_t inCol = static_cast<uint32_t>(blk4x) - static_cast<uint32_t>(mb4x);
-            uint32_t inRow = static_cast<uint32_t>(blk4y) - static_cast<uint32_t>(mb4y);
-            uint32_t pIdx = 0U;
-            if      (mbTypeRaw == 1U) pIdx = (inRow >= 2U) ? 1U : 0U;       // 16x8
-            else if (mbTypeRaw == 2U) pIdx = (inCol >= 2U) ? 1U : 0U;       // 8x16
-            else /* P_8x8 */          pIdx = (inRow >= 2U ? 2U : 0U) + (inCol >= 2U ? 1U : 0U);
-            return xComp ? mvdX[pIdx] : mvdY[pIdx];
+            MbMotionInfo info = getMotionAt4x4(blk4x, blk4y);
+            return xComp ? info.mvd.x : info.mvd.y;
         };
         auto absMvdNbr = [&](int32_t tlX, int32_t tlY, bool xComp) -> int32_t {
             return std::abs(getMvdComp(tlX - 1, tlY,     xComp))   // left
@@ -3275,6 +3281,15 @@ private:
                 int32_t nbrY = absMvdNbr(tlX, tlY, false);
                 mvdX[p] = cabacDecodeMvd(cabacEngine_, cabacCtx_.data(), cCtxMvdX, nbrX);
                 mvdY[p] = cabacDecodeMvd(cabacEngine_, cabacCtx_.data(), cCtxMvdY, nbrY);
+                // Store partition 0's MVD to mbMotion_ so partition 1's context
+                // lookup (via getMvdComp → getMotionAt4x4) picks it up.
+                uint32_t mi = mbY * widthInMbs_ + mbX;
+                uint32_t r0 = 0U, r1 = 4U, c0 = 0U, c1 = 4U;
+                if (mbTypeRaw == 1U) { r0 = p * 2U; r1 = r0 + 2U; }        // 16x8
+                else if (mbTypeRaw == 2U) { c0 = p * 2U; c1 = c0 + 2U; }   // 8x16
+                for (uint32_t r = r0; r < r1; ++r)
+                    for (uint32_t c = c0; c < c1; ++c)
+                        mbMotion_[mi * 16U + r * 4U + c].mvd = {mvdX[p], mvdY[p]};
             }
         }
         else
@@ -3323,28 +3338,43 @@ private:
                         mbMotion_[mi * 16U + r * 4U + cc].available = true;
                     }
             }
-            // MVD per sub-partition — §7.3.5.2
-            // sub_mb_type 0=8x8(1 MVD), 1=8x4(2 MVD), 2=4x8(2 MVD), 3=4x4(4 MVD)
-            // Store first MVD per 8x8 for MV prediction; consume all for bitstream sync.
+            // MVD per sub-partition — §7.3.5.2 / §9.3.3.1.1.7.
+            uint32_t mi = mbY * widthInMbs_ + mbX;
             for (uint32_t s = 0U; s < 4U; ++s)
             {
-                int32_t tlX = mb4x + c8x8Off4x[s];
-                int32_t tlY = mb4y + c8x8Off4y[s];
-                int32_t nbrX = absMvdNbr(tlX, tlY, true);
-                int32_t nbrY = absMvdNbr(tlX, tlY, false);
-
                 uint32_t numSubParts = 1U;
                 if (subMbType[s] == 1U || subMbType[s] == 2U) numSubParts = 2U;
                 else if (subMbType[s] == 3U) numSubParts = 4U;
 
                 for (uint32_t sp = 0U; sp < numSubParts; ++sp)
                 {
-                    // sp=0: use neighbor context; sp>0: use sp=0 MVD as context (§9.3.3.1.1.7)
-                    int32_t ctxX = (sp == 0U) ? nbrX : std::abs(mvdX[s]);
-                    int32_t ctxY = (sp == 0U) ? nbrY : std::abs(mvdY[s]);
+                    // Absolute 4x4 block coords of this sub-partition's top-left.
+                    int32_t spOffX = cSubPartLayout[subMbType[s]][sp][0];
+                    int32_t spOffY = cSubPartLayout[subMbType[s]][sp][1];
+                    int32_t spW4   = cSubPartLayout[subMbType[s]][sp][2];
+                    int32_t spH4   = cSubPartLayout[subMbType[s]][sp][3];
+                    int32_t tlX    = mb4x + c8x8Off4x[s] + spOffX;
+                    int32_t tlY    = mb4y + c8x8Off4y[s] + spOffY;
+                    // Neighbor MVDs from actual 4x4 block positions — the
+                    // previous sub-partition's MVD (within this MB) has been
+                    // stored in mbMotion_ already, so absMvdNbr picks it up.
+                    int32_t ctxX = absMvdNbr(tlX, tlY, true);
+                    int32_t ctxY = absMvdNbr(tlX, tlY, false);
                     int16_t dx = cabacDecodeMvd(cabacEngine_, cabacCtx_.data(), cCtxMvdX, ctxX);
                     int16_t dy = cabacDecodeMvd(cabacEngine_, cabacCtx_.data(), cCtxMvdY, ctxY);
                     if (sp == 0U) { mvdX[s] = dx; mvdY[s] = dy; }
+                    subMvdX[s][sp] = dx;
+                    subMvdY[s][sp] = dy;
+                    // Store this sub-partition's MVD to every 4x4 block it
+                    // covers so later neighbors' context derivation sees it.
+                    for (int32_t r = tlY; r < tlY + spH4; ++r)
+                        for (int32_t c = tlX; c < tlX + spW4; ++c)
+                        {
+                            uint32_t idx = mi * 16U
+                                         + (static_cast<uint32_t>(r) - mb4y) * 4U
+                                         + (static_cast<uint32_t>(c) - mb4x);
+                            mbMotion_[idx].mvd = {dx, dy};
+                        }
                 }
             }
         }
@@ -3401,9 +3431,17 @@ private:
             MotionVector mv = { static_cast<int16_t>(mvp.x + partMvdX),
                                 static_cast<int16_t>(mvp.y + partMvdY) };
 
-            // Store MV (and MVD for CABAC §9.3.3.1.1.7 neighbor context)
-            setPartitionMotion(mbIdx, mbTypeRaw, partIdx, mv, ri,
-                               {partMvdX, partMvdY});
+            // Store MV per-4x4-block across exactly the partition's footprint
+            // — this matches sub-partitions of P_8x8 (8x4/4x8/4x4) which need
+            // finer-grained coverage than setPartitionMotion's 2x2 block grid.
+            {
+                MbMotionInfo info = { mv, {partMvdX, partMvdY}, ri, true };
+                uint32_t r0 = partY / 4U, r1 = (partY + partH) / 4U;
+                uint32_t c0 = partX / 4U, c1 = (partX + partW) / 4U;
+                for (uint32_t rr = r0; rr < r1; ++rr)
+                    for (uint32_t cc = c0; cc < c1; ++cc)
+                        mbMotion_[mbIdx * 16U + rr * 4U + cc] = info;
+            }
 
             // Luma MC
             int32_t refX = static_cast<int32_t>(mbX * cMbSize + partX) + (mv.x >> 2);
@@ -3457,13 +3495,28 @@ private:
             doPartitionMC(0U, refIdxL0[0], mvdX[0], mvdY[0], 0U, 0U, 8U, 16U);
             doPartitionMC(1U, refIdxL0[1], mvdX[1], mvdY[1], 8U, 0U, 8U, 16U);
         }
-        else // P_8x8
+        else // P_8x8 (and P_8x8ref0)
         {
             static constexpr uint32_t c8x8X[4] = {0U, 8U, 0U, 8U};
             static constexpr uint32_t c8x8Y[4] = {0U, 0U, 8U, 8U};
             for (uint32_t s = 0U; s < 4U; ++s)
-                doPartitionMC(s, refIdxL0[s], mvdX[s], mvdY[s],
-                              c8x8X[s], c8x8Y[s], 8U, 8U);
+            {
+                uint32_t numSubParts = 1U;
+                if (subMbType[s] == 1U || subMbType[s] == 2U) numSubParts = 2U;
+                else if (subMbType[s] == 3U) numSubParts = 4U;
+
+                for (uint32_t sp = 0U; sp < numSubParts; ++sp)
+                {
+                    // Offset + size within 8x8 block (4x4 units) → pixels.
+                    uint32_t subX = c8x8X[s] + cSubPartLayout[subMbType[s]][sp][0] * 4U;
+                    uint32_t subY = c8x8Y[s] + cSubPartLayout[subMbType[s]][sp][1] * 4U;
+                    uint32_t subW = cSubPartLayout[subMbType[s]][sp][2] * 4U;
+                    uint32_t subH = cSubPartLayout[subMbType[s]][sp][3] * 4U;
+                    doPartitionMC(s, refIdxL0[s],
+                                  subMvdX[s][sp], subMvdY[s][sp],
+                                  subX, subY, subW, subH);
+                }
+            }
         }
 
         // §7.3.5: coded_block_pattern ae(v) for P-inter. [CHECKED §7.3.5]

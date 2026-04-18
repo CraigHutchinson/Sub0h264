@@ -311,6 +311,197 @@ def stage_esp(port: str, timeout: int) -> StageResult:
                        rows=rows, headers=["Stream", "Decoder", "FPS", "Frames"])
 
 
+# ── History / delta / trend ─────────────────────────────────────────────────
+
+# Per-stage: (key column used to identify a row, list of numeric columns to track).
+TRACKED_METRICS: dict[str, tuple[str, list[str]]] = {
+    "Unit tests (ctest --preset default)":     ("Test",    ["Time (s)"]),
+    "Bench suite (ctest --preset bench)":      ("Bench",   ["FPS", "Median (ms)"]),
+    "Desktop shootout (sub0h264 vs libavc)":   ("Stream",  ["sub0h264", "libavc", "Ratio"]),
+    "PSNR validation vs ffmpeg":               ("Fixture", ["Avg PSNR (dB)", "Min PSNR (dB)"]),
+    "ESP32-P4 shootout (on-device)":           ("Stream",  ["FPS"]),
+}
+
+# Headline KPIs shown in the top "Performance Summary" panel — one per stage.
+# Row-key values must match the actual key column emitted by the stage runner.
+HEADLINE_KPIS: list[tuple[str, str, str, str]] = [
+    # (stage name, row key value, metric column, label)
+    ("Bench suite (ctest --preset bench)",   "Tapo C110 stream2",      "FPS",          "Tapo bench fps"),
+    ("Bench suite (ctest --preset bench)",   "Ball High 640x480",      "FPS",          "Ball-High fps (P0 crux)"),
+    ("Desktop shootout (sub0h264 vs libavc)","Tapo-C110",              "Ratio",        "Desktop sub0/libavc Tapo ratio"),
+    ("Desktop shootout (sub0h264 vs libavc)","Ball-High-640",          "Ratio",        "Desktop sub0/libavc Ball-High ratio"),
+    ("PSNR validation vs ffmpeg",            "Tapo C110",              "Min PSNR (dB)","Tapo min PSNR"),
+    ("PSNR validation vs ffmpeg",            "wstress baseline",       "Min PSNR (dB)","wstress baseline min PSNR"),
+    ("ESP32-P4 shootout (on-device)",        "Tapo-C110",              "FPS",          "ESP32 Tapo fps"),
+]
+
+TREND_WINDOW = 8  # how many prior data points the sparkline uses
+
+
+def _load_history(path: Path) -> dict[tuple[str, str, str], list[tuple[str, float]]]:
+    """Return {(stage, key, metric): [(ts, value), ...]} sorted oldest→newest."""
+    out: dict[tuple[str, str, str], list[tuple[str, float]]] = {}
+    if not path.exists():
+        return out
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        stage = obj.get("stage", "")
+        if stage not in TRACKED_METRICS:
+            continue
+        key_col, metrics = TRACKED_METRICS[stage]
+        key = str(obj.get(key_col, ""))
+        if not key:
+            continue
+        ts = obj.get("ts", "")
+        for m in metrics:
+            v = _coerce(obj.get(m))
+            if v is None:
+                continue
+            out.setdefault((stage, key, m), []).append((ts, v))
+    for v in out.values():
+        v.sort(key=lambda t: t[0])
+    return out
+
+
+def _coerce(v) -> float | None:
+    """Pull a float out of strings like '12.3', '12.3x', '1.05x', '—'."""
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip().rstrip("x").rstrip("X")
+    if not s or s in {"—", "?", ""}:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _fmt_delta(curr: float | None, prev: float | None, *,
+               higher_is_better: bool = True, unit: str = "") -> str:
+    """Format a numeric delta. Arrow shows direction of change (▲=up, ▼=down).
+    A trailing ✓/✗ marks whether the change is good or bad given the metric's
+    polarity. '·' means no change; '—' means missing data."""
+    if curr is None or prev is None:
+        return "—"
+    diff = curr - prev
+    if abs(diff) < 1e-9:
+        return "·"
+    arrow = "▲" if diff > 0 else "▼"
+    is_good = (diff > 0) if higher_is_better else (diff < 0)
+    mark = " ✓" if is_good else " ✗"
+    sign = "+" if diff > 0 else ""
+    return f"{arrow}{sign}{diff:.2f}{unit}{mark}"
+
+
+def _sparkline(values: list[float]) -> str:
+    if len(values) < 2:
+        return ""
+    bars = "▁▂▃▄▅▆▇█"
+    lo, hi = min(values), max(values)
+    if hi - lo < 1e-9:
+        return bars[0] * len(values)
+    return "".join(bars[min(7, int((v - lo) / (hi - lo) * 7))] for v in values)
+
+
+# Metrics where smaller is better (latency, time).
+_LOWER_IS_BETTER = {"Time (s)", "Median (ms)"}
+
+
+def _enrich_stage(stage: StageResult,
+                  prior: dict[tuple[str, str, str], list[tuple[str, float]]]) -> StageResult:
+    """Insert Δ and Trend columns next to each tracked metric."""
+    if stage.name not in TRACKED_METRICS or not stage.rows:
+        return stage
+    key_col, metrics = TRACKED_METRICS[stage.name]
+    new_headers: list[str] = []
+    for h in stage.headers or list(stage.rows[0].keys()):
+        new_headers.append(h)
+        if h in metrics:
+            new_headers.append(f"Δ {h}")
+            new_headers.append(f"Trend ({h})")
+
+    new_rows: list[dict] = []
+    for r in stage.rows:
+        row = dict(r)
+        key = str(r.get(key_col, ""))
+        for m in metrics:
+            curr = _coerce(r.get(m))
+            history = prior.get((stage.name, key, m), [])
+            prev = history[-1][1] if history else None
+            row[f"Δ {m}"] = _fmt_delta(
+                curr, prev, higher_is_better=(m not in _LOWER_IS_BETTER)
+            )
+            recent = [v for _, v in history[-TREND_WINDOW:]]
+            if curr is not None:
+                recent.append(curr)
+            row[f"Trend ({m})"] = _sparkline(recent) or "—"
+        new_rows.append(row)
+    return dataclasses.replace(stage, rows=new_rows, headers=new_headers)
+
+
+def _headline_summary(stages: list[StageResult],
+                      prior: dict[tuple[str, str, str], list[tuple[str, float]]]) -> str:
+    by_stage = {s.name: s for s in stages}
+    rows: list[dict] = []
+    for stage_name, key, metric, label in HEADLINE_KPIS:
+        s = by_stage.get(stage_name)
+        if s is None:
+            continue
+        key_col, _ = TRACKED_METRICS[stage_name]
+        cur_val = None
+        for r in s.rows:
+            if str(r.get(key_col, "")) == key:
+                cur_val = _coerce(r.get(metric))
+                break
+        history = prior.get((stage_name, key, metric), [])
+        prev = history[-1][1] if history else None
+        recent = [v for _, v in history[-TREND_WINDOW:]]
+        if cur_val is not None:
+            recent.append(cur_val)
+        rows.append({
+            "KPI": label,
+            "Current": "—" if cur_val is None else f"{cur_val:.2f}",
+            "Previous": "—" if prev is None else f"{prev:.2f}",
+            "Δ": _fmt_delta(cur_val, prev,
+                            higher_is_better=(metric not in _LOWER_IS_BETTER)),
+            f"Trend (last {len(recent)})": _sparkline(recent) or "—",
+        })
+    if not rows:
+        return ""
+    return md_table(rows, headers=list(rows[0].keys()))
+
+
+def _build_enriched_report(stages: list[StageResult],
+                           prior: dict[tuple[str, str, str], list[tuple[str, float]]],
+                           now: str) -> str:
+    enriched_stages = [_enrich_stage(s, prior) for s in stages]
+    lines = [f"# Sub0h264 — Full Suite Report",
+             f"_{now}_", ""]
+
+    summary = _headline_summary(enriched_stages, prior)
+    if summary:
+        lines += ["## Performance Summary",
+                  f"_Δ vs previous run · trend over last {TREND_WINDOW + 1} points_",
+                  "", summary, ""]
+
+    for s in enriched_stages:
+        marker = "✓" if s.ok else "✗"
+        lines += [f"## {marker} {s.name}", f"_{s.summary}_", "",
+                  md_table(s.rows, s.headers), ""]
+        if s.detail and not s.ok:
+            lines += ["<details><summary>Failure log (tail)</summary>\n", "```",
+                      s.detail, "```", "</details>\n"]
+    return "\n".join(lines)
+
+
 # ── Driver ──────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -338,38 +529,24 @@ def main() -> int:
     if args.esp_port:
         stages.append(stage_esp(args.esp_port, args.esp_timeout))
 
-    # Build the report.
     now = _dt.datetime.now(tz=_dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
-    lines = [f"# Sub0h264 — Full Suite Report",
-             f"_{now}_", ""]
-    for s in stages:
-        marker = "✓" if s.ok else "✗"
-        lines.append(f"## {marker} {s.name}")
-        lines.append(f"_{s.summary}_")
-        lines.append("")
-        lines.append(md_table(s.rows, s.headers))
-        lines.append("")
-        if s.detail and not s.ok:
-            lines.append("<details><summary>Failure log (tail)</summary>\n")
-            lines.append("```")
-            lines.append(s.detail)
-            lines.append("```")
-            lines.append("</details>\n")
-
-    report = "\n".join(lines)
-    print(report)
-
     outdir = ROOT / args.outdir
     outdir.mkdir(parents=True, exist_ok=True)
-    (outdir / "run_all_report.md").write_text(report, encoding="utf-8")
 
+    # Load prior history BEFORE appending current run, so deltas compare
+    # against the previous run rather than this one.
     history = outdir / "run_all_history.jsonl"
+    prior = _load_history(history)
     with history.open("a", encoding="utf-8") as fp:
         for s in stages:
             for r in s.rows:
                 fp.write(json.dumps({
                     "ts": now, "stage": s.name, "ok": s.ok, **r,
                 }) + "\n")
+
+    report = _build_enriched_report(stages, prior, now)
+    print(report)
+    (outdir / "run_all_report.md").write_text(report, encoding="utf-8")
 
     return 0 if all(s.ok for s in stages) else 1
 

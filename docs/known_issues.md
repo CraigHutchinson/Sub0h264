@@ -218,7 +218,44 @@ MV-prediction reconstruction — a non-CABAC bug).
 - All wstress fixtures bit-exact, so MC bug is specific to Tapo's
   rolling-intra-refresh / mid-frame slice pattern.
 
-**Session 10 investigation (inconclusive):**
+**Session 10 RESOLVED — P-inter 4x4 zigzag unscan missing (commit b9a5000):**
+Eliminated Tapo P-frame divergence entirely. CABAC's `cabacDecodeResidual4x4`
+returns coefficients in *scan* order (cZigzag4x4 indexing). Every other
+call-site (I_4x4, I_NxN, chroma DC/AC) explicitly unscans to raster before
+dequant/IDCT — but the CABAC P-inter 4x4 residual path was passing the
+raster `coeffs` array straight into the decoder, leaving every coefficient
+at the wrong (x,y) position. Tapo frames 0-8 had no coded 4x4 residual so
+the bug was masked; frames 9+ (rolling-intra-refresh) hit it heavily.
+
+**Final Tapo C110 result: 99.00 dB bit-exact across all 119 frames** vs
+JM and ffmpeg. All 6 wstress synthetic fixtures remain bit-exact.
+
+---
+
+**Session 11 partial — P_8x8 sub_mb_type ∈ {8x4, 4x8, 4x4}:**
+Implemented per-sub-partition MVD decode with proper context (§9.3.3.1.1.7),
+per-sub-partition MC dispatch using `cSubPartLayout[4][4][4]` table from
+§7.3.5.2 / Table 7-13, and unified getMvdComp via mbMotion_ neighbour lookup.
+Generator script: `scripts/gen_p8x8_sub_fixture.py` produces
+`wstress_p8x8_sub_640x368.h264` (10 frames, per-4x4-tile motion forces
+sub-partitioning).
+
+- Frames 0-6: 99 dB bit-exact
+- Frames 7-9: diverge (frame 7 only 3 MBs differ, concentrated at MB(0,9)
+  bottom half — looks like a sub-partition boundary or MV mismatch)
+- Avg PSNR: 85 dB; min PSNR: 51.28 dB (frame 9)
+
+Bisected: tried adding §6.4.10.7 / JM macroblock.c L1021-1038 C-availability
+override for the MV predictor — but it caused a regression in
+`scrolling_texture_high` (51.7 dB → 18.99 dB). Removed the override since
+the natural mbMotion_ zero-init already returns unavailable for forward-MB
+neighbours; the override only forced wrong fallbacks where the natural
+state was correct. Remaining frame-7+ divergence needs JM lock-step
+investigation (JM ldecod binary not currently checked in to repo).
+
+---
+
+**Session 10 investigation (historical, left for reference):**
 Traced MB(13, 0) at frameCount_=9. MB is P_8x8 (mb_type=3), 4 sub-partitions
 with MVs (0,0), (-2,0), (0,0), (-8,-26). Verified:
 - JM POC 9 SH has `frame_num=10, pic_order_cnt_lsb=10`. Uses ref list
