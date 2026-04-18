@@ -218,6 +218,26 @@ MV-prediction reconstruction — a non-CABAC bug).
 - All wstress fixtures bit-exact, so MC bug is specific to Tapo's
   rolling-intra-refresh / mid-frame slice pattern.
 
+**Session 10 investigation (inconclusive):**
+Traced MB(13, 0) at frameCount_=9. MB is P_8x8 (mb_type=3), 4 sub-partitions
+with MVs (0,0), (-2,0), (0,0), (-8,-26). Verified:
+- JM POC 9 SH has `frame_num=10, pic_order_cnt_lsb=10`. Uses ref list
+  reordering (`modification_of_pic_nums_idc=0, abs_diff=0` → shift by 1)
+  + MMCO op 1 with `difference_of_pic_nums_minus1=0`.
+- With `num_ref_idx_l0_active=1`, both JM and our default L0 have
+  highest-frame_num ref first, so reordering is no-op in practice.
+- MVP for part 3 = D fallback (MB(14, 0) C is unavailable pre-decode,
+  our code correctly falls back to top-left D which is MB 13 part 0).
+  Diag shows c={av=1, ri=0, mv=(0,0)} AFTER D fallback — correct.
+- MVD values all match JM (confirmed via JM TRACE=1 `trace_dec.txt`).
+
+So MV prediction matches JM. MC inputs (refX, refY, dx, dy) should match
+too. But pixel output differs. Current best hypothesis: subtle issue in
+MC interpolation for specific sub-pixel positions, or wrong reference
+frame selection at DPB level for frame 9 (despite reordering being
+no-op under single-active-ref assumption). Needs next session with
+dumps of the actual pixel outputs of MC pre-deblock + pre-residual.
+
 **Tapo C110 lock-step trace investigation (2026-04-17 cont'd):**
 Rebuilt JM with TRACE=1 for full syntax-element trace_dec.txt. Compared
 mb_type per-MB ours vs JM. First divergence at **MB 8** (first I_16x16
