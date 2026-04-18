@@ -1,0 +1,87 @@
+{"ts": "2026-04-18 08:37:55Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "Tapo C110", "Frames": 119, "Avg PSNR (dB)": "42.39", "Min PSNR (dB)": "39.61", "Status": "\u2713"}
+{"ts": "2026-04-18 08:37:55Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress baseline", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:40:12Z", "stage": "Unit tests (ctest --preset default)", "ok": true, "Test": "Sub0h264_Tests", "Result": "Passed", "Time (s)": "9.96"}
+{"ts": "2026-04-18 08:40:12Z", "stage": "Unit tests (ctest --preset default)", "ok": true, "Test": "Sub0h264_Bench_Tests", "Result": "Passed", "Time (s)": "6.08"}
+{"ts": "2026-04-18 08:40:12Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "Tapo C110", "Frames": 119, "Avg PSNR (dB)": "42.39", "Min PSNR (dB)": "39.61", "Status": "\u2713"}
+{"ts": "2026-04-18 08:40:12Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress baseline", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:40:12Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress complex_flat", "Frames": 5, "Avg PSNR (dB)": "67.10", "Min PSNR (dB)": "63.68", "Status": "\u2713"}
+{"ts": "2026-04-18 08:40:12Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress gradient", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:40:12Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i16x16", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:40:12Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i4x4", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:40:12Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i8x8", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:46:33Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "Tapo C110", "Frames": 119, "Avg PSNR (dB)": "56.33", "Min PSNR (dB)": "41.03", "Status": "\u2713"}
+{"ts": "2026-04-18 08:46:33Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress baseline", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:46:33Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress complex_flat", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:46:33Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress gradient", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:46:33Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i16x16", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:46:33Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i4x4", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:46:33Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i8x8", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Unit tests (ctest --preset default)", "ok": true, "Test": "Sub0h264_Tests", "Result": "Passed", "Time (s)": "9.96"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Unit tests (ctest --preset default)", "ok": true, "Test": "Sub0h264_Bench_Tests", "Result": "Passed", "Time (s)": "6.11"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Stream": "?", "FPS": "623.9", "Frames": 50, "Decoder": "sub0h264"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Stream": "?", "FPS": "3079.5", "Frames": 250, "Decoder": "sub0h264"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Stream": "?", "FPS": "834.8", "Frames": 30, "Decoder": "sub0h264"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Stream": "?", "FPS": "3253.1", "Frames": 30, "Decoder": "sub0h264"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Stream": "?", "FPS": "369.2", "Frames": 30, "Decoder": "sub0h264"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Stream": "?", "FPS": "386.6", "Frames": 30, "Decoder": "sub0h264"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Stream": "?", "FPS": "54.6", "Frames": 30, "Decoder": "sub0h264"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Stream": "?", "FPS": "52.8", "Frames": 30, "Decoder": "sub0h264"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Stream": "?", "FPS": "1145.5", "Frames": 30, "Decoder": "sub0h264"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Stream": "?", "FPS": "1136.3", "Frames": 30, "Decoder": "sub0h264"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Stream": "?", "FPS": "3474.1", "Frames": 119, "Decoder": "sub0h264"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Scroll-Base-640", "Frames": 30, "sub0h264": "3371.5", "libavc": "5563.8", "Ratio": "0.61x"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Scroll-High-640", "Frames": 30, "sub0h264": "3203.4", "libavc": "4962.0", "Ratio": "0.65x"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Ball-Base-640", "Frames": 30, "sub0h264": "982.4", "libavc": "1318.6", "Ratio": "0.75x"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Ball-High-640", "Frames": 30, "sub0h264": "897.5", "libavc": "1385.4", "Ratio": "0.65x"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Still-Base-640", "Frames": 30, "sub0h264": "4628.9", "libavc": "5980.9", "Ratio": "0.77x"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Still-High-640", "Frames": 30, "sub0h264": "4093.3", "libavc": "4657.7", "Ratio": "0.88x"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Flat-Base-640", "Frames": 250, "sub0h264": "2626.2", "libavc": "6223.2", "Ratio": "0.42x"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "CAVLC-Base-640", "Frames": 50, "sub0h264": "1890.9", "libavc": "3773.0", "Ratio": "0.50x"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Tapo-C110", "Frames": 119, "sub0h264": "3273.0", "libavc": "7043.1", "Ratio": "0.46x"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "Tapo C110", "Frames": 119, "Avg PSNR (dB)": "56.33", "Min PSNR (dB)": "41.03", "Status": "\u2713"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress baseline", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress complex_flat", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress gradient", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i16x16", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i4x4", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:48:19Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i8x8", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:49:03Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Baseline CAVLC (short)", "FPS": "631.3", "Median (ms)": "79.2", "Frames": 50}
+{"ts": "2026-04-18 08:49:03Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Flat black", "FPS": "3144.7", "Median (ms)": "79.5", "Frames": 250}
+{"ts": "2026-04-18 08:49:03Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "CAVLC 320x240 I+P", "FPS": "806.3", "Median (ms)": "37.2", "Frames": 30}
+{"ts": "2026-04-18 08:49:03Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "CABAC 320x240 I+P", "FPS": "3111.4", "Median (ms)": "9.6", "Frames": 30}
+{"ts": "2026-04-18 08:49:03Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Scroll Baseline 640x480", "FPS": "400.0", "Median (ms)": "75.0", "Frames": 30}
+{"ts": "2026-04-18 08:49:03Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Scroll High 640x480", "FPS": "377.7", "Median (ms)": "79.4", "Frames": 30}
+{"ts": "2026-04-18 08:49:03Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Ball Baseline 640x480", "FPS": "55.8", "Median (ms)": "537.7", "Frames": 30}
+{"ts": "2026-04-18 08:49:03Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Ball High 640x480", "FPS": "53.5", "Median (ms)": "560.8", "Frames": 30}
+{"ts": "2026-04-18 08:49:03Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Still Baseline 640x480", "FPS": "1128.2", "Median (ms)": "26.6", "Frames": 30}
+{"ts": "2026-04-18 08:49:03Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Still High 640x480", "FPS": "1076.4", "Median (ms)": "27.9", "Frames": 30}
+{"ts": "2026-04-18 08:49:03Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Tapo C110 stream2", "FPS": "3478.9", "Median (ms)": "34.2", "Frames": 119}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Unit tests (ctest --preset default)", "ok": true, "Test": "Sub0h264_Tests", "Result": "Passed", "Time (s)": "10.11"}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Unit tests (ctest --preset default)", "ok": true, "Test": "Sub0h264_Bench_Tests", "Result": "Passed", "Time (s)": "6.15"}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Baseline CAVLC (short)", "FPS": "620.6", "Median (ms)": "80.6", "Frames": 50}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Flat black", "FPS": "3046.2", "Median (ms)": "82.1", "Frames": 250}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "CAVLC 320x240 I+P", "FPS": "802.3", "Median (ms)": "37.4", "Frames": 30}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "CABAC 320x240 I+P", "FPS": "3098.2", "Median (ms)": "9.7", "Frames": 30}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Scroll Baseline 640x480", "FPS": "379.6", "Median (ms)": "79.0", "Frames": 30}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Scroll High 640x480", "FPS": "401.7", "Median (ms)": "74.7", "Frames": 30}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Ball Baseline 640x480", "FPS": "53.1", "Median (ms)": "564.7", "Frames": 30}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Ball High 640x480", "FPS": "53.2", "Median (ms)": "564.0", "Frames": 30}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Still Baseline 640x480", "FPS": "1154.2", "Median (ms)": "26.0", "Frames": 30}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Still High 640x480", "FPS": "1123.6", "Median (ms)": "26.7", "Frames": 30}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Tapo C110 stream2", "FPS": "3432.9", "Median (ms)": "34.7", "Frames": 119}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Scroll-Base-640", "Frames": 30, "sub0h264": "2784.0", "libavc": "4877.3", "Ratio": "0.57x"}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Scroll-High-640", "Frames": 30, "sub0h264": "2735.0", "libavc": "4405.3", "Ratio": "0.62x"}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Ball-Base-640", "Frames": 30, "sub0h264": "876.9", "libavc": "1380.4", "Ratio": "0.64x"}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Ball-High-640", "Frames": 30, "sub0h264": "1020.2", "libavc": "1270.6", "Ratio": "0.80x"}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Still-Base-640", "Frames": 30, "sub0h264": "4821.6", "libavc": "6398.0", "Ratio": "0.75x"}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Still-High-640", "Frames": 30, "sub0h264": "5058.2", "libavc": "5721.9", "Ratio": "0.88x"}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Flat-Base-640", "Frames": 250, "sub0h264": "2563.7", "libavc": "6373.6", "Ratio": "0.40x"}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "CAVLC-Base-640", "Frames": 50, "sub0h264": "1879.8", "libavc": "3653.9", "Ratio": "0.51x"}
+{"ts": "2026-04-18 08:49:39Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Tapo-C110", "Frames": 119, "sub0h264": "3238.1", "libavc": "6345.0", "Ratio": "0.51x"}
+{"ts": "2026-04-18 08:49:39Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "Tapo C110", "Frames": 119, "Avg PSNR (dB)": "56.33", "Min PSNR (dB)": "41.03", "Status": "\u2713"}
+{"ts": "2026-04-18 08:49:39Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress baseline", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:49:39Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress complex_flat", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:49:39Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress gradient", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:49:39Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i16x16", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:49:39Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i4x4", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:49:39Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i8x8", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
