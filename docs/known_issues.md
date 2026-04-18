@@ -232,26 +232,30 @@ JM and ffmpeg. All 6 wstress synthetic fixtures remain bit-exact.
 
 ---
 
-**Session 11 partial — P_8x8 sub_mb_type ∈ {8x4, 4x8, 4x4}:**
+**Session 11 — P_8x8 sub_mb_type ∈ {8x4, 4x8, 4x4} fully bit-exact:**
 Implemented per-sub-partition MVD decode with proper context (§9.3.3.1.1.7),
 per-sub-partition MC dispatch using `cSubPartLayout[4][4][4]` table from
 §7.3.5.2 / Table 7-13, and unified getMvdComp via mbMotion_ neighbour lookup.
 Generator script: `scripts/gen_p8x8_sub_fixture.py` produces
 `wstress_p8x8_sub_640x368.h264` (10 frames, per-4x4-tile motion forces
-sub-partitioning).
+sub-partitioning); JM lockstep wrapper at `scripts/run_jm.py`.
 
-- Frames 0-6: 99 dB bit-exact
-- Frames 7-9: diverge (frame 7 only 3 MBs differ, concentrated at MB(0,9)
-  bottom half — looks like a sub-partition boundary or MV mismatch)
-- Avg PSNR: 85 dB; min PSNR: 51.28 dB (frame 9)
+**Final result: 99 dB bit-exact across all 10 frames vs JM and ffmpeg.**
 
-Bisected: tried adding §6.4.10.7 / JM macroblock.c L1021-1038 C-availability
-override for the MV predictor — but it caused a regression in
-`scrolling_texture_high` (51.7 dB → 18.99 dB). Removed the override since
-the natural mbMotion_ zero-init already returns unavailable for forward-MB
-neighbours; the override only forced wrong fallbacks where the natural
-state was correct. Remaining frame-7+ divergence needs JM lock-step
-investigation (JM ldecod binary not currently checked in to repo).
+Root cause of frame-7+ divergence (found via JM trace `mb` subcommand on
+MB(0,9) at POC 14 = frame 7): in P_8x8/P_8x8ref0, the early refIdx loop
+was setting `mbMotion_[].available = true` for all 4 sub-MBs upfront —
+*before* their MVs were computed. Subsequent sub-partitions' MV-predictor
+C neighbour lookups then saw `available=true` with `mv={0,0}` (zero-init
+from slice start) and used a bogus (0,0) C predictor instead of falling
+back to D. Fix: only set `.available` in `doPartitionMC` (when the MV is
+actually written); change `refIdxCtxInc` to gate on `refIdx > 0` directly
+(spec-equivalent since intra/unavailable have `refIdx=-1` from zero-init).
+
+The earlier attempt (Session 11 partial) to add JM's §6.4.10.7 C-availability
+override was masking the wrong root cause and broke `scrolling_texture_high`
+(51.7 → 18.99 dB). The proper fix removes the polluting available=true
+write entirely, so neither override nor manual fallback is needed.
 
 ---
 

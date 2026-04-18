@@ -189,6 +189,10 @@ decoder->trace().setCallback([&](const TraceEvent& e) {
   - `dump` side-by-side 16x16 pixel dump of one MB
 - `scripts/run_all_suites.py` — unified test/bench/PSNR/shootout/ESP runner;
   emits `docs/run_all_report.md` + appends to `docs/run_all_history.jsonl`.
+  Per-row Δ vs prior + sparkline trend; top-of-report headline-KPI panel.
+- `scripts/run_jm.py` — first-class JM 19.0 lockstep wrapper:
+  `decode` (YUV+trace_dec.txt), `mb` (per-MB trace at POC), `psnr` (per-frame
+  ours-vs-JM PSNR). Use `mb` to find the first MB where ours and JM diverge.
 - `scripts/lockstep_compare.py` — bin-level CABAC compare (our trace vs JM bin trace).
 - `scripts/gen_jm_bin_trace.sh` / `scripts/gen_our_bin_trace.sh` — produce the
   bin traces consumed by `lockstep_compare.py`.

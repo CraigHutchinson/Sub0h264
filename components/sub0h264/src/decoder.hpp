@@ -3213,10 +3213,16 @@ private:
         // Uses 4x4-block-level neighbor lookup (same as JM's get4x4Neighbour).
         // Unavailable neighbors → condTermFlag = 0. [CHECKED §9.3.3.1.1.6]
         auto refIdxCtxInc = [&](int32_t tlX, int32_t tlY) -> uint32_t {
+            // §9.3.3.1.1.6 condTermN: 0 if unavailable, intra, or refIdx==0;
+            // 1 otherwise. Intra/unavailable have refIdx=-1 (zero-init), so
+            // refIdx > 0 alone correctly excludes all three cases — no need
+            // to gate on `.available`. (This matters for P_8x8 sub-partitions
+            // that have refIdx written early but `available` set only after
+            // MC, so neighbour MV prediction sees C unavailable until ready.)
             MbMotionInfo left = getMotionAt4x4(tlX - 1, tlY);
             MbMotionInfo top  = getMotionAt4x4(tlX,     tlY - 1);
-            uint32_t cA = (left.available && left.refIdx > 0) ? 1U : 0U;
-            uint32_t cB = (top.available  && top.refIdx  > 0) ? 2U : 0U;
+            uint32_t cA = (left.refIdx > 0) ? 1U : 0U;
+            uint32_t cB = (top.refIdx  > 0) ? 2U : 0U;
             return cA + cB;
         };
 
@@ -3324,19 +3330,21 @@ private:
                     refIdxL0[s] = cabacDecodeRefIdx(cabacEngine_, cabacCtx_.data(), ctxInc,
                                                      numRefIdxL0Active - 1U);
                 }
-                // Store refIdx to mbMotion_ so neighbors see it during decode.
-                // MV/MVD will be overwritten later in doPartitionMC; only refIdx
-                // matters here for context derivation.
+                // Store refIdx (only) to mbMotion_ so neighbour refIdx
+                // context (refIdxCtxInc) sees it during decode.
+                // CRITICAL: do NOT set .available here — that field gates the
+                // C-neighbour MV-predictor lookup, and the MV isn't computed
+                // until doPartitionMC runs. Setting available=true with
+                // mv={0,0} causes downstream sub-partitions to read a bogus
+                // (0,0) C predictor instead of falling back to D. .available
+                // is set in doPartitionMC's per-block write below.
                 uint32_t sr = (s >> 1U) * 2U;
                 uint32_t sc = (s & 1U) * 2U;
                 int8_t ri = static_cast<int8_t>(refIdxL0[s]);
                 uint32_t mi = mbY * widthInMbs_ + mbX;
                 for (uint32_t r = sr; r < sr + 2U; ++r)
                     for (uint32_t cc = sc; cc < sc + 2U; ++cc)
-                    {
                         mbMotion_[mi * 16U + r * 4U + cc].refIdx = ri;
-                        mbMotion_[mi * 16U + r * 4U + cc].available = true;
-                    }
             }
             // MVD per sub-partition — §7.3.5.2 / §9.3.3.1.1.7.
             uint32_t mi = mbY * widthInMbs_ + mbX;
