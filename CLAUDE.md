@@ -180,10 +180,30 @@ decoder->trace().setCallback([&](const TraceEvent& e) {
 - **ffmpeg** — used for reference YUV output: `ffmpeg -i fixture.h264 -vframes 1 -pix_fmt yuv420p ref.yuv`
 
 ### Investigation & Comparison Scripts
+
+**First-class diagnostic tools** (use these before reaching for one-offs):
+- `scripts/yuv_diff.py {psnr,first,top,dump}` — YUV-vs-YUV diagnostics:
+  - `psnr` per-frame Y PSNR (handles ours-vs-cropped-ref mismatch)
+  - `first` first MBs with diff above a threshold
+  - `top` top-N MBs by mean abs-diff for a frame (catches outliers)
+  - `dump` side-by-side 16x16 pixel dump of one MB
+- `scripts/run_all_suites.py` — unified test/bench/PSNR/shootout/ESP runner;
+  emits `docs/run_all_report.md` + appends to `docs/run_all_history.jsonl`.
+- `scripts/lockstep_compare.py` — bin-level CABAC compare (our trace vs JM bin trace).
+- `scripts/gen_jm_bin_trace.sh` / `scripts/gen_our_bin_trace.sh` — produce the
+  bin traces consumed by `lockstep_compare.py`.
+- `scripts/jm_mb_first.py` / `scripts/jm_mb_summary.py` — read JM trace_dec.txt
+  for a specific MB or range (set `POC=N` env for non-IDR frames).
+- `scripts/map_bin_to_mb.py` — map a bin index back to the MB it belongs to.
+- `scripts/count_jm_slices.py` — bins-per-slice histogram for JM bin trace.
+
+**Image / visual diagnostics:**
 - `scripts/gen_frame_compare.py` — generates side-by-side PNG comparison images
 - `scripts/gen_diff_image.py` — visual diff: [ours | ffmpeg | diff | |diff|] with MB grid
 - `scripts/compare_mb_pixels.py` — per-MB pixel diff between two YUV files
-- `scripts/find_first_pixel_diff.py` — finds exact first differing pixel in two YUV files
+
+**Domain-specific tools** (kept for the rare cases they help):
+- `scripts/find_first_pixel_diff.py` — finds exact first differing pixel
 - `scripts/diff_traces.py` — diff our block-level trace against libavc coefficient dump
 - `scripts/check_chroma_quality.py` — per-plane (Y/U/V) PSNR comparison
 - `scripts/check_chroma_mc.py` — per-MB chroma MC vs ffmpeg comparison

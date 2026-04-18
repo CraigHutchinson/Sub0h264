@@ -85,3 +85,21 @@
 {"ts": "2026-04-18 08:49:39Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i16x16", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
 {"ts": "2026-04-18 08:49:39Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i4x4", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
 {"ts": "2026-04-18 08:49:39Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i8x8", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:53:05Z", "stage": "Unit tests (ctest --preset default)", "ok": true, "Test": "Sub0h264_Tests", "Result": "Passed", "Time (s)": "10.17"}
+{"ts": "2026-04-18 08:53:05Z", "stage": "Unit tests (ctest --preset default)", "ok": true, "Test": "Sub0h264_Bench_Tests", "Result": "Passed", "Time (s)": "6.33"}
+{"ts": "2026-04-18 08:53:05Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Scroll-Base-640", "Frames": 30, "sub0h264": "3203.4", "libavc": "5450.6", "Ratio": "0.59x"}
+{"ts": "2026-04-18 08:53:05Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Scroll-High-640", "Frames": 30, "sub0h264": "3127.6", "libavc": "4886.8", "Ratio": "0.64x"}
+{"ts": "2026-04-18 08:53:05Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Ball-Base-640", "Frames": 30, "sub0h264": "1000.9", "libavc": "1446.5", "Ratio": "0.69x"}
+{"ts": "2026-04-18 08:53:05Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Ball-High-640", "Frames": 30, "sub0h264": "996.7", "libavc": "1415.7", "Ratio": "0.70x"}
+{"ts": "2026-04-18 08:53:05Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Still-Base-640", "Frames": 30, "sub0h264": "5166.2", "libavc": "6345.2", "Ratio": "0.81x"}
+{"ts": "2026-04-18 08:53:05Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Still-High-640", "Frames": 30, "sub0h264": "4949.7", "libavc": "5779.2", "Ratio": "0.86x"}
+{"ts": "2026-04-18 08:53:05Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Flat-Base-640", "Frames": 250, "sub0h264": "2786.4", "libavc": "6850.3", "Ratio": "0.41x"}
+{"ts": "2026-04-18 08:53:05Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "CAVLC-Base-640", "Frames": 50, "sub0h264": "2127.8", "libavc": "4185.5", "Ratio": "0.51x"}
+{"ts": "2026-04-18 08:53:05Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Tapo-C110", "Frames": 119, "sub0h264": "3711.0", "libavc": "7168.7", "Ratio": "0.52x"}
+{"ts": "2026-04-18 08:53:05Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "Tapo C110", "Frames": 119, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:53:05Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress baseline", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:53:05Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress complex_flat", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:53:05Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress gradient", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:53:05Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i16x16", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:53:05Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i4x4", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 08:53:05Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i8x8", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
