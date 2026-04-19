@@ -3,6 +3,15 @@
 Historical decode performance measurements. Each entry records the
 commit, platform, and fps for the standard benchmark fixtures.
 
+**Related docs:**
+- [optimization/esp32p4_hierarchical_plan.md](optimization/esp32p4_hierarchical_plan.md)
+  — master plan + phase ordering
+- [optimization/opportunities/](optimization/opportunities/) — per-opportunity
+  implementation briefs (read before starting any perf work)
+- `docs/run_all_report.md` / `docs/run_all_history.jsonl` — per-run
+  bench table with Δ vs previous + sparkline trend (see
+  `scripts/run_all_suites.py`)
+
 ## Benchmark fixtures
 
 | ID | Fixture | Resolution | Frames | Profile | Content |

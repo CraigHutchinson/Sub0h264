@@ -19,7 +19,59 @@ with motion + residual hovers around real-time.
 
 ---
 
-## ⚠️ Prerequisite (Phase P0) — Tapo 640x368 CABAC Quality Bug
+## Per-opportunity implementation docs
+
+Before any optimisation lands in code, the approach for that specific
+opportunity must be captured in a standalone doc under
+[`docs/optimization/opportunities/`](opportunities/). Each doc is designed to
+be handed to an agent as a self-contained brief: options reasoned, chosen
+approach stated, files/pseudocode identified, validation gates defined. The
+main plan below remains the roadmap and ordering; the per-opportunity docs
+are the implementation contract.
+
+| ID | Title | Doc |
+|----|-------|-----|
+| L1.1 | Row-based decode+deblock streaming pipeline | [opportunities/L1.1_row_based_deblock.md](opportunities/L1.1_row_based_deblock.md) |
+| L1.2 | Eliminate currentFrame_ duplication | [opportunities/L1.2_eliminate_currentframe.md](opportunities/L1.2_eliminate_currentframe.md) |
+| L1.3 | Static max-bounded context arrays | [opportunities/L1.3_static_context_arrays.md](opportunities/L1.3_static_context_arrays.md) |
+| L2.1 | Diagonal MC 2-pass separable filter | [opportunities/L2.1_diagonal_mc_2pass.md](opportunities/L2.1_diagonal_mc_2pass.md) |
+| L2.2 | Skip-MB / zero-MV fast paths | [opportunities/L2.2_skip_zero_mv_fast_path.md](opportunities/L2.2_skip_zero_mv_fast_path.md) |
+| L2.3 | Deblocking BS cache | [opportunities/L2.3_deblock_bs_cache.md](opportunities/L2.3_deblock_bs_cache.md) |
+| L2.4 | Horizontal-edge column-major transpose | [opportunities/L2.4_horizontal_edge_transpose.md](opportunities/L2.4_horizontal_edge_transpose.md) |
+| L3.1 | Reference prefetch into stack buffer | [opportunities/L3.1_reference_prefetch.md](opportunities/L3.1_reference_prefetch.md) |
+| L3.2 | Frame buffer cache-line alignment | [opportunities/L3.2_frame_alignment.md](opportunities/L3.2_frame_alignment.md) |
+| L3.3 | Direct-to-frame MC for zero-CBP MBs | [opportunities/L3.3_direct_frame_mc.md](opportunities/L3.3_direct_frame_mc.md) |
+| L3.4 | Per-MB context struct packing | [opportunities/L3.4_mb_context_packing.md](opportunities/L3.4_mb_context_packing.md) |
+| L4.1 | Branchless clipU8 | [opportunities/L4.1_branchless_clipu8.md](opportunities/L4.1_branchless_clipu8.md) |
+| L4.2 | Deblocking inline row pointers | [opportunities/L4.2_deblock_inline_rows.md](opportunities/L4.2_deblock_inline_rows.md) |
+| L4.3 | CAVLC coeff_token LUT | [opportunities/L4.3_cavlc_coeff_token_lut.md](opportunities/L4.3_cavlc_coeff_token_lut.md) |
+| L4.4 | Fully unrolled 4×4 IDCT | [opportunities/L4.4_idct_4x4_unroll.md](opportunities/L4.4_idct_4x4_unroll.md) |
+| L4.5 | getSample elimination (compounds with L3.1) | [opportunities/L4.5_getsample_elimination.md](opportunities/L4.5_getsample_elimination.md) |
+| L5.1 | Compiler hints + alignment | [opportunities/L5.1_compiler_hints.md](opportunities/L5.1_compiler_hints.md) |
+| L5.2 | BitReader cache refill | [opportunities/L5.2_bitreader_refill.md](opportunities/L5.2_bitreader_refill.md) |
+| L5.3 | PIE/SIMD opportunity catalog (doc-only) | [opportunities/L5.3_pie_simd_catalog.md](opportunities/L5.3_pie_simd_catalog.md) |
+
+**Rule:** an agent MUST read the opportunity doc before writing code. If the
+chosen approach changes mid-implementation, update the doc first — the doc is
+the source of truth for the commit's approach, and the commit message cites
+both the plan phase and the opportunity doc.
+
+---
+
+## ✅ Prerequisite (Phase P0) — RESOLVED 2026-04-18
+
+**Tapo IDR now 99 dB bit-exact across all 119 frames** (fixed via 11 CABAC
+bugs + P-inter 4x4 zigzag unscan + CABAC I_8x8/DC bugs — see
+`docs/known_issues.md` sessions 9-11). All 6 wstress synthetic fixtures and
+wstress_p8x8_sub also 99 dB bit-exact. JM lock-step confirms bin-for-bin
+match on P-frames too.
+
+The historical P0 investigation notes below are kept for audit. Optimisation
+work may now proceed against the bit-exact baseline.
+
+---
+
+## Historical P0 investigation (retained for audit)
 
 **Status: OPEN** (confirmed 2026-04-17 — Tapo IDR PSNR 6.43 dB vs raw source)
 
