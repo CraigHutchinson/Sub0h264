@@ -103,3 +103,99 @@
 {"ts": "2026-04-18 08:53:05Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i16x16", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
 {"ts": "2026-04-18 08:53:05Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i4x4", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
 {"ts": "2026-04-18 08:53:05Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress i8x8", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Unit tests (ctest --preset default)", "ok": true, "Test": "Sub0h264_Tests", "Result": "Passed", "Time (s)": "10.94"}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Unit tests (ctest --preset default)", "ok": true, "Test": "Sub0h264_Bench_Tests", "Result": "Passed", "Time (s)": "6.74"}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Baseline CAVLC (short)", "FPS": "566.7", "Median (ms)": "88.2", "Frames": 50}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Flat black", "FPS": "3128.3", "Median (ms)": "79.9", "Frames": 250}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "CAVLC 320x240 I+P", "FPS": "667.8", "Median (ms)": "44.9", "Frames": 30}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "CABAC 320x240 I+P", "FPS": "3275.5", "Median (ms)": "9.2", "Frames": 30}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Scroll Baseline 640x480", "FPS": "319.9", "Median (ms)": "93.8", "Frames": 30}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Scroll High 640x480", "FPS": "348.9", "Median (ms)": "86.0", "Frames": 30}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Ball Baseline 640x480", "FPS": "51.1", "Median (ms)": "587.4", "Frames": 30}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Ball High 640x480", "FPS": "49.5", "Median (ms)": "605.9", "Frames": 30}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Still Baseline 640x480", "FPS": "1037.4", "Median (ms)": "28.9", "Frames": 30}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Still High 640x480", "FPS": "1017.1", "Median (ms)": "29.5", "Frames": 30}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Tapo C110 stream2", "FPS": "3420.8", "Median (ms)": "34.8", "Frames": 119}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Scroll-Base-640", "Frames": 30, "sub0h264": "3112.0", "libavc": "5007.5", "Ratio": "0.62x"}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Scroll-High-640", "Frames": 30, "sub0h264": "2924.0", "libavc": "4567.6", "Ratio": "0.64x"}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Ball-Base-640", "Frames": 30, "sub0h264": "915.2", "libavc": "1329.6", "Ratio": "0.69x"}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Ball-High-640", "Frames": 30, "sub0h264": "1037.3", "libavc": "979.9", "Ratio": "1.06x"}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Still-Base-640", "Frames": 30, "sub0h264": "3845.2", "libavc": "6167.8", "Ratio": "0.62x"}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Still-High-640", "Frames": 30, "sub0h264": "5197.5", "libavc": "5978.5", "Ratio": "0.87x"}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Flat-Base-640", "Frames": 250, "sub0h264": "2721.9", "libavc": "7075.5", "Ratio": "0.38x"}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "CAVLC-Base-640", "Frames": 50, "sub0h264": "1898.5", "libavc": "3662.5", "Ratio": "0.52x"}
+{"ts": "2026-04-18 20:26:52Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Tapo-C110", "Frames": 119, "sub0h264": "3403.3", "libavc": "6680.1", "Ratio": "0.51x"}
+{"ts": "2026-04-18 20:26:52Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "Tapo C110", "Frames": 119, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 20:26:52Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress baseline", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Unit tests (ctest --preset default)", "ok": true, "Test": "Sub0h264_Tests", "Result": "Passed", "Time (s)": "10.96"}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Unit tests (ctest --preset default)", "ok": true, "Test": "Sub0h264_Bench_Tests", "Result": "Passed", "Time (s)": "6.72"}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Baseline CAVLC (short)", "FPS": "515.1", "Median (ms)": "97.1", "Frames": 50}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Flat black", "FPS": "3088.3", "Median (ms)": "81.0", "Frames": 250}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "CAVLC 320x240 I+P", "FPS": "717.7", "Median (ms)": "41.8", "Frames": 30}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "CABAC 320x240 I+P", "FPS": "2664.3", "Median (ms)": "11.3", "Frames": 30}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Scroll Baseline 640x480", "FPS": "353.7", "Median (ms)": "84.8", "Frames": 30}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Scroll High 640x480", "FPS": "344.4", "Median (ms)": "87.1", "Frames": 30}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Ball Baseline 640x480", "FPS": "51.2", "Median (ms)": "585.9", "Frames": 30}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Ball High 640x480", "FPS": "46.8", "Median (ms)": "640.6", "Frames": 30}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Still Baseline 640x480", "FPS": "999.6", "Median (ms)": "30.0", "Frames": 30}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Still High 640x480", "FPS": "960.1", "Median (ms)": "31.2", "Frames": 30}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Tapo C110 stream2", "FPS": "3579.5", "Median (ms)": "33.2", "Frames": 119}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Scroll-Base-640", "Frames": 30, "sub0h264": "3125.3", "libavc": "5682.9", "Ratio": "0.55x"}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Scroll-High-640", "Frames": 30, "sub0h264": "3269.4", "libavc": "5210.1", "Ratio": "0.63x"}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Ball-Base-640", "Frames": 30, "sub0h264": "1043.1", "libavc": "1498.4", "Ratio": "0.70x"}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Ball-High-640", "Frames": 30, "sub0h264": "1033.1", "libavc": "1257.9", "Ratio": "0.82x"}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Still-Base-640", "Frames": 30, "sub0h264": "5375.4", "libavc": "6071.6", "Ratio": "0.89x"}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Still-High-640", "Frames": 30, "sub0h264": "4961.1", "libavc": "5409.3", "Ratio": "0.92x"}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Flat-Base-640", "Frames": 250, "sub0h264": "2578.2", "libavc": "6611.0", "Ratio": "0.39x"}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "CAVLC-Base-640", "Frames": 50, "sub0h264": "1941.9", "libavc": "3696.6", "Ratio": "0.53x"}
+{"ts": "2026-04-18 20:28:21Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Tapo-C110", "Frames": 119, "sub0h264": "3862.3", "libavc": "7083.8", "Ratio": "0.55x"}
+{"ts": "2026-04-18 20:28:21Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "Tapo C110", "Frames": 119, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-18 20:28:21Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress baseline", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Unit tests (ctest --preset default)", "ok": true, "Test": "Sub0h264_Tests", "Result": "Passed", "Time (s)": "16.42"}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Unit tests (ctest --preset default)", "ok": true, "Test": "Sub0h264_Bench_Tests", "Result": "Passed", "Time (s)": "9.03"}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Baseline CAVLC (short)", "FPS": "445.0", "Median (ms)": "112.4", "Frames": 50}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Flat black", "FPS": "2066.4", "Median (ms)": "121.0", "Frames": 250}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "CAVLC 320x240 I+P", "FPS": "551.1", "Median (ms)": "54.4", "Frames": 30}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "CABAC 320x240 I+P", "FPS": "2302.4", "Median (ms)": "13.0", "Frames": 30}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Scroll Baseline 640x480", "FPS": "270.2", "Median (ms)": "111.0", "Frames": 30}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Scroll High 640x480", "FPS": "229.0", "Median (ms)": "131.0", "Frames": 30}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Ball Baseline 640x480", "FPS": "35.9", "Median (ms)": "836.8", "Frames": 30}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Ball High 640x480", "FPS": "32.9", "Median (ms)": "912.6", "Frames": 30}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Still Baseline 640x480", "FPS": "691.0", "Median (ms)": "43.4", "Frames": 30}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Still High 640x480", "FPS": "648.6", "Median (ms)": "46.2", "Frames": 30}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Tapo C110 stream2", "FPS": "2656.8", "Median (ms)": "44.8", "Frames": 119}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Scroll-Base-640", "Frames": 30, "sub0h264": "2104.1", "libavc": "3442.7", "Ratio": "0.61x"}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Scroll-High-640", "Frames": 30, "sub0h264": "2029.2", "libavc": "3188.4", "Ratio": "0.64x"}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Ball-Base-640", "Frames": 30, "sub0h264": "701.4", "libavc": "940.8", "Ratio": "0.75x"}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Ball-High-640", "Frames": 30, "sub0h264": "688.2", "libavc": "833.2", "Ratio": "0.83x"}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Still-Base-640", "Frames": 30, "sub0h264": "3733.2", "libavc": "3335.2", "Ratio": "1.12x"}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Still-High-640", "Frames": 30, "sub0h264": "3498.5", "libavc": "3473.8", "Ratio": "1.01x"}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Flat-Base-640", "Frames": 250, "sub0h264": "1982.6", "libavc": "5140.2", "Ratio": "0.39x"}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "CAVLC-Base-640", "Frames": 50, "sub0h264": "1488.3", "libavc": "3020.8", "Ratio": "0.49x"}
+{"ts": "2026-04-19 07:31:31Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Tapo-C110", "Frames": 119, "sub0h264": "2322.3", "libavc": "4934.1", "Ratio": "0.47x"}
+{"ts": "2026-04-19 07:31:31Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "Tapo C110", "Frames": 119, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-19 07:31:31Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress baseline", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Unit tests (ctest --preset default)", "ok": true, "Test": "Sub0h264_Tests", "Result": "Passed", "Time (s)": "10.51"}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Unit tests (ctest --preset default)", "ok": true, "Test": "Sub0h264_Bench_Tests", "Result": "Passed", "Time (s)": "6.32"}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Baseline CAVLC (short)", "FPS": "599.5", "Median (ms)": "83.4", "Frames": 50}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Flat black", "FPS": "2870.1", "Median (ms)": "87.1", "Frames": 250}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "CAVLC 320x240 I+P", "FPS": "783.7", "Median (ms)": "38.3", "Frames": 30}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "CABAC 320x240 I+P", "FPS": "2972.7", "Median (ms)": "10.1", "Frames": 30}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Scroll Baseline 640x480", "FPS": "322.9", "Median (ms)": "92.9", "Frames": 30}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Scroll High 640x480", "FPS": "365.6", "Median (ms)": "82.1", "Frames": 30}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Ball Baseline 640x480", "FPS": "52.9", "Median (ms)": "567.2", "Frames": 30}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Ball High 640x480", "FPS": "51.7", "Median (ms)": "579.8", "Frames": 30}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Still Baseline 640x480", "FPS": "1055.9", "Median (ms)": "28.4", "Frames": 30}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Still High 640x480", "FPS": "1105.8", "Median (ms)": "27.1", "Frames": 30}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Tapo C110 stream2", "FPS": "3304.6", "Median (ms)": "36.0", "Frames": 119}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Scroll-Base-640", "Frames": 30, "sub0h264": "2717.6", "libavc": "4511.3", "Ratio": "0.60x"}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Scroll-High-640", "Frames": 30, "sub0h264": "2614.4", "libavc": "4206.4", "Ratio": "0.62x"}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Ball-Base-640", "Frames": 30, "sub0h264": "827.6", "libavc": "1253.9", "Ratio": "0.66x"}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Ball-High-640", "Frames": 30, "sub0h264": "876.7", "libavc": "1261.6", "Ratio": "0.69x"}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Still-Base-640", "Frames": 30, "sub0h264": "4170.1", "libavc": "5230.1", "Ratio": "0.80x"}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Still-High-640", "Frames": 30, "sub0h264": "4044.2", "libavc": "5089.9", "Ratio": "0.79x"}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Flat-Base-640", "Frames": 250, "sub0h264": "2395.1", "libavc": "7116.2", "Ratio": "0.34x"}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "CAVLC-Base-640", "Frames": 50, "sub0h264": "1888.7", "libavc": "4119.3", "Ratio": "0.46x"}
+{"ts": "2026-04-19 08:05:48Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Tapo-C110", "Frames": 119, "sub0h264": "3183.8", "libavc": "7434.2", "Ratio": "0.43x"}
+{"ts": "2026-04-19 08:05:48Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "Tapo C110", "Frames": 119, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-19 08:05:48Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress baseline", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
