@@ -303,6 +303,38 @@ inline void inverseQuantize4x4(int16_t* coeffs, int32_t qp, bool isDc = false) n
     }
 }
 
+/** Inverse quantize a 4x4 block using a custom scaling list.
+ *
+ *  §8.5.12.1: with a scaling list `weightScale[i]` (raster order), the
+ *  per-sample multiplier becomes `normAdjust * weightScale[i]` instead of
+ *  `normAdjust * 16`. Output formula identical to the flat-scaling fast path:
+ *      qmul = normAdjust * weightScale[i] << (qpDiv6 + 2)
+ *      d    = (coeff * qmul + 32) >> 6
+ *
+ *  @param[in,out] coeffs       16 coefficients in raster order
+ *  @param qp                   Quantization parameter [0-51]
+ *  @param weightScaleRaster    16-entry scaling list in raster order
+ */
+inline void inverseQuantize4x4Scaled(int16_t* coeffs, int32_t qp,
+                                      const int16_t* weightScaleRaster) noexcept
+{
+    qp = ((qp % 52) + 52) % 52;
+    int32_t qpDiv6 = qp / 6;
+    int32_t qpMod6 = qp % 6;
+
+    for (uint32_t i = 0U; i < 16U; ++i)
+    {
+        if (coeffs[i] == 0)
+            continue;
+
+        int32_t posClass = cDequantPosClass[i];
+        int32_t normAdjust = cDequantScale[qpMod6][posClass];
+        int32_t qmul = normAdjust * weightScaleRaster[i] << (qpDiv6 + 2);
+        int32_t val = (static_cast<int32_t>(coeffs[i]) * qmul + 32) >> 6;
+        coeffs[i] = static_cast<int16_t>(val);
+    }
+}
+
 // ── 8x8 Default dequantization scaling — ITU-T H.264 §8.5.12.1 ────────
 
 /// Default 8x8 scaling matrix for intra blocks — ITU-T H.264 Table 7-3.
@@ -446,9 +478,17 @@ inline void inverseQuantize8x8(int16_t* coeffs, int32_t qp) noexcept
 
 /** Inverse quantize an 8x8 block using a custom scaling list.
  *
+ *  §8.5.12.1 Eq. 8-329 (8x8 residual):
+ *    r[i][j] = (c * normAdjust8x8 * weightScale) << (qP/6 - 6)           if qP/6 >= 6
+ *    r[i][j] = (c * normAdjust8x8 * weightScale + 2^(5-qP/6)) >> (6-qP/6) if qP/6 < 6
+ *
+ *  Note: the 8x8 shift exponent is -6 (not -4 as for 4x4) because the 8x8
+ *  IDCT has an extra factor of 4 relative to the 4x4 in the normalisation
+ *  pipeline. Matches JM `itrans8x8()` with weight-list applied.
+ *
  *  @param[in,out] coeffs       64 coefficients in raster order
  *  @param qp                   Quantization parameter [0-51]
- *  @param scalingList          64-entry scaling list (raster order)
+ *  @param scalingList          64-entry scaling list in raster order
  */
 inline void inverseQuantize8x8Scaled(int16_t* coeffs, int32_t qp,
                                       const int16_t* scalingList) noexcept
@@ -464,17 +504,12 @@ inline void inverseQuantize8x8Scaled(int16_t* coeffs, int32_t qp,
 
         int32_t posClass = cDequantPosClass8x8[i];
         int32_t scale = cDequantScale8x8[qpMod6][posClass];
-        // §8.5.12.1: with scaling list, scale factor is
-        // LevelScale8x8[m][i][j] = normAdjust8x8[m][i][j] * scalingList[i][j]
         int32_t val = static_cast<int32_t>(coeffs[i]) * scale * scalingList[i];
 
-        // Right-shift by 4 to compensate for scaling list normalization,
-        // then left-shift by qpDiv6. Combined: << (qpDiv6 - 4) when qpDiv6>=4,
-        // else >> (4 - qpDiv6) with rounding.
-        if (qpDiv6 >= 4)
-            val <<= (qpDiv6 - 4);
+        if (qpDiv6 >= 6)
+            val <<= (qpDiv6 - 6);
         else
-            val = (val + (1 << (3 - qpDiv6))) >> (4 - qpDiv6);
+            val = (val + (1 << (5 - qpDiv6))) >> (6 - qpDiv6);
 
         coeffs[i] = static_cast<int16_t>(val);
     }

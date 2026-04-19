@@ -440,9 +440,23 @@ All P-frame slices verified bit-exact against JM reference decoder.
 - Slice header parsed, decode returns error for SliceType::B
 - Requires: L1 reference list, bi-prediction, direct mode
 
-### Scaling list application
-- Lists parsed in SPS/PPS, not applied to dequantization
-- Flat scaling (weight=16) always used
+### Scaling list application — PARTIAL
+- SPS/PPS scaling lists now parsed with a `present_` flag per list.
+- §7.4.2.1.1 fall-back rules (Table 7-2) implemented in
+  `scaling_list.hpp::resolveScalingLists()`: PPS override chains to default-
+  of-type for first-of-type indices (0, 3) and to predecessor otherwise.
+- `inverseQuantize4x4Scaled` / `inverseQuantize8x8Scaled` (§8.5.12.1 eq 8-322
+  and 8-329) wired to every 4x4/8x8 luma + chroma dequant call site via
+  `dequantize4x4(plane)` / `dequantize8x8(isInter)` dispatchers that fall
+  through to the flat-16 fast path when the active list is flat.
+- DC Hadamard paths (`dequantLumaDcValues` / `dequantChromaDcValues`) now
+  take an explicit `weightScale00` factor so I_16x16 luma DC and 2x2 chroma
+  DC also honour the scaling list.
+- On a JVT-default fixture (x264 `--cqm jvt`), frame 0 reaches 84 dB vs JM
+  (was: decoder rejected the stream; before DC dequant fix: 12 dB). Frame
+  drift remains (~26 dB by frame 29) — further refinement needed for the
+  scaled path to be strictly bit-exact across a GOP.
+- All existing fixtures still 99 dB bit-exact: Tapo C110, wstress_*, P_8x8.
 
 ### 8x8 inter transform — FIXED
 - Flag decoded with neighbor context, 8x8 residual + IDCT applied for P-inter

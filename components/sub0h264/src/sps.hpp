@@ -34,16 +34,22 @@ inline constexpr uint8_t cProfileMain     = 77U;
 inline constexpr uint8_t cProfileExtended = 88U;
 inline constexpr uint8_t cProfileHigh     = 100U;
 
-/** Scaling list (High profile). */
+/** Scaling list (High profile).
+ *  `present_` mirrors the spec's `*_scaling_list_present_flag[i]`. When false
+ *  the resolver applies the §7.4.2.1.1.1 Table 7-2 fall-back rule (default
+ *  scaling matrix or chained predecessor) instead of using `data_`.
+ */
 struct ScalingList4x4
 {
     int16_t data_[16]{};
+    bool present_ = false;
     bool useDefault_ = false;
 };
 
 struct ScalingList8x8
 {
     int16_t data_[64]{};
+    bool present_ = false;
     bool useDefault_ = false;
 };
 
@@ -227,11 +233,17 @@ inline Result parseSps(BitReader& br, Sps& sps) noexcept
                 if (present)
                 {
                     if (i < 6U)
+                    {
+                        sps.scalingList4x4_[i].present_ = true;
                         parseScalingList(br, sps.scalingList4x4_[i].data_, 16U,
                                          sps.scalingList4x4_[i].useDefault_);
+                    }
                     else
+                    {
+                        sps.scalingList8x8_[i - 6U].present_ = true;
                         parseScalingList(br, sps.scalingList8x8_[i - 6U].data_, 64U,
                                          sps.scalingList8x8_[i - 6U].useDefault_);
+                    }
                 }
             }
         }

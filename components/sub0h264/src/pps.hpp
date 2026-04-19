@@ -160,11 +160,17 @@ inline Result parsePps(BitReader& br, const Sps* spsArray, Pps& pps) noexcept
                 if (present)
                 {
                     if (i < 6U)
+                    {
+                        pps.scalingList4x4_[i].present_ = true;
                         parseScalingList(br, pps.scalingList4x4_[i].data_, 16U,
                                          pps.scalingList4x4_[i].useDefault_);
+                    }
                     else
+                    {
+                        pps.scalingList8x8_[i - 6U].present_ = true;
                         parseScalingList(br, pps.scalingList8x8_[i - 6U].data_, 64U,
                                          pps.scalingList8x8_[i - 6U].useDefault_);
+                    }
                 }
             }
         }

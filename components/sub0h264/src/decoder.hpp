@@ -31,6 +31,7 @@
 #include "nal.hpp"
 #include "param_sets.hpp"
 #include "pps.hpp"
+#include "scaling_list.hpp"
 #include "slice.hpp"
 #include "sps.hpp"
 #include "tables.hpp"
@@ -205,6 +206,10 @@ private:
     // Per-frame MV context for inter prediction
     std::vector<MbMotionInfo> mbMotion_;  // [mbIdx]
 
+    /// Per-slice resolved scaling lists in raster order (§7.4.2.1.1).
+    /// Refreshed each slice; lists default to flat-16 when no SPS/PPS matrix.
+    ResolvedScalingLists scalingLists_{};
+
     // Per-MB intra 4x4 prediction modes for MPM derivation across MBs.
     // [mbIdx * 16 + blkIdx] — only valid for I_4x4 MBs.
     // For I_16x16 MBs, all entries set to DC(2) per spec §8.3.1.1.
@@ -365,33 +370,46 @@ private:
     }
 
     /** Dequantize four chroma 2x2 DC coefficients after inverse Hadamard.
+     *  §8.5.11.2: uses LevelScale4x4(chromaQP%6, 0, 0) which includes
+     *  `weightScale[0][0]` of the active chroma scaling list when non-flat.
+     *  `weightScale00` passes that factor; flat lists use 16 (the identity).
      *  [CHECKED FM-10]
      */
-    static void dequantChromaDcValues(int16_t dc[4], int32_t chromaQp) noexcept
+    static void dequantChromaDcValues(int16_t dc[4], int32_t chromaQp,
+                                       int32_t weightScale00 = 16) noexcept
     {
         int32_t cqpDiv6 = chromaQp / 6;
         int32_t cqpMod6 = chromaQp % 6;
-        int32_t cScale  = cDequantScale[cqpMod6][0];
+        int32_t normAdjust = cDequantScale[cqpMod6][0]; // normAdjust4x4(chromaQP%6, 0, 0)
+        // Spec §8.5.11.2 Eq 8-326 for chroma DC after 2x2 Hadamard:
+        //   dcC' = (dcC * LevelScale4x4(cQP%6,0,0)) << (cQP/6 - 5)        if cQP/6 >= 5
+        //   dcC' = (dcC * LevelScale4x4(cQP%6,0,0) + 2^(4-cQP/6)) >> (5-cQP/6) otherwise
+        // For flat (weightScale00=16) the libavc path keeps the `/16`
+        // factor folded into the -1 shift exponent. Non-flat multiplies
+        // weightScale00 explicitly and uses the spec's -5 exponent form.
+        const bool flat = (weightScale00 == 16);
         for (uint32_t i = 0U; i < 4U; ++i)
         {
-            if (dc[i] != 0)
+            if (dc[i] == 0) continue;
+            int32_t val;
+            if (flat)
             {
-                int32_t val = dc[i] * cScale;
-#ifdef SUB0H264_SPEC_DEQUANT
-                // §8.5.11.2 Eq 8-326: spec-correct chroma DC scaling.
-                dc[i] = static_cast<int16_t>(cqpDiv6 >= 5
-                    ? val << (cqpDiv6 - 5)
-                    : (val + (1 << (4 - cqpDiv6))) >> (5 - cqpDiv6));
-#else
-                // libavc convention: threshold cqpDiv6>=1, shift (cqpDiv6-1).
-                dc[i] = static_cast<int16_t>(cqpDiv6 >= 1
-                    ? val << (cqpDiv6 - 1)
-                    : (val + 1) >> 1);
-#endif
-#ifdef SUB0H264_DEQUANT_NORM
-                dc[i] = static_cast<int16_t>((dc[i] + 32) >> 6);
-#endif
+                val = dc[i] * normAdjust;
+                val = cqpDiv6 >= 1
+                    ? (val << (cqpDiv6 - 1))
+                    : ((val + 1) >> 1);
             }
+            else
+            {
+                val = dc[i] * normAdjust * weightScale00;
+                val = cqpDiv6 >= 5
+                    ? (val << (cqpDiv6 - 5))
+                    : ((val + (1 << (4 - cqpDiv6))) >> (5 - cqpDiv6));
+            }
+            dc[i] = static_cast<int16_t>(val);
+#ifdef SUB0H264_DEQUANT_NORM
+            dc[i] = static_cast<int16_t>((dc[i] + 32) >> 6);
+#endif
         }
     }
 
@@ -448,31 +466,46 @@ private:
      *    else:         dc[i] = (dc[i] * LevelScale(qp%6,0,0) + 2^(1-qp/6)) >> (2 - qp/6)
      *  NOTE: Uses luma QP (not chroma QP).
      */
-    static void dequantLumaDcValues(int16_t dc[16], int32_t qp) noexcept
+    static void dequantLumaDcValues(int16_t dc[16], int32_t qp,
+                                     int32_t weightScale00 = 16) noexcept
     {
         int32_t qpDiv6 = qp / 6;
         int32_t qpMod6 = qp % 6;
-        int32_t dcScale = cDequantScale[qpMod6][0]; // LevelScale4x4(qP%6, 0, 0)
+        int32_t normAdjust = cDequantScale[qpMod6][0]; // normAdjust4x4(qP%6, 0, 0)
+        // Spec §8.5.10 Eq 8-325 for I_16x16 DC after Hadamard:
+        //   dcY' = (dcY * LevelScale4x4(qP%6,0,0)) << (qP/6 - 6)           if qP/6 >= 6
+        //   dcY' = (dcY * LevelScale4x4(qP%6,0,0) + 2^(5-qP/6)) >> (6-qP/6) if qP/6 < 6
+        // LevelScale4x4(m,0,0) = normAdjust * weightScale00.
+        //
+        // For weightScale00 == 16 (flat) the historical libavc path folds
+        // the factor of 16 into a pre-subtracted shift exponent, producing
+        // the `(qpDiv6 - 2)` / `(2 - qpDiv6)` form. That fast path has no
+        // precision loss. For non-flat, we fall back to the spec equation
+        // directly — multiplying by weightScale00 and shifting by -6 — so
+        // the `/16` rounding of the earlier approach is avoided.
+        const bool flat = (weightScale00 == 16);
         for (uint32_t i = 0U; i < 16U; ++i)
         {
-            if (dc[i] != 0)
+            if (dc[i] == 0) continue;
+            int32_t val;
+            if (flat)
             {
-                int32_t val = dc[i] * dcScale;
-#ifdef SUB0H264_SPEC_DEQUANT
-                // §8.5.10 Eqs 8-321/8-322: spec-correct luma DC scaling.
-                dc[i] = static_cast<int16_t>(qpDiv6 >= 6
-                    ? val << (qpDiv6 - 6)
-                    : (val + (1 << (5 - qpDiv6))) >> (6 - qpDiv6));
-#else
-                // libavc convention: threshold qpDiv6>=2, shift (qpDiv6-2).
-                dc[i] = static_cast<int16_t>(qpDiv6 >= 2
-                    ? val << (qpDiv6 - 2)
-                    : (val + (1 << (1 - qpDiv6))) >> (2 - qpDiv6));
-#endif
-#ifdef SUB0H264_DEQUANT_NORM
-                dc[i] = static_cast<int16_t>((dc[i] + 32) >> 6);
-#endif
+                val = dc[i] * normAdjust;
+                val = qpDiv6 >= 2
+                    ? (val << (qpDiv6 - 2))
+                    : ((val + (1 << (1 - qpDiv6))) >> (2 - qpDiv6));
             }
+            else
+            {
+                val = dc[i] * normAdjust * weightScale00;
+                val = qpDiv6 >= 6
+                    ? (val << (qpDiv6 - 6))
+                    : ((val + (1 << (5 - qpDiv6))) >> (6 - qpDiv6));
+            }
+            dc[i] = static_cast<int16_t>(val);
+#ifdef SUB0H264_DEQUANT_NORM
+            dc[i] = static_cast<int16_t>((dc[i] + 32) >> 6);
+#endif
         }
     }
 
@@ -546,18 +579,11 @@ private:
         const Sps* sps = paramSets_.getSps(pps->spsId_);
         if (!sps) return DecodeStatus::Error;
 
-        // §8.5.12.1: Custom scaling matrices not yet applied to dequant.
-        // If the stream signals non-flat scaling lists (at either SPS or PPS
-        // level), our flat-16 dequant produces silently wrong output.
-        // Reject rather than produce incorrect pixels.
-        if (sps->seqScalingMatrixPresent_ || pps->picScalingMatrixPresent_)
-        {
-            SUB0H264_UNSUPPORTED(
-                "Scaling lists present in SPS/PPS but not applied to "
-                "dequant (§8.5.12.1) — decode would produce silently "
-                "wrong pixels. Not implemented.");
-            return DecodeStatus::Error;
-        }
+        // §7.4.2.1.1 / §8.5.12.1 — resolve scaling lists for this slice.
+        // Cached per-slice; dequant call sites take the scaled path only when
+        // the relevant list is non-flat (most streams remain on the flat-16
+        // fast path). See scaling_list.hpp for fall-back rules.
+        scalingLists_ = resolveScalingLists(*sps, *pps);
 
         // Parse slice header
         SliceHeader sh;
@@ -1075,6 +1101,29 @@ private:
         }
     }
 
+    /** Dequantize a 4x4 block using the slice's resolved scaling list for
+     *  the given plane/intra-vs-inter selector. Falls through to the flat-16
+     *  fast path when the active list is flat (no per-coefficient multiply).
+     *  See §8.5.12.1 / §7.4.2.1.1.
+     */
+    void dequantize4x4(int16_t* coeffs, int32_t qp, Block4x4Plane plane) noexcept
+    {
+        if (isFlat4x4(scalingLists_, plane))
+            inverseQuantize4x4(coeffs, qp);
+        else
+            inverseQuantize4x4Scaled(coeffs, qp, select4x4(scalingLists_, plane));
+    }
+
+    /** Dequantize an 8x8 luma block (Y intra or Y inter). */
+    void dequantize8x8(int16_t* coeffs, int32_t qp, bool isInter) noexcept
+    {
+        const uint32_t idx = isInter ? 1U : 0U;
+        if (scalingLists_.isFlat8x8[idx])
+            inverseQuantize8x8(coeffs, qp);
+        else
+            inverseQuantize8x8Scaled(coeffs, qp, scalingLists_.list8x8[idx]);
+    }
+
     /** Decode an I_16x16 macroblock. */
     bool decodeI16x16Mb(BitReader& br, const Sps& sps, const Pps& pps,
                          uint32_t mbTypeRaw, int32_t& qp,
@@ -1172,8 +1221,9 @@ private:
         // Inverse Hadamard
         inverseHadamard4x4(dcCoeffs);
 
-        // §8.5.12.1: Intra16x16 luma DC dequant after Hadamard. [UNCHECKED §8.5.12.1]
-        dequantLumaDcValues(dcCoeffs, qp);
+        // §8.5.12.1: Intra16x16 luma DC dequant after Hadamard. Scaling list
+        // weightScale[0][0] applied via the dequant helper's second arg.
+        dequantLumaDcValues(dcCoeffs, qp, scalingLists_.list4x4[0][0]);
 
 #if SUB0H264_TRACE
         if (mbX == 0U && mbY == 0U)
@@ -1222,7 +1272,7 @@ private:
             {
                 // Save DC, dequant all, restore DC (avoids conditional per-coeff)
                 int16_t savedDc = coeffs[0];
-                inverseQuantize4x4(coeffs, qp);
+                dequantize4x4(coeffs, qp, Block4x4Plane::LumaIntra);
                 coeffs[0] = savedDc;
             }
 
@@ -1493,7 +1543,7 @@ private:
                 uint32_t mbIdx = mbY * widthInMbs_ + mbX;
                 nnzLuma_[mbIdx * 16U + rasterIdx] = resBlock.totalCoeff;
 
-                inverseQuantize4x4(coeffs, qp);
+                dequantize4x4(coeffs, qp, Block4x4Plane::LumaIntra);
 
                 // Trace: dequantized coefficients
                 trace_.emit({TraceEventType::BlockCoeffs,
@@ -1654,10 +1704,11 @@ private:
             inverseHadamard2x2(dcCb);
             inverseHadamard2x2(dcCr);
 
-            // Dequantize chroma DC — ITU-T H.264 §8.5.12.1.
-            // §8.5.11 + §8.5.12.1: Chroma DC dequant (FM-10: chromaQp used, not luma QP)
-            dequantChromaDcValues(dcCb, chromaQp);
-            dequantChromaDcValues(dcCr, chromaQp);
+            // Dequantize chroma DC — ITU-T H.264 §8.5.12.1. decodeChromaMb is
+            // called from the intra path only → use CbIntra/CrIntra
+            // weightScale[0][0] for the scaled variant.
+            dequantChromaDcValues(dcCb, chromaQp, scalingLists_.list4x4[1][0]);
+            dequantChromaDcValues(dcCr, chromaQp, scalingLists_.list4x4[2][0]);
 
             if (trace_.shouldTrace(mbX, mbY))
                 trace_.onChromaDcDequant(mbX, mbY, dcCb, dcCr);
@@ -1693,7 +1744,7 @@ private:
                 // Save DC (already dequanted by Hadamard path), dequant AC, restore DC.
                 // ITU-T H.264 §8.5.12.1: DC was scaled in the Hadamard dequant above.
                 int16_t savedDcCb = cbCoeffsBuf[blkIdx][0];
-                inverseQuantize4x4(cbCoeffsBuf[blkIdx], chromaQp);
+                dequantize4x4(cbCoeffsBuf[blkIdx], chromaQp, Block4x4Plane::CbIntra);
                 cbCoeffsBuf[blkIdx][0] = savedDcCb;
             }
             for (uint32_t blkIdx = 0U; blkIdx < 4U; ++blkIdx)
@@ -1705,7 +1756,7 @@ private:
                     crCoeffsBuf[blkIdx][i] = acBlock.coeffs[i];
                 nnzCr_[mbIdx * 4U + blkIdx] = acBlock.totalCoeff;
                 int16_t savedDcCr = crCoeffsBuf[blkIdx][0];
-                inverseQuantize4x4(crCoeffsBuf[blkIdx], chromaQp);
+                dequantize4x4(crCoeffsBuf[blkIdx], chromaQp, Block4x4Plane::CrIntra);
                 crCoeffsBuf[blkIdx][0] = savedDcCr;
             }
         }
@@ -2435,7 +2486,7 @@ private:
                 for (uint32_t i = 0U; i < 16U; ++i)
                     coeffs[i] = resBlock.coeffs[i];
                 nnzLuma_[mbIdx * 16U + rasterIdx] = resBlock.totalCoeff;
-                inverseQuantize4x4(coeffs, qp);
+                dequantize4x4(coeffs, qp, Block4x4Plane::LumaInter);
             }
 
             //TODO: consider separate handling for DC vs AC blocks (currently combined in single ResidualBlock4x4 and decodeResidualBlock4x4 calls with nc=-1 for DC and nc from getLumaNc for AC, but could be split into separate paths for clarity and/or optimization)
@@ -2464,9 +2515,10 @@ private:
             inverseHadamard2x2(dcCb);
             inverseHadamard2x2(dcCr);
 
-            // §8.5.11 + §8.5.12.1: Chroma DC dequant (FM-10: chromaQp used, not luma QP)
-            dequantChromaDcValues(dcCb, chromaQp);
-            dequantChromaDcValues(dcCr, chromaQp);
+            // §8.5.11 + §8.5.12.1: Chroma DC dequant (FM-10: chromaQp used, not luma QP).
+            // P-inter path → CbInter/CrInter weightScale[0][0].
+            dequantChromaDcValues(dcCb, chromaQp, scalingLists_.list4x4[4][0]);
+            dequantChromaDcValues(dcCr, chromaQp, scalingLists_.list4x4[5][0]);
         }
 
         // Stash per-block AC coefficients — decode all Cb first, then Cr (§7.3.5)
@@ -2492,7 +2544,7 @@ private:
                 for (uint32_t i = 1U; i < 16U; ++i) cbCoeffsBuf[blkIdx][i] = acBlock.coeffs[i];
                 nnzCb_[mbIdx * 4U + blkIdx] = acBlock.totalCoeff;
                 int16_t savedDc = cbCoeffsBuf[blkIdx][0];
-                inverseQuantize4x4(cbCoeffsBuf[blkIdx], chromaQp);
+                dequantize4x4(cbCoeffsBuf[blkIdx], chromaQp, Block4x4Plane::CbInter);
                 cbCoeffsBuf[blkIdx][0] = savedDc;
             }
             // Then all Cr AC blocks — §7.3.5.3
@@ -2507,7 +2559,7 @@ private:
                 for (uint32_t i = 1U; i < 16U; ++i) crCoeffsBuf[blkIdx][i] = acBlock.coeffs[i];
                 nnzCr_[mbIdx * 4U + blkIdx] = acBlock.totalCoeff;
                 int16_t savedDc = crCoeffsBuf[blkIdx][0];
-                inverseQuantize4x4(crCoeffsBuf[blkIdx], chromaQp);
+                dequantize4x4(crCoeffsBuf[blkIdx], chromaQp, Block4x4Plane::CrInter);
                 crCoeffsBuf[blkIdx][0] = savedDc;
             }
         }
@@ -2803,9 +2855,9 @@ private:
                     // Reorder from 8x8 scan to raster via zigzag — §6.4.8
                     for (uint32_t k = 0U; k < 64U; ++k)
                         coeffs[cZigzag8x8[k]] = scanCoeffs[k];
-                    inverseQuantize8x8(coeffs, qp);
+                    dequantize8x8(coeffs, qp, false);
                 }
-            
+
                 // §6.4.3: 8x8→4x4 raster index mapping. blk8 is in raster scan order:
                 // blk8=0→(0,0), blk8=1→(1,0), blk8=2→(0,1), blk8=3→(1,1)
                 // base4x4 = top-left 4x4 raster index of the 8x8 block
@@ -2916,7 +2968,7 @@ private:
                             coeffs[12],coeffs[13],coeffs[14],coeffs[15]);
                     }
 #endif
-                    inverseQuantize4x4(coeffs, qp);
+                    dequantize4x4(coeffs, qp, Block4x4Plane::LumaIntra);
 #ifdef SUB0H264_TRACE_I4X4_BLOCKS
                     if (blkIdx <= 2U)
                     {
@@ -3073,8 +3125,9 @@ private:
 
         inverseHadamard4x4(dcCoeffs);
 
-        // §8.5.12.1: Intra16x16 luma DC dequant after Hadamard. [UNCHECKED §8.5.12.1]
-        dequantLumaDcValues(dcCoeffs, qp);
+        // §8.5.12.1: Intra16x16 luma DC dequant after Hadamard. Scaling list
+        // weightScale[0][0] applied via the dequant helper's second arg.
+        dequantLumaDcValues(dcCoeffs, qp, scalingLists_.list4x4[0][0]);
 
 #ifdef SUB0H264_P0_I8X8_DIAG
         if (mbX == 15U && mbY == 0U)
@@ -3127,9 +3180,9 @@ private:
             }
 
             // Save DC (already dequantized via Hadamard path), dequant AC, restore DC.
-            // §8.5.12.1: DC was scaled above; inverseQuantize4x4 would re-dequant it.
+            // §8.5.12.1: DC was scaled above; dequantize4x4 would re-dequant it.
             int16_t savedDc = coeffs[0];
-            inverseQuantize4x4(coeffs, qp);
+            dequantize4x4(coeffs, qp, Block4x4Plane::LumaIntra);
             coeffs[0] = savedDc;
             uint8_t* predPtr = lumaPred + blkY * 16U + blkX;
             uint8_t* outPtr = mbLuma + blkY * yStride + blkX;
@@ -3596,7 +3649,7 @@ private:
                     cabacDecodeResidual8x8(cabacEngine_, cabacCtx_.data(), scanCoeffs);
                     for (uint32_t k = 0U; k < 64U; ++k)
                         coeffs[cZigzag8x8[k]] = scanCoeffs[k];
-                    inverseQuantize8x8(coeffs, qp);
+                    dequantize8x8(coeffs, qp, true);
                 }
 
                 // Mark constituent 4x4 blocks NNZ
@@ -3646,7 +3699,7 @@ private:
                     for (uint32_t k = 0U; k < 16U; ++k)
                         coeffs[cZigzag4x4[k]] = scanCoeffs[k];
                     nnzLuma_[mbIdx * 16U + rasterIdx] = (numNonZero > 0U) ? 1U : 0U;
-                    inverseQuantize4x4(coeffs, qp);
+                    dequantize4x4(coeffs, qp, Block4x4Plane::LumaInter);
                 }
                 else
                 {
@@ -3680,8 +3733,9 @@ private:
             inverseHadamard2x2(dcCb);
             inverseHadamard2x2(dcCr);
 
-            dequantChromaDcValues(dcCb, chromaQp);
-            dequantChromaDcValues(dcCr, chromaQp);
+            // CABAC P-inter chroma DC → CbInter/CrInter weightScale[0][0].
+            dequantChromaDcValues(dcCb, chromaQp, scalingLists_.list4x4[4][0]);
+            dequantChromaDcValues(dcCr, chromaQp, scalingLists_.list4x4[5][0]);
         }
 
         // §7.3.5.3: Chroma AC — ALL Cb first, then ALL Cr. Same order fix as intra.
@@ -3728,10 +3782,10 @@ private:
                     crCoeffs[k] = crAcPInter[blkIdx][k];
                 }
                 int16_t savedDcCb = cbCoeffs[0];
-                inverseQuantize4x4(cbCoeffs, chromaQp);
+                dequantize4x4(cbCoeffs, chromaQp, Block4x4Plane::CbInter);
                 cbCoeffs[0] = savedDcCb;
                 int16_t savedDcCr = crCoeffs[0];
-                inverseQuantize4x4(crCoeffs, chromaQp);
+                dequantize4x4(crCoeffs, chromaQp, Block4x4Plane::CrInter);
                 crCoeffs[0] = savedDcCr;
             }
 
@@ -3772,8 +3826,9 @@ private:
             inverseHadamard2x2(dcCb);
             inverseHadamard2x2(dcCr);
 
-            dequantChromaDcValues(dcCb, chromaQp);
-            dequantChromaDcValues(dcCr, chromaQp);
+            // Intra chroma DC → CbIntra/CrIntra weightScale[0][0].
+            dequantChromaDcValues(dcCb, chromaQp, scalingLists_.list4x4[1][0]);
+            dequantChromaDcValues(dcCr, chromaQp, scalingLists_.list4x4[2][0]);
         }
 
         // §7.3.5.3: Chroma AC decode — ALL Cb blocks first, then ALL Cr blocks.
@@ -3823,10 +3878,10 @@ private:
                     crCoeffs[k] = crAcCoeffs[blkIdx][k];
                 }
                 int16_t savedDcCb = cbCoeffs[0];
-                inverseQuantize4x4(cbCoeffs, chromaQp);
+                dequantize4x4(cbCoeffs, chromaQp, Block4x4Plane::CbIntra);
                 cbCoeffs[0] = savedDcCb;
                 int16_t savedDcCr = crCoeffs[0];
-                inverseQuantize4x4(crCoeffs, chromaQp);
+                dequantize4x4(crCoeffs, chromaQp, Block4x4Plane::CrIntra);
                 crCoeffs[0] = savedDcCr;
             }
 
