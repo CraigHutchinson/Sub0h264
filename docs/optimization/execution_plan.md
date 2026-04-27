@@ -25,9 +25,11 @@ maintained.
 
 ## KPI gates (every phase commit must satisfy)
 
-These are **hard gates**. A commit that fails any of them is reverted; the
-opportunity brief is updated to explain why and what alternative is being
-tried.
+These are **hard gates** for landing on `main`. A commit that fails any of
+them does not land — but it is **not lost**. We park the attempt to a
+branch (see [Park-to-branch policy](#park-to-branch-policy-not-revert)) so
+we can revisit it after the first pass through the plan. Some optimisations
+that look slower in isolation unlock bigger wins later.
 
 | Gate | Threshold | Source |
 |---|---|---|
@@ -44,30 +46,51 @@ sparkline trend that smooths out single-run noise.
 
 ## Per-phase workflow
 
+There are two commit cadences inside a phase:
+
+- **Iteration commits** (within a phase, while implementing): desktop full
+  coverage every commit; ESP single-run gating only on "major" commits
+  (the ones that actually change perf-relevant code, not tooling tweaks
+  or doc updates). This keeps iteration fast while still catching
+  ESP regressions early.
+- **Phase-completion commit**: full ESP coverage with 3-run variance
+  before declaring the phase done. This is the authoritative result that
+  goes into `performance_log.md`.
+
 Pseudo-code for one phase (one opportunity):
 
 ```
 1. Read the brief: docs/optimization/opportunities/<L*>.md
-2. Capture baseline:
-   - python scripts/run_all_suites.py --esp-port COM5  (full ESP run)
+2. Capture baseline (only at phase start):
+   - python scripts/run_all_suites.py --esp-port COM5    (3-run variance)
    - Record commit + timestamp; this is the "before" row in history
-3. Implement per the brief
-4. Local verification:
-   - cmake --build --preset default
-   - ctest --preset default                  # G-DESKTOP
-   - python scripts/run_jm.py psnr <fixtures> # G-PSNR family
-5. ESP verification:
-   - python scripts/run_all_suites.py --esp-port COM5
-   - Inspect the Δ table: G-PERF-NORM and G-PERF-CRUX must pass
-   - If borderline: run twice more (variance check)
-6. Commit:
-   - Subject: "perf(L<x.y>): <one-line summary>  +<Y>.<Z> fps Ball-High"
-   - Body cites: brief ID, before/after KPIs, variance window
-7. Push; update opportunity brief status to `implemented` with measured Δ
+
+3. ITERATION LOOP (one or more commits within the phase):
+   a. Implement per the brief (one logical change per commit)
+   b. Desktop verification (every commit):
+      - cmake --build --preset default
+      - ctest --preset default                            # G-DESKTOP
+      - python scripts/run_all_suites.py --quick          # PSNR + bench
+   c. ESP verification on "major" commits only:
+      - python scripts/run_all_suites.py --esp-port COM5  (single run)
+      - Inspect Δ table: any hard-gate fail → park-to-branch
+      (Tooling tweaks, comments, docs commits don't trigger ESP runs.)
+   d. Commit:
+      - Subject: "perf(L<x.y>): <summary>  +<Y>.<Z> fps Ball-High (desktop)"
+      - Body cites brief ID + before/after KPIs
+
+4. PHASE COMPLETION (once the brief's expected Δ is met):
+   - python scripts/run_all_suites.py --esp-port COM5 --esp-runs 3
+   - Median Ball-High fps must satisfy G-PERF-CRUX with stddev < 0.5 fps
+   - If variance high (> 0.5 fps): investigate (thermal, USB power) and
+     re-run; do not commit until the variance is bounded
+   - Append a row to docs/performance_log.md
+   - Mark the brief status: implemented (with measured Δ + commit links)
+   - Push to main
 ```
 
-If any gate fails: revert the commit, update the brief with what happened,
-move to the next opportunity. We don't accumulate broken state.
+If a gate fails inside the iteration loop: see
+[Park-to-branch policy](#park-to-branch-policy-not-revert) below.
 
 ## Execution ordering
 
@@ -95,35 +118,85 @@ opportunity ID + expected Ball-High Δ from the master plan:
 diverges materially, re-rank using the measured numbers and update this
 table.
 
+**After the first full pass:** Phase 2.5 review (see
+[Park-to-branch policy](#park-to-branch-policy-not-revert)) re-evaluates
+parked attempts against the new main baseline. Each parked attempt
+either gets revived + merged or formally retired. The reordering is
+holistic — we look at the full set of parked + landed attempts and may
+re-pair optimisations that didn't compound the way we expected.
+
 ## ESP32 cadence
 
 ESP32 measurement requires manual flash + ~6 minutes of serial capture.
-We do NOT bench ESP32 on every commit. Cadence:
+Cadence:
 
-- **Every commit (desktop):** `python scripts/run_all_suites.py --quick`
-  — runs ctest, bench, shootout, and quick PSNR. Catches PSNR regressions
-  + desktop perf shifts. Append to `docs/run_all_history.jsonl`.
-- **End of every phase:** full ESP32 run via
-  `python scripts/run_all_suites.py --esp-port COM5`. The result is the
-  authoritative phase-result number (desktop is just a leading indicator).
-- **3-run variance check:** before declaring a phase complete, run ESP
-  three times. If Ball-High variance > 0.5 fps, investigate (thermal,
-  background tasks, USB power) before claiming a Δ.
+- **Every commit (desktop, full coverage):**
+  `python scripts/run_all_suites.py --quick` — runs ctest, bench, shootout,
+  and quick PSNR. PSNR regressions + desktop perf shifts caught here.
+  Appends to `docs/run_all_history.jsonl`.
+- **Major commits (ESP gating, single run):** any commit that touches
+  perf-relevant code (decoder, MC, deblock, transform, intra/inter
+  prediction). One ESP shootout to make sure nothing crashes or tanks.
+  Tooling, doc, and test-only commits skip this.
+- **Phase boundaries (full coverage, 3-run variance):**
+  `python scripts/run_all_suites.py --esp-port COM5 --esp-runs 3`. Median
+  + stddev across runs. Variance < 0.5 fps required before declaring the
+  phase complete. This is the authoritative phase-result number that
+  lands in `performance_log.md`.
 
-## Rollback policy
+## Park-to-branch policy (not revert)
 
-A commit gets reverted if any of these is true after measurement:
+When a hard gate fails on `main`, we **do not revert and discard**. The
+attempt is preserved on a branch so we can revisit it later — some
+optimisations that look slower in isolation enable bigger wins downstream
+once paired with other changes.
 
-- **G-PSNR / G-PSNR-W / G-PSNR-P** drops below 99.0 dB on any tracked
-  fixture (this is non-negotiable; bit-exact regressions are bugs even
-  if PSNR is "high enough" for visual quality)
-- **G-DESKTOP** ctest fails
-- **G-PERF-CRUX** Ball-High *regresses* by ≥ 0.5 fps with 3-run confirmation
-- **G-PERF-NORM** any non-crux stream regresses by > 0.5 fps with 3-run
-  confirmation
+**Procedure:**
 
-If a regression is borderline (e.g. a 0.3 fps drop on Scroll), keep the
-commit, file a follow-up note in the brief's "Risks" section.
+1. Push the failing attempt to a parking branch:
+   `git push origin HEAD:perf/L<x.y>-attempt-<N>`
+   where `<N>` increments per attempt at the same opportunity (so
+   `perf/L3.1-attempt-1`, `perf/L3.1-attempt-2`, …).
+2. Update the brief's status to `parked` and add a section:
+   ```
+   ## Parked attempts
+   - Attempt 1 (perf/L3.1-attempt-1): -0.4 fps Ball-High, +1.2 fps Scroll.
+     Reason for parking: G-PERF-CRUX failed. Hypothesis for revisit: pair
+     with L4.5 (getSample elimination) which removes the bounds-check
+     overhead this attempt introduced.
+   ```
+3. Reset `main` to the pre-attempt commit:
+   `git reset --hard HEAD~N` (where N = attempt commit count)
+   then `git push --force-with-lease origin main` (only if the attempt
+   was already pushed; otherwise just keep main clean).
+4. Move to the next opportunity in the queue.
+
+**Holistic review after the first pass:** once we've worked through every
+opportunity in the queue (whether implemented or parked), schedule a
+**Phase 2.5 review**:
+
+- List every parked branch + its measured Δ at the time it was parked
+- Re-attempt the parked changes against the new (post-first-pass) main
+  baseline — measured Δ may now be different (better or worse) because
+  surrounding code has changed
+- Combine pairs of parked optimisations to test compounding hypotheses
+  the original attempts couldn't validate
+- Promote any that now pass the gates; permanently retire any that
+  remain regressions even in the new context
+
+**Branch hygiene:** parked branches are kept indefinitely until the
+Phase 2.5 review concludes. After review, we either merge them or close
+them with a "retired" tag in the brief.
+
+### Rollback (the rare case)
+
+A direct revert (no park branch) is reserved for **PSNR regressions** —
+bit-exact correctness is non-negotiable, and a PSNR-failing change has no
+plausible "compounding hypothesis" that justifies preservation. If
+G-PSNR / G-PSNR-W / G-PSNR-P fails: revert immediately, file the bug,
+investigate the root cause before re-attempting.
+
+For all other gate failures: park, don't revert.
 
 ## Tooling gaps to fix BEFORE starting execution
 
@@ -154,6 +227,50 @@ These are listed in priority order; items 1–3 are blocking, 4–5 are
 quality-of-life. They sit on the critical path of "the first commit of
 performance work" — fix them before opportunity 1 (L3.1) starts.
 
+## Phase 2.5 — Holistic review (after first pass)
+
+Once the queue has been worked through (every opportunity either
+implemented or parked), we pause and do a holistic review **before**
+deciding whether to declare Phase 2 complete or start a second pass.
+
+**Inputs to the review:**
+
+- Final ESP32 numbers per stream (from the latest `--esp-runs 3`)
+- List of landed optimisations + their measured Δ
+- List of parked attempts + their Δ at park-time + revisit hypothesis
+- `docs/run_all_history.jsonl` trajectory (per-stream sparkline)
+
+**Questions the review must answer:**
+
+1. **Has the 25 fps gate been hit?** If yes, are we above with margin?
+   If no, by how much, and which streams?
+2. **Did the order match expectations?** For each landed phase, is
+   measured Δ within ±50% of the brief's estimate? If a phase landed
+   way under estimate, why? If way over, can we generalise?
+3. **Re-evaluate parked attempts.** For each parked branch, re-run it
+   against the current main:
+   - Did the measured Δ change vs park-time? (Other landed changes may
+     have removed the original problem.)
+   - Does pairing with another change unlock the win? (Test the
+     hypothesis written in the brief at park-time.)
+4. **Are any new opportunities visible?** Profile the post-Phase-2 build
+   on Ball-High; the time-percentage breakdown will look different from
+   the pre-Phase-2 baseline. New hot spots may justify new briefs.
+5. **PIE/SIMD decision.** If still under 25 fps, [L5.3 PIE/SIMD
+   catalogue](opportunities/L5.3_pie_simd_catalog.md) becomes the next
+   phase. If at or above 25 fps, PIE is deferred and Phase 2 is
+   declared complete.
+
+**Outputs of the review:**
+
+- Updated execution plan (this doc) with measured-vs-estimated Δ table
+- Promoted / retired status on each parked brief
+- A new ordered queue if a second pass is justified
+- Performance trajectory chart (Ball-High fps vs date) annotated with
+  each phase's commit
+- Decision: **Phase 2 complete**, or **start Phase 2 second pass**, or
+  **start Phase 3 (PIE)**
+
 ## Reporting cadence
 
 - **Per-commit (CI-style)**: append to `docs/run_all_history.jsonl`,
@@ -174,8 +291,9 @@ This is a planning document. To start execution:
    the queue, edit the table.
 2. **Approve the gate thresholds** (specifically: 99.0 dB PSNR floor and
    0.5 fps regression cap on non-crux streams).
-3. **Approve the rollback policy** — single-flag-fail = revert; one
-   exception is documented (borderline non-crux drops).
+3. **Approve the park-to-branch policy** — perf-gate failures are pushed
+   to `perf/L<x.y>-attempt-<N>` for later review; only PSNR failures
+   trigger a direct revert.
 
 Once approved, execution begins by:
 1. Implementing the 5 tooling fixes (small commit each, with their own
@@ -184,4 +302,5 @@ Once approved, execution begins by:
 
 A separate doc should be added per phase as it lands — the brief itself
 gets updated with the measured Δ + commit link, and `performance_log.md`
-gets the row.
+gets the row. Parked attempts also update the brief's "Parked attempts"
+section.
