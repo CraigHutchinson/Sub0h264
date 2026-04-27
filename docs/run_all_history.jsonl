@@ -199,3 +199,18 @@
 {"ts": "2026-04-19 08:05:48Z", "stage": "Desktop shootout (sub0h264 vs libavc)", "ok": true, "Stream": "Tapo-C110", "Frames": 119, "sub0h264": "3183.8", "libavc": "7434.2", "Ratio": "0.43x"}
 {"ts": "2026-04-19 08:05:48Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "Tapo C110", "Frames": 119, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
 {"ts": "2026-04-19 08:05:48Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress baseline", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-27 09:38:44Z", "stage": "Unit tests (ctest --preset default)", "ok": true, "Test": "Sub0h264_Tests", "Result": "Passed", "Time (s)": "14.59"}
+{"ts": "2026-04-27 09:38:44Z", "stage": "Unit tests (ctest --preset default)", "ok": true, "Test": "Sub0h264_Bench_Tests", "Result": "Passed", "Time (s)": "8.49"}
+{"ts": "2026-04-27 09:38:44Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Baseline CAVLC (short)", "FPS": "508.5", "Median (ms)": "98.3", "Frames": 50}
+{"ts": "2026-04-27 09:38:44Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Flat black", "FPS": "2820.0", "Median (ms)": "88.7", "Frames": 250}
+{"ts": "2026-04-27 09:38:44Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "CAVLC 320x240 I+P", "FPS": "710.8", "Median (ms)": "42.2", "Frames": 30}
+{"ts": "2026-04-27 09:38:44Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "CABAC 320x240 I+P", "FPS": "2938.9", "Median (ms)": "10.2", "Frames": 30}
+{"ts": "2026-04-27 09:38:44Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Scroll Baseline 640x480", "FPS": "396.8", "Median (ms)": "75.6", "Frames": 30}
+{"ts": "2026-04-27 09:38:44Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Scroll High 640x480", "FPS": "380.2", "Median (ms)": "78.9", "Frames": 30}
+{"ts": "2026-04-27 09:38:44Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Ball Baseline 640x480", "FPS": "42.7", "Median (ms)": "701.9", "Frames": 30}
+{"ts": "2026-04-27 09:38:44Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Ball High 640x480", "FPS": "41.7", "Median (ms)": "719.1", "Frames": 30}
+{"ts": "2026-04-27 09:38:44Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Still Baseline 640x480", "FPS": "922.6", "Median (ms)": "32.5", "Frames": 30}
+{"ts": "2026-04-27 09:38:44Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Still High 640x480", "FPS": "858.2", "Median (ms)": "35.0", "Frames": 30}
+{"ts": "2026-04-27 09:38:44Z", "stage": "Bench suite (ctest --preset bench)", "ok": true, "Bench": "Tapo C110 stream2", "FPS": "3019.1", "Median (ms)": "39.4", "Frames": 119}
+{"ts": "2026-04-27 09:38:44Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "Tapo C110", "Frames": 119, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}
+{"ts": "2026-04-27 09:38:44Z", "stage": "PSNR validation vs ffmpeg", "ok": true, "Fixture": "wstress baseline", "Frames": 5, "Avg PSNR (dB)": "99.00", "Min PSNR (dB)": "99.00", "Status": "\u2713 bit-exact"}

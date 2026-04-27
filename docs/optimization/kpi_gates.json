@@ -1,0 +1,99 @@
+{
+  "_doc": "KPI gates for performance work. Consumed by scripts/run_all_suites.py to render a pass/fail panel at the top of docs/run_all_report.md. See docs/optimization/execution_plan.md for the policy these gates enforce.",
+  "_format": "Each gate has: id, label, stage (name), key (row key value), metric (column), op (gte|lte|gt|lt), threshold, severity (hard|soft).",
+  "_severity": "hard = commit must not land if it fails this gate (perf gates: park-to-branch; PSNR gates: revert). soft = warning only.",
+
+  "gates": [
+    {
+      "id": "G-PSNR",
+      "label": "Tapo C110 bit-exact",
+      "stage": "PSNR validation vs ffmpeg",
+      "key": "Tapo C110",
+      "metric": "Min PSNR (dB)",
+      "op": "gte",
+      "threshold": 99.0,
+      "severity": "hard"
+    },
+    {
+      "id": "G-PSNR-W",
+      "label": "wstress baseline bit-exact",
+      "stage": "PSNR validation vs ffmpeg",
+      "key": "wstress baseline",
+      "metric": "Min PSNR (dB)",
+      "op": "gte",
+      "threshold": 99.0,
+      "severity": "hard"
+    },
+    {
+      "id": "G-PERF-CRUX",
+      "label": "ESP32 Ball-High ≥ 12.0 fps (no regression vs baseline)",
+      "stage": "ESP32-P4 shootout (on-device)",
+      "key": "Ball-High-640",
+      "metric": "sub0h264",
+      "op": "gte",
+      "threshold": 12.0,
+      "severity": "hard"
+    },
+    {
+      "id": "G-PERF-NORM-TAPO",
+      "label": "ESP32 Tapo ≥ 30.0 fps (no regression)",
+      "stage": "ESP32-P4 shootout (on-device)",
+      "key": "Tapo-C110",
+      "metric": "sub0h264",
+      "op": "gte",
+      "threshold": 30.0,
+      "severity": "hard"
+    },
+    {
+      "id": "G-PERF-NORM-SCROLL-H",
+      "label": "ESP32 Scroll-High ≥ 24.0 fps",
+      "stage": "ESP32-P4 shootout (on-device)",
+      "key": "Scroll-High-640",
+      "metric": "sub0h264",
+      "op": "gte",
+      "threshold": 24.0,
+      "severity": "hard"
+    },
+    {
+      "id": "G-PERF-NORM-STILL-H",
+      "label": "ESP32 Still-High ≥ 32.0 fps",
+      "stage": "ESP32-P4 shootout (on-device)",
+      "key": "Still-High-640",
+      "metric": "sub0h264",
+      "op": "gte",
+      "threshold": 32.0,
+      "severity": "hard"
+    },
+    {
+      "id": "G-LIBAVC-LEAD",
+      "label": "ESP32 sub0/libavc ratio ≥ 1.0× on Ball-High",
+      "stage": "ESP32-P4 shootout (on-device)",
+      "key": "Ball-High-640",
+      "metric": "Ratio",
+      "op": "gte",
+      "threshold": 1.0,
+      "severity": "hard"
+    },
+
+    {
+      "id": "G-PERF-TARGET-BALL",
+      "label": "ESP32 Ball-High ≥ 25.0 fps (Phase 2 target)",
+      "stage": "ESP32-P4 shootout (on-device)",
+      "key": "Ball-High-640",
+      "metric": "sub0h264",
+      "op": "gte",
+      "threshold": 25.0,
+      "severity": "soft"
+    },
+    {
+      "id": "G-PERF-TARGET-BALL-BASE",
+      "label": "ESP32 Ball-Base ≥ 25.0 fps (Phase 2 target)",
+      "stage": "ESP32-P4 shootout (on-device)",
+      "key": "Ball-Base-640",
+      "metric": "sub0h264",
+      "op": "gte",
+      "threshold": 25.0,
+      "severity": "soft"
+    }
+  ]
+}

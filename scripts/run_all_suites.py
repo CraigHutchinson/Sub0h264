@@ -287,28 +287,143 @@ def stage_esp(port: str, timeout: int) -> StageResult:
                            summary=f"flash failed on {port}: exit {flash.returncode}",
                            rows=[], detail=flash.stderr[-2000:])
 
-    # Capture results via the existing helper.
-    cap = cwd / "cmake" / "esp32p4_serial_capture.py"
+    # Capture results via the existing helper. The script lives at the repo
+    # root (cmake/esp32p4_serial_capture.py), not under test_apps/esp_shootout.
+    cap = ROOT / "cmake" / "esp32p4_serial_capture.py"
+    by_stream: dict[str, dict] = {}
     if cap.exists():
         log = cwd / "shootout.log"
         run(["python", str(cap), "--port", port, "--test-timeout", str(timeout),
              "--log-file", str(log), "--success-pattern", "Shootout complete"],
             cwd=cwd, timeout=timeout + 60)
         text = log.read_text(errors="replace") if log.exists() else ""
+        # Pivot SHOOTOUT_JSON {stream, decoder, fps, ...} into one row per
+        # stream with sub0h264/libavc/Ratio columns. Mirrors the desktop
+        # shootout format so history-tracking keys both rows correctly.
         for m in re.finditer(r"SHOOTOUT_JSON\s*(\{.*?\})", text):
             try:
                 obj = json.loads(m.group(1))
-                rows.append({
-                    "Stream": obj.get("stream", "?"),
-                    "Decoder": obj.get("decoder", "?"),
-                    "FPS": f"{obj.get('fps', 0):.2f}",
-                    "Frames": obj.get("frames", "?"),
-                })
+                stream = obj.get("stream", "?")
+                decoder = obj.get("decoder", "?")
+                by_stream.setdefault(stream, {"Stream": stream,
+                                               "Frames": obj.get("frames", "?")})
+                by_stream[stream][decoder] = f"{obj.get('fps', 0):.2f}"
             except Exception:
                 pass
+    rows = list(by_stream.values())
+    for r in rows:
+        s = r.get("sub0h264")
+        l = r.get("libavc")
+        if s and l:
+            try:
+                r["Ratio"] = f"{float(s) / float(l):.2f}x"
+            except Exception:
+                r["Ratio"] = ""
+        else:
+            r["Ratio"] = ""
+    headers = ["Stream", "Frames", "sub0h264", "libavc", "Ratio"]
     return StageResult("ESP32-P4 shootout (on-device)",
-                       ok=bool(rows), summary=f"{len(rows)} results",
-                       rows=rows, headers=["Stream", "Decoder", "FPS", "Frames"])
+                       ok=bool(rows), summary=f"{len(rows)} streams",
+                       rows=rows, headers=headers)
+
+
+def stage_esp_multi(port: str, timeout: int, runs: int,
+                    skip_flash: bool = False) -> StageResult:
+    """Run the ESP shootout N times back-to-back and report median + stddev
+    per stream. For runs == 1, behaves identically to stage_esp. Used at
+    phase boundaries to validate fps deltas against measurement variance —
+    see docs/optimization/execution_plan.md."""
+    if runs <= 1:
+        return stage_esp(port, timeout)
+
+    # First run: build + flash + capture. Subsequent runs: capture only
+    # (the device is still flashed) when skip_flash is True; otherwise
+    # re-flash each time for full repeatability.
+    samples: list[StageResult] = []
+    for i in range(runs):
+        if skip_flash and i > 0:
+            r = _stage_esp_capture_only(port, timeout)
+        else:
+            r = stage_esp(port, timeout)
+        samples.append(r)
+        if not r.ok:
+            return r  # bail on the first failed run
+
+    # Pivot: per-stream collect [sub0h264, libavc] fps lists across runs.
+    per_stream: dict[str, dict] = {}
+    for s in samples:
+        for row in s.rows:
+            stream = row.get("Stream", "?")
+            entry = per_stream.setdefault(stream,
+                {"Stream": stream, "Frames": row.get("Frames", "?"),
+                 "_sub0": [], "_libavc": []})
+            v_sub = _coerce(row.get("sub0h264"))
+            v_lav = _coerce(row.get("libavc"))
+            if v_sub is not None: entry["_sub0"].append(v_sub)
+            if v_lav is not None: entry["_libavc"].append(v_lav)
+
+    rows: list[dict] = []
+    import statistics as _stat
+    for stream, e in per_stream.items():
+        sub_med = _stat.median(e["_sub0"]) if e["_sub0"] else None
+        sub_sd  = _stat.stdev(e["_sub0"])  if len(e["_sub0"]) > 1 else 0.0
+        lav_med = _stat.median(e["_libavc"]) if e["_libavc"] else None
+        ratio = (sub_med / lav_med) if (sub_med and lav_med) else None
+        rows.append({
+            "Stream": stream,
+            "Frames": e["Frames"],
+            "sub0h264": "—" if sub_med is None else f"{sub_med:.2f}",
+            "libavc":   "—" if lav_med is None else f"{lav_med:.2f}",
+            "Ratio":    "—" if ratio is None else f"{ratio:.2f}x",
+            "σ sub0":   f"{sub_sd:.2f}",
+            "Runs":     str(runs),
+        })
+    return StageResult("ESP32-P4 shootout (on-device)",
+                       ok=True, summary=f"{len(rows)} streams, {runs}-run median",
+                       rows=rows,
+                       headers=["Stream", "Frames", "sub0h264", "libavc", "Ratio", "σ sub0", "Runs"])
+
+
+def _stage_esp_capture_only(port: str, timeout: int) -> StageResult:
+    """Capture-only path for stage_esp_multi when --esp-skip-flash. Resets
+    the device via DTR/RTS (which the capture script does), waits for boot,
+    streams output, parses results."""
+    cwd = ROOT / "test_apps" / "esp_shootout"
+    cap = ROOT / "cmake" / "esp32p4_serial_capture.py"
+    if not cap.exists():
+        return StageResult("ESP32-P4 shootout", ok=False,
+                           summary="serial-capture helper missing", rows=[])
+    log = cwd / "shootout.log"
+    run(["python", str(cap), "--port", port, "--test-timeout", str(timeout),
+         "--log-file", str(log), "--success-pattern", "Shootout complete"],
+        cwd=cwd, timeout=timeout + 60)
+    text = log.read_text(errors="replace") if log.exists() else ""
+    by_stream: dict[str, dict] = {}
+    for m in re.finditer(r"SHOOTOUT_JSON\s*(\{.*?\})", text):
+        try:
+            obj = json.loads(m.group(1))
+            stream = obj.get("stream", "?")
+            decoder = obj.get("decoder", "?")
+            by_stream.setdefault(stream, {"Stream": stream,
+                                           "Frames": obj.get("frames", "?")})
+            by_stream[stream][decoder] = f"{obj.get('fps', 0):.2f}"
+        except Exception:
+            pass
+    rows = list(by_stream.values())
+    for r in rows:
+        s = r.get("sub0h264")
+        l = r.get("libavc")
+        if s and l:
+            try:
+                r["Ratio"] = f"{float(s) / float(l):.2f}x"
+            except Exception:
+                r["Ratio"] = ""
+        else:
+            r["Ratio"] = ""
+    return StageResult("ESP32-P4 shootout (on-device)",
+                       ok=bool(rows), summary=f"{len(rows)} streams (capture only)",
+                       rows=rows,
+                       headers=["Stream", "Frames", "sub0h264", "libavc", "Ratio"])
 
 
 # ── History / delta / trend ─────────────────────────────────────────────────
@@ -319,20 +434,24 @@ TRACKED_METRICS: dict[str, tuple[str, list[str]]] = {
     "Bench suite (ctest --preset bench)":      ("Bench",   ["FPS", "Median (ms)"]),
     "Desktop shootout (sub0h264 vs libavc)":   ("Stream",  ["sub0h264", "libavc", "Ratio"]),
     "PSNR validation vs ffmpeg":               ("Fixture", ["Avg PSNR (dB)", "Min PSNR (dB)"]),
-    "ESP32-P4 shootout (on-device)":           ("Stream",  ["FPS"]),
+    "ESP32-P4 shootout (on-device)":           ("Stream",  ["sub0h264", "libavc", "Ratio"]),
 }
 
-# Headline KPIs shown in the top "Performance Summary" panel — one per stage.
+# Headline KPIs shown in the top "Performance Summary" panel.
+# ESP32 Ball-High is the PRIMARY perf KPI — surface it first.
 # Row-key values must match the actual key column emitted by the stage runner.
 HEADLINE_KPIS: list[tuple[str, str, str, str]] = [
     # (stage name, row key value, metric column, label)
-    ("Bench suite (ctest --preset bench)",   "Tapo C110 stream2",      "FPS",          "Tapo bench fps"),
-    ("Bench suite (ctest --preset bench)",   "Ball High 640x480",      "FPS",          "Ball-High fps (P0 crux)"),
+    ("ESP32-P4 shootout (on-device)",        "Ball-High-640",          "sub0h264",     "ESP32 Ball-High fps (PRIMARY KPI, target 25.0)"),
+    ("ESP32-P4 shootout (on-device)",        "Ball-Base-640",          "sub0h264",     "ESP32 Ball-Base fps (target 25.0)"),
+    ("ESP32-P4 shootout (on-device)",        "Tapo-C110",              "sub0h264",     "ESP32 Tapo fps"),
+    ("ESP32-P4 shootout (on-device)",        "Scroll-High-640",        "sub0h264",     "ESP32 Scroll-High fps"),
+    ("ESP32-P4 shootout (on-device)",        "Ball-High-640",          "Ratio",        "ESP32 sub0/libavc Ball-High ratio"),
+    ("Bench suite (ctest --preset bench)",   "Tapo C110 stream2",      "FPS",          "Desktop Tapo bench fps"),
+    ("Bench suite (ctest --preset bench)",   "Ball High 640x480",      "FPS",          "Desktop Ball-High fps"),
     ("Desktop shootout (sub0h264 vs libavc)","Tapo-C110",              "Ratio",        "Desktop sub0/libavc Tapo ratio"),
-    ("Desktop shootout (sub0h264 vs libavc)","Ball-High-640",          "Ratio",        "Desktop sub0/libavc Ball-High ratio"),
     ("PSNR validation vs ffmpeg",            "Tapo C110",              "Min PSNR (dB)","Tapo min PSNR"),
     ("PSNR validation vs ffmpeg",            "wstress baseline",       "Min PSNR (dB)","wstress baseline min PSNR"),
-    ("ESP32-P4 shootout (on-device)",        "Tapo-C110",              "FPS",          "ESP32 Tapo fps"),
 ]
 
 TREND_WINDOW = 8  # how many prior data points the sparkline uses
@@ -479,12 +598,87 @@ def _headline_summary(stages: list[StageResult],
     return md_table(rows, headers=list(rows[0].keys()))
 
 
+def _evaluate_gates(stages: list[StageResult]) -> list[dict]:
+    """Evaluate KPI gates against current stage results. Returns list of
+    {gate id, label, current value, threshold, op, severity, status}.
+    Loads gates from docs/optimization/kpi_gates.json. See execution_plan.md
+    for the policy these gates enforce."""
+    gates_file = ROOT / "docs/optimization/kpi_gates.json"
+    if not gates_file.exists():
+        return []
+    try:
+        spec = json.loads(gates_file.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    by_stage = {s.name: s for s in stages}
+    out: list[dict] = []
+    for g in spec.get("gates", []):
+        s = by_stage.get(g["stage"])
+        if s is None:
+            out.append({**g, "current": None, "status": "skip",
+                        "_reason": f"stage '{g['stage']}' not run"})
+            continue
+        key_col = TRACKED_METRICS.get(g["stage"], (None, []))[0]
+        if key_col is None:
+            continue
+        current = None
+        for r in s.rows:
+            if str(r.get(key_col, "")) == g["key"]:
+                current = _coerce(r.get(g["metric"]))
+                break
+        if current is None:
+            out.append({**g, "current": None, "status": "skip",
+                        "_reason": f"row '{g['key']}' / metric '{g['metric']}' not present"})
+            continue
+        op, thr = g["op"], float(g["threshold"])
+        passed = (op == "gte" and current >= thr) \
+              or (op == "gt"  and current >  thr) \
+              or (op == "lte" and current <= thr) \
+              or (op == "lt"  and current <  thr)
+        out.append({**g, "current": current, "status": "pass" if passed else "fail"})
+    return out
+
+
+def _gates_panel(gate_results: list[dict]) -> str:
+    if not gate_results:
+        return ""
+    rows: list[dict] = []
+    for g in gate_results:
+        if g["status"] == "skip":
+            mark = "—"
+        elif g["status"] == "pass":
+            mark = "✓"
+        else:
+            mark = "✗ FAIL" if g.get("severity") == "hard" else "⚠ soft"
+        cur = g.get("current")
+        rows.append({
+            "Gate": g.get("id", "?"),
+            "Description": g.get("label", ""),
+            "Threshold": f"{g.get('op', '')} {g.get('threshold')}",
+            "Current": "—" if cur is None else f"{cur:.2f}",
+            "Result": mark,
+        })
+    return md_table(rows, headers=["Gate", "Description", "Threshold", "Current", "Result"])
+
+
 def _build_enriched_report(stages: list[StageResult],
                            prior: dict[tuple[str, str, str], list[tuple[str, float]]],
                            now: str) -> str:
     enriched_stages = [_enrich_stage(s, prior) for s in stages]
     lines = [f"# Sub0h264 — Full Suite Report",
              f"_{now}_", ""]
+
+    gate_results = _evaluate_gates(stages)
+    gates_md = _gates_panel(gate_results)
+    if gates_md:
+        hard_fail = sum(1 for g in gate_results
+                        if g["status"] == "fail" and g.get("severity") == "hard")
+        soft_fail = sum(1 for g in gate_results
+                        if g["status"] == "fail" and g.get("severity") == "soft")
+        skip = sum(1 for g in gate_results if g["status"] == "skip")
+        lines += [f"## KPI Gates",
+                  f"_{hard_fail} hard fail · {soft_fail} soft fail · {skip} skipped (stage not run)_",
+                  "", gates_md, ""]
 
     summary = _headline_summary(enriched_stages, prior)
     if summary:
@@ -513,6 +707,14 @@ def main() -> int:
     ap.add_argument("--skip-psnr", action="store_true")
     ap.add_argument("--esp-port", default=None)
     ap.add_argument("--esp-timeout", type=int, default=300)
+    ap.add_argument("--esp-runs", type=int, default=1,
+                    help="Number of ESP shootout runs to do back-to-back. "
+                         "When >1, the report shows median fps + stddev per stream "
+                         "(variance check used at phase boundaries — see "
+                         "docs/optimization/execution_plan.md).")
+    ap.add_argument("--esp-skip-flash", action="store_true",
+                    help="Reuse existing ESP build; skip flash. Speeds up "
+                         "back-to-back runs after the first.")
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--outdir", default="docs")
     args = ap.parse_args()
@@ -527,7 +729,8 @@ def main() -> int:
     if not args.skip_psnr:
         stages.append(stage_psnr(args.quick))
     if args.esp_port:
-        stages.append(stage_esp(args.esp_port, args.esp_timeout))
+        stages.append(stage_esp_multi(args.esp_port, args.esp_timeout,
+                                       args.esp_runs, args.esp_skip_flash))
 
     now = _dt.datetime.now(tz=_dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
     outdir = ROOT / args.outdir
