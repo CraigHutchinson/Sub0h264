@@ -19,15 +19,19 @@ with motion + residual hovers around real-time.
 
 ---
 
-## Per-opportunity implementation docs
+## Execution plan + per-opportunity implementation docs
 
-Before any optimisation lands in code, the approach for that specific
-opportunity must be captured in a standalone doc under
-[`docs/optimization/opportunities/`](opportunities/). Each doc is designed to
-be handed to an agent as a self-contained brief: options reasoned, chosen
-approach stated, files/pseudocode identified, validation gates defined. The
-main plan below remains the roadmap and ordering; the per-opportunity docs
-are the implementation contract.
+Read these BEFORE writing any optimisation code:
+
+1. [`execution_plan.md`](execution_plan.md) — workflow, KPI gates, ESP32
+   cadence, rollback policy, ordering of phases. **Source of truth for
+   "what gate must pass for this commit to land".**
+2. [`opportunities/`](opportunities/) — one self-contained brief per
+   optimisation, with options reasoned, chosen approach stated,
+   files/pseudocode identified, validation gates defined. The brief is
+   the implementation contract for the commit.
+
+The main plan below remains the roadmap and impact estimates.
 
 | ID | Title | Doc |
 |----|-------|-----|
