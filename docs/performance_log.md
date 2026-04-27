@@ -32,7 +32,7 @@ commit, platform, and fps for the standard benchmark fixtures.
 | 2026-04-04 | 719c6e6 | 946 fps | 2064 fps | 575 fps | 841 fps | +activeFrame_ zero-copy, +readBit fast-path |
 | 2026-04-04 | f8e0c42 | 987 fps | 2276 fps | 677 fps | — | +MC half-pel fast-path (inter MB -14%) |
 
-## ESP32-P4 (360 MHz RISC-V, 32 MB PSRAM, COM9)
+## ESP32-P4 (360 MHz RISC-V, 32 MB PSRAM, COM9 / COM5)
 
 | Date | Commit | CAVLC-640 | CAVLC-320 | CABAC-320 | FLAT-640 | Notes |
 |------|--------|-----------|-----------|-----------|----------|-------|
@@ -42,6 +42,13 @@ commit, platform, and fps for the standard benchmark fixtures.
 | 2026-04-04 | 3a7af28 | 15.0 fps | 33.8 fps | 11.3 fps | 16.8 fps | +CLZ level_prefix (marginal on ESP32) |
 | 2026-04-05 | ebd41d0 | 17.2 fps | 36.6 fps | 11.8 fps | 19.6 fps | +chroma MC fast-path, +MC row cache, +intra stride |
 | 2026-04-05 | 5c97051 | 17.2 fps | 36.6 fps | 11.8 fps | 19.6 fps | +zero-init elision (noise-level, confirms plateau) |
+
+### Phase 2 perf work — full shootout (sub0h264 / libavc fps)
+
+| Date | Commit | Brief | Ball-Base | Ball-High | Tapo | Scroll-H | Still-H | Variance |
+|------|--------|-------|-----------|-----------|------|----------|---------|----------|
+| 2026-04-19 | 4c0a3e1 | (baseline before Phase 2) | 12.1 / 11.0 | 12.0 / 10.8 | 30.2 / 22.4 | 24.7 / 17.3 | 32.8 / 18.9 | single |
+| 2026-04-27 | 2b72f44 | L3.1 reference prefetch | 12.0 / 10.9 | **12.0** / 10.7 | 30.2 / 22.5 | 24.5 / 17.2 | 32.9 / 18.9 | 3-run, σ ≤ 0.05 |
 
 ## Key observations
 

@@ -5,19 +5,25 @@ gates, ESP32 cadence, rollback policy, and execution ordering. Pairs with
 [esp32p4_hierarchical_plan.md](esp32p4_hierarchical_plan.md) (the roadmap)
 and the per-opportunity briefs under [opportunities/](opportunities/).
 
-## Status (2026-04-19, baseline commit `069f264` / `4c0a3e1`)
+## Status (latest, baseline commit `4c0a3e1` → after L3.1 `2b72f44`)
 
-| KPI | Baseline | Target | Gap |
-|---|---|---|---|
-| **ESP32 Ball-High-640 fps (P0 crux)** | **12.0** | **25.0** | **+13.0** |
-| ESP32 Ball-Base-640 fps | 12.1 | 25.0 | +12.9 |
-| ESP32 Scroll-Base-640 fps | 24.9 | 25.0 | +0.1 |
-| ESP32 Scroll-High-640 fps | 24.7 | 25.0 | +0.3 |
-| ESP32 Tapo-C110 fps | 30.2 | ≥25 | ✓ |
-| ESP32 Still-Base/High, Flat, CAVLC-320, CABAC-320 | 32.8–44.8 | ≥25 | ✓ |
-| ESP32 sub0/libavc median ratio | 1.40× | ≥1.0× | ✓ |
-| Bit-exact PSNR vs JM (Tapo, all wstress, p8x8_sub) | 99.0 dB | <0.01 dB regression | ✓ |
-| Desktop ctest --preset default | 351 pass | 100% | ✓ |
+| KPI | Baseline | Latest | Target | Gap to target |
+|---|---|---|---|---|
+| **ESP32 Ball-High-640 fps (P0 crux)** | 12.0 | **12.0** | **25.0** | **+13.0** |
+| ESP32 Ball-Base-640 fps | 12.1 | 12.0 | 25.0 | +13.0 |
+| ESP32 Scroll-Base-640 fps | 24.9 | 24.5 | 25.0 | +0.5 |
+| ESP32 Scroll-High-640 fps | 24.7 | 24.5 | 25.0 | +0.5 |
+| ESP32 Tapo-C110 fps | 30.2 | 30.2 | ≥25 | ✓ |
+| ESP32 Still-Base/High, Flat, CAVLC-320, CABAC-320 | 32.8–44.8 | 32.9–44.5 | ≥25 | ✓ |
+| ESP32 sub0/libavc median ratio | 1.40× | 1.40× | ≥1.0× | ✓ |
+| Bit-exact PSNR vs JM (Tapo, all wstress, p8x8_sub) | 99.0 dB | 99.0 dB | <0.01 dB regression | ✓ |
+| Desktop ctest --preset default | 351 pass | 351 pass | 100% | ✓ |
+| Desktop Ball-High 640x480 fps | ~52 (variance) | 65.9 | — | +14 desktop |
+
+**Phase 1 measured Δ:** L3.1 reference prefetch — ESP32 0 fps standalone,
+desktop +24 fps. ESP32-P4 hardware prefetcher already amortises the
+sequential PSRAM access pattern; L3.1 lands as enabling infrastructure
+for L4.5 + L2.1, which need the scratch buffer.
 
 **Definition of done:** Ball-Base AND Ball-High ≥ 25.0 fps on ESP32-P4
 across 3 consecutive runs (variance <0.5 fps), with all other gates
@@ -97,10 +103,10 @@ If a gate fails inside the iteration loop: see
 Matches the plan's compounding-impact ordering. Brackets show the
 opportunity ID + expected Ball-High Δ from the master plan:
 
-| # | Opportunity | Expected Δ | Cumulative target | Gate |
-|---|-------------|-----------|--------------------|------|
-| 1 | [L3.1 reference prefetch](opportunities/L3.1_reference_prefetch.md) | +2.0 | 14.0 | borderline streams stay flat |
-| 2 | [L2.1 diagonal MC 2-pass](opportunities/L2.1_diagonal_mc_2pass.md) | +3.5 | 17.5 | hardest validation: bit-exact across 16 fractional positions |
+| # | Opportunity | Expected Δ | Measured Δ (ESP) | Cumulative target | Gate |
+|---|-------------|-----------|------------------|--------------------|------|
+| 1 | [L3.1 reference prefetch](opportunities/L3.1_reference_prefetch.md) | +2.0 | **0.0 (enabling only)** | 12.0 | borderline streams flat ✓ |
+| 2 | [L2.1 diagonal MC 2-pass](opportunities/L2.1_diagonal_mc_2pass.md) | +3.5 | tbd | 15.5 | hardest validation: bit-exact across 16 fractional positions |
 | 3 | [L4.5 getSample elimination](opportunities/L4.5_getsample_elimination.md) | +1.5 | 19.0 | compounds with L3.1 |
 | 4 | [L1.1 row-based deblock](opportunities/L1.1_row_based_deblock.md) | +2.0 | 21.0 | watch deblock-heavy fixtures (Scroll) |
 | 5 | [L4.1 branchless clipU8](opportunities/L4.1_branchless_clipu8.md) + [L4.2 inline rows](opportunities/L4.2_deblock_inline_rows.md) | +1.0 | 22.0 | small commits, easy to bisect |
